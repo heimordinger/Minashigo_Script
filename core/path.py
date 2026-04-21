@@ -1,22 +1,21 @@
 # core/path.py
-import sys
 from pathlib import Path
+import sys
+import os
 
 
-def get_this_path():
-    this_path = Path(__file__).resolve().parent
-    while True:
-        if (this_path / "main.py").exists():
-            return this_path
-        if this_path.parent == this_path:
-            print("未找到脚本根目录(main.py)，请确认是否更改了文件夹名称再重新运行")
-            print("按任意按键关闭程序……")
-            input()
-            sys.exit()
-        this_path = this_path.parent
+def get_root() -> Path:
+    env = os.getenv("PROJECT_ROOT")
+    if env:
+        return Path(env)
+
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).resolve().parent
+
+    return Path(__file__).resolve().parents[1]
 
 
-PROJECT_ROOT = get_this_path()
+PROJECT_ROOT = get_root()
 json_path = PROJECT_ROOT / "json"
 SCRIPTS_PATH = PROJECT_ROOT / "scripts"
 ICON_PATH = PROJECT_ROOT / "icon" / "icon.png"

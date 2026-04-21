@@ -1,5 +1,4 @@
 # gui/tabs/AccountManagerTab.py
-import qtawesome as qta
 from PySide6.QtCore import Signal, Qt, QSize
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
@@ -24,7 +23,7 @@ class AccountManagerTab(QWidget):
         self.table.setHorizontalHeaderLabels(["名称", "邮箱", "密码", "操作"])
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        
+
         self.add_btn = QPushButton("添加账号")
         self.add_btn.clicked.connect(self.add_account)
 
@@ -42,30 +41,27 @@ class AccountManagerTab(QWidget):
         self.table.setRowCount(0)
         accounts = self.facade.list_accounts()
 
-        for idx, acc in enumerate(accounts):
-            self.table.insertRow(idx)
+        for row, acc in enumerate(accounts):
+            self.table.insertRow(row)
 
-            self.table.setItem(idx, 0, QTableWidgetItem(acc["name"]))
-            self.table.setItem(idx, 1, QTableWidgetItem(acc["email"]))
+            self.table.setItem(row, 0, QTableWidgetItem(acc["name"]))
+            self.table.setItem(row, 1, QTableWidgetItem(acc["email"]))
 
             pwd_item = QTableWidgetItem("*" * 8)
             pwd_item.setData(Qt.UserRole, acc["password"])
-            self.table.setItem(idx, 2, pwd_item)
+            self.table.setItem(row, 2, pwd_item)
 
-            toggle_btn = QPushButton()
-            toggle_btn.setIcon(qta.icon("fa5.eye"))
-            toggle_btn.setIconSize(QSize(16, 16))
-            toggle_btn.setFixedSize(28, 28)
-            toggle_btn.setFlat(True)
+            toggle_btn = QPushButton("◉")
+            toggle_btn.setFixedSize(50, 28)
 
             edit_btn = QPushButton("编辑")
             del_btn = QPushButton("删除")
 
             toggle_btn.clicked.connect(
-                lambda _, r=idx, b=toggle_btn: self.toggle_password(r, b)
+                lambda _, r=row, b=toggle_btn: self.toggle_password(r, b)
             )
-            edit_btn.clicked.connect(lambda _, r=idx: self.edit_account(r))
-            del_btn.clicked.connect(lambda _, r=idx: self.delete_account(r))
+            edit_btn.clicked.connect(lambda _, r=row: self.edit_account(r))
+            del_btn.clicked.connect(lambda _, r=row: self.delete_account(r))
 
             widget = QWidget()
             hlayout = QHBoxLayout(widget)
@@ -75,8 +71,7 @@ class AccountManagerTab(QWidget):
             hlayout.addWidget(del_btn)
             hlayout.addStretch()
 
-            self.table.setCellWidget(idx, 3, widget)
-
+            self.table.setCellWidget(row, 3, widget)
 
     def add_account(self):
         existing_names = {acc["name"] for acc in self.facade.list_accounts()}
@@ -128,9 +123,9 @@ class AccountManagerTab(QWidget):
         if total <= 0:
             return
 
-        w0 = int(total * 8/3 / 10)
-        w1 = int(total * 8/3 / 10)
-        w2 = int(total * 8/3 / 10)
+        w0 = int(total * 8 / 3 / 10)
+        w1 = int(total * 8 / 3 / 10)
+        w2 = int(total * 8 / 3 / 10)
         w3 = int(total * 2 / 10)
 
         w3 = max(w3, 180)
@@ -140,17 +135,21 @@ class AccountManagerTab(QWidget):
         self.table.setColumnWidth(2, w2)
         self.table.setColumnWidth(3, w3)
 
-
     def toggle_password(self, row, btn):
         item = self.table.item(row, 2)
+        if not item:
+            return
+
         real_pwd = item.data(Qt.UserRole)
 
         if item.text().startswith("*"):
             item.setText(real_pwd)
-            btn.setIcon(qta.icon("fa5.eye-slash"))
+            btn.setText("○")
         else:
             item.setText("*" * len(real_pwd))
-            btn.setIcon(qta.icon("fa5.eye"))
+            btn.setText("◉")
+
+        self.table.viewport().update()
 
 
 class AccountDialog(QDialog):
@@ -169,12 +168,9 @@ class AccountDialog(QDialog):
         self.pwd_input = QLineEdit()
         self.pwd_input.setEchoMode(QLineEdit.Password)
 
-        self.toggle_pwd_btn = QPushButton()
-        self.toggle_pwd_btn.setIcon(qta.icon("fa5.eye"))
-        self.toggle_pwd_btn.setIconSize(QSize(16, 16))
-        self.toggle_pwd_btn.setFixedSize(28, 28)
+        self.toggle_pwd_btn = QPushButton("👁")
+        self.toggle_pwd_btn.setFixedSize(30, 28)
         self.toggle_pwd_btn.setCheckable(True)
-        self.toggle_pwd_btn.setFlat(True)
         self.toggle_pwd_btn.clicked.connect(self.toggle_password_visibility)
 
         if account:
@@ -229,7 +225,6 @@ class AccountDialog(QDialog):
             i += 1
         return f"{base}_{i}"
 
-
     def accept(self):
         name = self.name_input.text().strip()
         email = self.email_input.text().strip()
@@ -255,11 +250,10 @@ class AccountDialog(QDialog):
             "password": self.pwd_input.text().strip()
         }
 
-
     def toggle_password_visibility(self):
         if self.toggle_pwd_btn.isChecked():
             self.pwd_input.setEchoMode(QLineEdit.Normal)
-            self.toggle_pwd_btn.setIcon(qta.icon("fa5.eye-slash"))
+            self.toggle_pwd_btn.setText("○")
         else:
             self.pwd_input.setEchoMode(QLineEdit.Password)
-            self.toggle_pwd_btn.setIcon(qta.icon("fa5.eye"))
+            self.toggle_pwd_btn.setText("◉")
