@@ -18,13 +18,13 @@
 
 ## 项目结构
 
-backend/ 浏览器控制、OCR、图像匹配等核心模块
-core/ 配置管理、路径管理、状态系统
-controller/ 任务执行与调度控制
-gui/ PySide6 图形界面
-models/ 模型资源
-scripts/ 业务脚本与自动化流程
-assets/ 图片资源与模板
+- backend/ 浏览器控制、OCR、图像匹配等核心模块
+- core/ 配置管理、路径管理、状态系统
+- controller/ 任务执行与调度控制
+- gui/ PySide6 图形界面
+- models/ 模型资源
+- scripts/ 业务脚本与自动化流程
+- assets/ 图片资源与模板
 
 
 ---
