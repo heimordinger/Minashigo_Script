@@ -33,6 +33,9 @@ user/config.json
 *.log
 *.spec
 *.exe
+
+git_push_release.py
+build.py
 Thumbs.db
 Desktop.ini
 click2.html
