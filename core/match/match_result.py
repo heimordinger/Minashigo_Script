@@ -1,4 +1,5 @@
 # core/match/match_result.py
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -8,6 +9,7 @@ class MatchResult:
     x: Optional[int]
     y: Optional[int]
     max_val: float
+    match_success : bool = None
 
     def __iter__(self):
         yield self.x
@@ -28,6 +30,8 @@ class MatchResult:
         return self.max_val
 
     def __bool__(self):
+        if self.match_success is not None:
+            return self.match_success
         return self.x is not None and self.y is not None
 
     def to_dict(self):
