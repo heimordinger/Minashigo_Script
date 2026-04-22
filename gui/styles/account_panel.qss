@@ -1,0 +1,64 @@
+QWidget#AccountPanel {
+    background-color: transparent;
+}
+
+QLabel#AccountTitle {
+    font-size: 14px;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+QWidget#ScriptSelect {
+    background-color: #323232;
+    border: 1px solid #3f3f3f;
+    border-radius: 6px;
+}
+
+QLabel#ScriptSelectLabel {
+    padding: 4px 8px;
+    background-color: #2b2b2b;
+    border-right: 1px solid #3f3f3f;
+    color: #cfcfcf;
+}
+
+QComboBox#ScriptSelectCombo {
+    border: none;
+    background-color: transparent;
+    color: #ffffff;
+    padding: 4px 6px;
+}
+
+QWidget#ScriptSelect:hover,
+QWidget#ScriptSelect:focus-within {
+    border-color: #4aa3ff;
+}
+
+QTextEdit#LogView {
+    background-color: #1f1f1f;
+    border: 1px solid #3f3f3f;
+    border-radius: 6px;
+    font-family: Consolas;
+    font-size: 10pt;
+}
+
+#AccountHeader {
+    background-color: transparent;
+}
+
+#CloseXButton {
+    background: transparent;
+    color: #aaaaaa;
+    border: none;
+    font-weight: bold;
+    padding: 2px 6px;
+}
+
+#CloseXButton:hover {
+    color: #ffffff;
+    background-color: #e05a5a;
+    border-radius: 8px;
+}
+
+QPushButton#TabCloseButton[accountTab="true"] {
+    margin-left: 4px;
+}

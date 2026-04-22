@@ -1,0 +1,11 @@
+{
+
+  "app": {
+    "version": "beta",
+    "author": "Heimordinger",
+    "license": "仅供学习交流，禁止商业用途"
+  },
+  "task": {
+    "enable_daemon_task": true
+  }
+}
