@@ -10,13 +10,11 @@ import numpy as np
 class Matcher:
     def __init__(self):
         self.ocr_engine = OCREngine()
-        self.threshold: float = 0.9
 
         self.orb = cv2.ORB_create(nfeatures=1200)
         self.bf = cv2.BFMatcher(cv2.NORM_HAMMING, crossCheck=True)
 
         self.scales = [0.8, 0.9, 1.0, 1.1, 1.2]
-
 
     def match(
             self,
@@ -37,7 +35,8 @@ class Matcher:
             use_orb: bool = True,
     ):
 
-        t = threshold if threshold is not None else self.threshold
+        # 🔥 关键：兜底 threshold
+        t = threshold if threshold is not None else 0.9
 
         full_frame = target if isinstance(target, np.ndarray) else self._load_image(Path(target))
         H, W = full_frame.shape[:2]
@@ -49,12 +48,8 @@ class Matcher:
         y1, y2 = sorted((max(0, y1), min(H, y2)))
 
         frame = full_frame[y1:y2, x1:x2]
-
         frame_gray = frame if len(frame.shape) == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-        # =========================
-        # 类型判断
-        # =========================
         if match_type:
             mtype = match_type.lower()
         else:
@@ -67,15 +62,13 @@ class Matcher:
             else:
                 raise ValueError("No valid match input")
 
-        # =========================
-        # IMAGE
-        # =========================
+        # ================= IMAGE =================
         if mtype in ("image", "image_multi"):
 
             templ = self._load_template(template)
             templ_gray = templ if len(templ.shape) == 2 else cv2.cvtColor(templ, cv2.COLOR_BGR2GRAY)
 
-            results = []
+            results: list[MatchResult] = []
 
             results += self._template_multi_scale_match(
                 frame_gray,
@@ -88,14 +81,11 @@ class Matcher:
             )
 
             if use_orb:
-                results += self._orb_match(frame, templ)
+                results += self._orb_match(frame, templ, t)
 
             if not results:
-                # =========================
-                # ✔ 关键修复：统一返回 MatchResult
-                # =========================
                 if mtype == "image":
-                    return MatchResult(None, None, 0.0)
+                    return MatchResult(None, None, 0.0, False)
                 return []
 
             results = self._deduplicate(results, min_dist)
@@ -103,49 +93,58 @@ class Matcher:
             if mtype == "image_multi":
                 return [
                     {
-                        "x": int(r["x"] + x1),
-                        "y": int(r["y"] + y1),
-                        "score": float(r["score"])
+                        "x": int(r.x + x1),
+                        "y": int(r.y + y1),
+                        "score": float(r.score)
                     }
                     for r in results[:max_count] if not max_count or len(results) <= max_count
                 ]
 
-            best = max(results, key=lambda r: r["score"])
+            if not results:
+                return MatchResult(None, None, 0.0, False)
+
+            best = max(results, key=lambda r: r.score)
 
             return MatchResult(
-                int(best["x"] + x1),
-                int(best["y"] + y1),
-                float(best["score"])
+                int(best.x + x1),
+                int(best.y + y1),
+                float(best.score),
+                best.score >= t
             )
 
-        # =========================
-        # TEXT
-        # =========================
+        # ================= TEXT =================
         elif mtype == "text":
             results = self.match_text_multi(frame, text)
             if not results:
-                return MatchResult(None, None, 0.0)
+                return MatchResult(None, None, 0.0, False)
 
             best = self._select_best(results, match_select)
             best["x"] += x1
             best["y"] += y1
 
-            return MatchResult(best["x"], best["y"], best["score"])
+            return MatchResult(
+                best["x"],
+                best["y"],
+                best["score"],
+                best["score"] >= t
+            )
 
+        # ================= COLOR =================
         elif mtype == "color":
             x, y, score = self.match_color(frame, color, t)
             if x is None:
-                return MatchResult(None, None, 0.0)
+                return MatchResult(None, None, 0.0, False)
 
-            return MatchResult(x + x1, y + y1, score)
+            return MatchResult(x + x1, y + y1, score, score >= t)
 
         raise ValueError("Unknown type")
 
+    # ================= TEMPLATE =================
     def _template_multi_scale_match(
             self,
             frame_gray,
             templ_gray,
-            threshold,
+            threshold=0.9,
             use_color_check=False,
             frame_color=None,
             templ_color=None,
@@ -169,15 +168,19 @@ class Matcher:
                 if not self._color_check(frame_color, templ_color, max_loc, color_tol, resized.shape):
                     continue
 
-            results.append({
-                "x": max_loc[0] + resized.shape[1] // 2,
-                "y": max_loc[1] + resized.shape[0] // 2,
-                "score": float(max_val)
-            })
+            results.append(
+                MatchResult(
+                    max_loc[0] + resized.shape[1] // 2,
+                    max_loc[1] + resized.shape[0] // 2,
+                    float(max_val),
+                    True  # 这里一定 >= threshold
+                )
+            )
 
         return results
 
-    def _orb_match(self, frame, templ):
+    # ================= ORB =================
+    def _orb_match(self, frame, templ, threshold):
         kp1, des1 = self.orb.detectAndCompute(templ, None)
         kp2, des2 = self.orb.detectAndCompute(frame, None)
 
@@ -198,9 +201,9 @@ class Matcher:
 
         score = len(good) / len(matches)
 
-        return [MatchResult(x, y, float(score)).__dict__]
+        return [MatchResult(x, y, float(score), score >= threshold)]
 
-
+    # ================= COLOR =================
     def match_color(self, frame, color, threshold):
         target = np.array(color, dtype=np.int16)
         diff = np.linalg.norm(frame.astype(np.int16) - target, axis=2)
@@ -212,27 +215,36 @@ class Matcher:
 
         return None, None, max_val
 
+    # ================= DEDUP =================
     def _deduplicate(self, results, min_dist):
 
         def normalize(r):
-            if hasattr(r, "max_val"):
-                return {"x": r.x, "y": r.y, "score": r.max_val}
-
-            return r
+            if isinstance(r, MatchResult):
+                return r
+            if isinstance(r, dict):
+                return MatchResult(
+                    r.get("x"),
+                    r.get("y"),
+                    r.get("score", r.get("max_val", 0.0)),
+                    True
+                )
+            return None
 
         results = [normalize(r) for r in results]
+        results = [r for r in results if r and r.x is not None and r.y is not None]
 
         filtered = []
 
-        for r in sorted(results, key=lambda x: -x["score"]):
+        for r in sorted(results, key=lambda x: -x.score):
             if all(
-                    (r["x"] - f["x"]) ** 2 + (r["y"] - f["y"]) ** 2 > min_dist ** 2
+                    (r.x - f.x) ** 2 + (r.y - f.y) ** 2 > min_dist ** 2
                     for f in filtered
             ):
                 filtered.append(r)
 
         return filtered
 
+    # ================= IO =================
     def _load_image(self, path: Path):
         path = self._resolve_image_path(path)
         data = np.fromfile(path, dtype=np.uint8)
@@ -251,18 +263,10 @@ class Matcher:
             return path
 
         if path.suffix == "":
-            png = path.with_suffix(".png")
-            if png.exists():
-                return png
-
-            jpg = path.with_suffix(".jpg")
-            if jpg.exists():
-                return jpg
-
-            jpeg = path.with_suffix(".jpeg")
-            if jpeg.exists():
-                return jpeg
-
+            for ext in [".png", ".jpg", ".jpeg"]:
+                alt = path.with_suffix(ext)
+                if alt.exists():
+                    return alt
         else:
             for ext in [".png", ".jpg", ".jpeg"]:
                 alt = path.with_suffix(ext)
@@ -283,6 +287,5 @@ class Matcher:
         if gray:
             return cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         return img
-
 
 matcher = Matcher()
