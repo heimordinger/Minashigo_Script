@@ -86,7 +86,7 @@ async def do_work(browser: UserBrowser):
                 continue
             if await browser.click_image(img_path=img_path / '3_hai'):
                 await browser.b_sleep(0.5, 1)
-            if (not browser.wait_image(img_path=img_path / '3_hai', timeout=2) or
+            if (not await browser.wait_image(img_path=img_path / '3_hai', timeout=2) or
                     await browser.match_image(img_path=img_path / '4_result')):
                 state = "等待战后结算"
                 state_enter_time = now
