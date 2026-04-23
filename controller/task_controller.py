@@ -1,4 +1,3 @@
-# core/task/TaskRunner.py
 import asyncio
 import importlib
 import sys
@@ -10,8 +9,7 @@ from core.logging.events import LogLevel
 
 
 class TaskStopped(Exception):
-    """任务被外部请求停止"""
-    pass
+    """Task was stopped by an external request."""
 
 
 class TaskController:
@@ -36,58 +34,49 @@ class TaskController:
         name = self.account["name"]
 
         try:
-
             if self.browser is None:
                 self.controller.emit_log(
-                    account=self.account["name"],
+                    account=name,
                     message="Browser 未初始化",
                     level=LogLevel.ERROR,
-                    source="runner"
+                    source="runner",
                 )
-
                 raise RuntimeError("Browser 未初始化")
 
             script = self._load_script()
-            userBrowser = UserBrowser(browser=self.browser, task_ctrl=self)
-            await script.do_work(userBrowser)
+            user_browser = UserBrowser(browser=self.browser, task_ctrl=self)
+            await script.do_work(user_browser)
 
-            self.controller.emit_task_state(
-                name,
-                status="任务完成",
-                step="finished",
-            )
             self.controller.on_task_finished(name)
 
-        except TaskStopped:
+        except (TaskStopped, asyncio.CancelledError):
             self.controller.emit_log(
                 account=name,
                 level=LogLevel.INFO,
                 message="任务已停止",
-                source="runner"
+                source="runner",
             )
-            self.controller.emit_task_state(
-                name,
-                status="已停止",
-                step="stopped",
-            )
+            self.controller.on_task_stopped(name)
 
         except Exception:
             self.controller.emit_log(
                 account=name,
                 level=LogLevel.ERROR,
                 message=traceback.format_exc(),
-                source="runner"
+                source="runner",
             )
             self.controller.emit_task_state(
                 name,
                 status=TaskStatus.ERROR,
                 step="exception",
+                message="任务执行异常",
             )
 
         finally:
             self._future = None
+            self._stopped = False
+            self._paused = False
 
-    # ===== 软导入 =====
     def _load_script(self):
         module_name = f"scripts.{self.task_name}"
 
@@ -98,11 +87,11 @@ class TaskController:
 
         try:
             module = importlib.import_module(module_name)
-        except ModuleNotFoundError as e:
+        except ModuleNotFoundError as exc:
             raise RuntimeError(
                 f"脚本模块加载失败：{module_name}\n"
-                f"请确认 scripts 目录下存在对应 .py 文件"
-            ) from e
+                f"请确认 scripts 目录下存在对应的 .py 文件"
+            ) from exc
 
         if not hasattr(module, "do_work"):
             raise RuntimeError(f"{module_name} 缺少 do_work(browser)")
@@ -111,6 +100,8 @@ class TaskController:
 
     def stop(self):
         self._stopped = True
+        if self._future and not self._future.done():
+            self._future.cancel()
 
     def pause(self):
         self._paused = True

@@ -224,6 +224,12 @@ class Controller(QObject):
         name = account["name"]
         task_ctrl = self._task_ctrls.get(name)
         if task_ctrl:
+            self.emit_task_state(
+                name,
+                status="stopping",
+                step="stopping",
+                message="正在停止任务"
+            )
             task_ctrl.stop()
 
     def on_task_finished(self, account_name: str, result="执行完成"):
@@ -236,6 +242,28 @@ class Controller(QObject):
             status=TaskStatus.FINISHED,
             step="finished",
             message=f"{task['script']} {result}"
+        )
+
+        self.emit_state(
+            StateEvent(
+                account=account_name,
+                domain=StateDomain.RUNTIME,
+                key="running",
+                value=False
+            )
+        )
+
+    def on_task_stopped(self, account_name: str):
+        task = self._tasks.get(account_name)
+        if not task:
+            return
+
+        script = task.get("script") or "任务"
+        self.emit_task_state(
+            account_name,
+            status=TaskStatus.STOPPED,
+            step="stopped",
+            message=f"{script} 已停止"
         )
 
         self.emit_state(

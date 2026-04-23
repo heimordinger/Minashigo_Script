@@ -41,7 +41,9 @@ class AccountPanel(QWidget):
 
         self.current_task: str | None = None
         self.running = False
+        self.stopping = False
         self.logs: list[str] = []
+        self.log_lines: list[str] = []
         self.browser_ready = False
         self.last_log = None
 
@@ -202,12 +204,11 @@ class AccountPanel(QWidget):
         self.reconnect.emit(self.account)
 
     def on_stop_clicked(self):
-        if not self.running:
+        if not self.running or self.stopping:
             return
-
-        self.running = False
+        self.stopping = True
         self._update_buttons()
-        self.set_browser_state("已停止")
+        self.set_browser_state("停止中...")
         self.stop_task.emit(self.account)
 
     def _update_buttons(self):
@@ -221,6 +222,11 @@ class AccountPanel(QWidget):
 
         for w in self._all_buttons:
             w.setEnabled(True)
+
+        if self.stopping:
+            self.start_btn.setEnabled(False)
+            self.stop_btn.setEnabled(False)
+            return
 
         self.start_btn.setEnabled(not self.running)
         self.stop_btn.setEnabled(self.running)
@@ -257,17 +263,16 @@ class AccountPanel(QWidget):
                 "start_time": now,
                 "count": 1
             }
-            self.log_view.append(display_base)
+            self.log_lines.append(display_base)
 
         elif self.last_log["message"] == message:
             self.last_log["count"] += 1
             duration = int((now - self.last_log["start_time"]).total_seconds())
             updated_line = f"{display_base} (x{self.last_log['count']}) - ({duration}s)"
-            cursor = self.log_view.textCursor()
-            cursor.movePosition(QTextCursor.End)
-            cursor.movePosition(QTextCursor.StartOfBlock, QTextCursor.KeepAnchor)
-            cursor.removeSelectedText()
-            cursor.insertText(updated_line)
+            if self.log_lines:
+                self.log_lines[-1] = updated_line
+            else:
+                self.log_lines.append(updated_line)
 
         else:
             self.last_log = {
@@ -275,14 +280,12 @@ class AccountPanel(QWidget):
                 "start_time": now,
                 "count": 1
             }
-            self.log_view.append(display_base)
+            self.log_lines.append(display_base)
 
-        while self.log_view.document().blockCount() > 100:
-            cursor = self.log_view.textCursor()
-            cursor.movePosition(QTextCursor.Start)
-            cursor.select(QTextCursor.LineUnderCursor)
-            cursor.removeSelectedText()
-            cursor.deleteChar()
+        if len(self.log_lines) > 100:
+            self.log_lines = self.log_lines[-100:]
+
+        self.log_view.setPlainText("\n".join(self.log_lines))
 
         if at_bottom:
             scrollbar.setValue(scrollbar.maximum())
@@ -318,21 +321,18 @@ class AccountPanel(QWidget):
                 y = val.get("y", -1)
                 self.update_mouse_position(x=x, y=y)
 
-        elif event.domain == StateDomain.TASK:
+        elif event.domain in (StateDomain.TASK, StateDomain.RUNTIME):
             if event.key == "running":
                 self.set_running(bool(event.value))
 
     def set_running(self, running: bool):
-        if self.running == running:
+        if self.running == running and not self.stopping:
             return
-
         self.running = running
+        if not running:
+            self.stopping = False
         self._update_buttons()
-
-        if running:
-            self.status_label.setText("状态：运行中")
-        else:
-            self.status_label.setText("状态：已停止")
+        self.status_label.setText("状态：运行中" if running else "状态：已停止")
 
     def set_browser_ready(self, ready: bool):
         if self.browser_ready == ready:
@@ -351,12 +351,27 @@ class AccountPanel(QWidget):
         """
         snapshot: TaskSnapshot
         """
+        status = getattr(snapshot.status, "value", snapshot.status)
+        status = str(status).strip().lower()
+        step = str(getattr(snapshot, "step", "") or "").strip().lower()
 
-        running = snapshot.status not in ("idle", "finished", "stopped", "任务完成")
+        terminal_statuses = {"idle", "finished", "stopped", "error"}
+        terminal_steps = {"finished", "stopped", "exception", "idle"}
+        running = status not in terminal_statuses and step not in terminal_steps
         self.set_running(running)
 
-        if snapshot.status:
-            pass
+        state_map = {
+            "running": "运行中",
+            "stopping": "停止中...",
+            "stopped": "已停止",
+            "finished": "已完成",
+            "error": "执行异常",
+            "idle": "待命",
+        }
+        if step in state_map:
+            self.set_browser_state(state_map[step])
+        elif status in state_map:
+            self.set_browser_state(state_map[status])
 
         if snapshot.message:
             self.append_log(snapshot.message)

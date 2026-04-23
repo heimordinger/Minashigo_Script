@@ -303,6 +303,7 @@ class UserBrowser:
                 return True
         return False
 
+
     @property
     async def get_url(self):
         return self.url
