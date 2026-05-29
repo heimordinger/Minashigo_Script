@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta id="themeTag" name="theme-color" content="#4aa3ff">
+<link rel="icon" type="image/x-icon" href="/favicon.ico">
+<title id="pageTitle">控制表盘 - Minashigo</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body {
+  font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+  background: #1a1a2e;
+  color: #e0e0e0;
+  min-height: 100vh;
+}
+.top-bar {
+  height: 6px;
+  width: 100%;
+  flex-shrink: 0;
+}
+body.normal { padding: 32px; }
+body.lock { display: flex; flex-direction: column; }
+body.lock .main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+.card {
+  background: #16213e;
+  border: 1px solid #2a2a4a;
+  border-radius: 10px;
+  padding: 20px;
+  min-width: 320px;
+}
+body.lock .card { min-width: 400px; }
+.card h2 {
+  font-size: 14px;
+  color: #7bd88f;
+  margin-bottom: 14px;
+}
+.field { margin-bottom: 10px; }
+.field .label {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 2px;
+}
+.field .value {
+  font-size: 14px;
+  color: #f0f0f0;
+  word-break: break-all;
+}
+body.lock .acc-title {
+  font-size: 22px;
+  font-weight: bold;
+  margin-bottom: 6px;
+}
+body.lock .lock-badge {
+  display: inline-block;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  opacity: 0.6;
+  margin-top: 12px;
+}
+</style>
+</head>
+<body>
+
+<div class="top-bar" id="topBar"></div>
+<div class="main">
+  <div class="card">
+    <h2 id="cardTitle">账号信息</h2>
+    <div class="field"><div class="label">名称</div><div class="value acc-name" id="accName">-</div></div>
+    <div class="field"><div class="label">邮箱</div><div class="value" id="accEmail">-</div></div>
+    <div class="field"><div class="label">调试端口</div><div class="value" id="accPort">-</div></div>
+    <div class="lock-badge" id="lockBadge" style="display:none">🔒 标记标签页</div>
+  </div>
+</div>
+
+<script>
+// ====== 读取参数 ======
+const params = new URLSearchParams(window.location.search);
+const mode = params.get('mode') || 'normal';
+const name = params.get('name') || '-';
+const email = params.get('email') || '-';
+const port = params.get('port') || '-';
+
+// ====== 颜色按账号名分配 ======
+const COLORS = [
+  '#4aa3ff', '#4ad88a', '#e85a5a', '#ffa53a',
+  '#c084fc', '#f472b6', '#22d3ee', '#fb923c',
+];
+let colorIdx = 0;
+if (name !== '-') {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = ((hash << 5) - hash) + name.charCodeAt(i);
+  colorIdx = Math.abs(hash) % COLORS.length;
+}
+const ACCENT = COLORS[colorIdx];
+
+// ====== 渲染 ======
+document.getElementById('pageTitle').textContent = name !== '-' ? `控制表盘 - ${name}` : '控制表盘 - Minashigo';
+document.getElementById('themeTag').content = ACCENT;
+document.getElementById('topBar').style.background = ACCENT;
+document.getElementById('accName').textContent = name;
+document.getElementById('accEmail').textContent = email;
+document.getElementById('accPort').textContent = port;
+
+if (mode === 'lock') {
+  document.body.className = 'lock';
+  document.getElementById('cardTitle').textContent = '🔒 标记标签页';
+  document.getElementById('lockBadge').style.display = 'inline-block';
+  document.querySelector('.acc-name').style.color = ACCENT;
+
+  // ====== 锁定 ======
+  window.addEventListener('beforeunload', function(e) {
+    e.preventDefault();
+    e.returnValue = '';
+  });
+
+  // 拦截所有外部导航，强制留在此页
+  document.addEventListener('click', function(e) {
+    let el = e.target;
+    while (el && el.tagName !== 'A') el = el.parentNode;
+    if (el && el.host !== location.host) {
+      e.preventDefault();
+      location.href = location.href;  // 拽回当前页
+    }
+  });
+
+  // 阻止 F5 / Ctrl+R / Ctrl+W
+  document.addEventListener('keydown', function(e) {
+    const ctrl = e.ctrlKey || e.metaKey;
+    if (ctrl && (e.key === 'r' || e.key === 'R' || e.key === 'w' || e.key === 'W')) {
+      e.preventDefault();
+    }
+    if (e.key === 'F5') e.preventDefault();
+  });
+
+  // popstate 拦截（阻止浏览器返回/前进离开此页）
+  window.addEventListener('popstate', function(e) {
+    history.pushState(null, '', location.href);
+  });
+  history.pushState(null, '', location.href);
+
+  // 劫持 pushState/replaceState 阻止导航到其他域名
+  const origPush = history.pushState.bind(history);
+  history.pushState = function(...args) {
+    try {
+      const u = new URL(args[2] || '', location.href);
+      if (u.host !== location.host) return;
+    } catch(e) {}
+    return origPush(...args);
+  };
+}
+
+// ====== 普通模式下显示标题 ======
+if (mode !== 'lock') {
+  document.body.className = 'normal';
+  const h1 = document.createElement('h1');
+  h1.textContent = '🔧 控制表盘';
+  document.querySelector('.main').before(h1);
+}
+</script>
+</body>
+</html>

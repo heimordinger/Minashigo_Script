@@ -1,24 +1,23 @@
-﻿from datetime import datetime
-from pathlib import Path
-
-from PySide6.QtCore import Signal, QSize, Qt
-from PySide6.QtGui import QTextCursor, QIcon, QFontMetrics
+﻿from PySide6.QtCore import Signal, QSize, Qt, QTimer
+from PySide6.QtGui import QIcon, QFontMetrics
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QTextEdit, QPushButton, QComboBox
+    QLabel, QPushButton, QComboBox,
+    QScrollArea, QFrame,
 )
 
-from core.logging.events import LogLevel, LogEvent
-from core.path import PROJECT_ROOT
+from core.logging.events import LogLevel, LogEvent, LogSource
 from core.state.events import StateEvent, StateDomain
 
 from gui.panels.screenshot_viewer import ScreenshotViewer
+from gui.panels.task_ball import TaskBallCard
+from core.taskflow_manager import taskflow_manager
 
 
-def load_qss(path) -> str:
-    if isinstance(path, str):
-        path = Path(path)
-    return path.read_text(encoding="utf-8")
+class _CardScrollArea(QScrollArea):
+    """QScrollArea whose min size is NOT driven by content widgets inside."""
+    def minimumSizeHint(self):
+        return QSize(200, 100)
 
 
 class AccountPanel(QWidget):
@@ -29,6 +28,8 @@ class AccountPanel(QWidget):
     reconnect = Signal(dict)
     start_browser = Signal(dict)
     close = Signal(dict)
+
+    open_taskflow = Signal(dict)
 
     refresh_tasks = Signal(dict)
     request_screenshot = Signal(dict)
@@ -42,10 +43,9 @@ class AccountPanel(QWidget):
         self.current_task: str | None = None
         self.running = False
         self.stopping = False
-        self.logs: list[str] = []
-        self.log_lines: list[str] = []
         self.browser_ready = False
-        self.last_log = None
+        self._ball_counter = 0
+        self._current_card: TaskBallCard | None = None
 
         self._full_url = ""
         self._full_title = ""
@@ -118,15 +118,29 @@ class AccountPanel(QWidget):
 
         self.reconnect_btn.clicked.connect(self.on_reconnect_clicked)
         self.start_browser_btn.clicked.connect(self.on_start_browser)
-        self.close_btn.clicked.connect(lambda: self.close.emit(self.account))
+        self.close_btn.clicked.connect(self.on_close_clicked)
+
+        divider = QFrame()
+        divider.setFrameShape(QFrame.VLine)
+        divider.setStyleSheet("color: #3f3f3f;")
 
         op_row = QHBoxLayout()
         op_row.addWidget(self.start_btn)
         op_row.addWidget(self.stop_btn)
-        op_row.addSpacing(20)
+        op_row.addSpacing(8)
+        op_row.addWidget(divider)
+        op_row.addSpacing(8)
         op_row.addWidget(self.reconnect_btn)
         op_row.addWidget(self.start_browser_btn)
         op_row.addWidget(self.close_btn)
+
+        op_row.addSpacing(16)
+        self.taskflow_btn = QPushButton("TaskFlow")
+        self.taskflow_btn.setToolTip("TaskFlow服务器启动中…")
+        self.taskflow_btn.setEnabled(False)
+        self.taskflow_btn.clicked.connect(self.on_taskflow_clicked)
+        op_row.addWidget(self.taskflow_btn)
+
         op_row.addStretch()
 
         info_row = QVBoxLayout()
@@ -149,16 +163,27 @@ class AccountPanel(QWidget):
         debug_row.addStretch()
         debug_row.addWidget(self.screenshot_btn)
 
-        self.log_view = QTextEdit()
-        self.log_view.setObjectName("LogView")
-        self.log_view.setReadOnly(True)
+        # ========== 任务卡片列表（可滚动） ==========
+        self._card_container = QWidget()
+        self._card_container.setObjectName("CardContainer")
+        self._card_layout = QVBoxLayout(self._card_container)
+        self._card_layout.setContentsMargins(0, 0, 0, 0)
+        self._card_layout.setSpacing(0)
+        self._card_layout.setAlignment(Qt.AlignTop)
+
+        self._card_scroll = _CardScrollArea()
+        self._card_scroll.setObjectName("CardScroll")
+        self._card_scroll.setWidgetResizable(False)
+        self._card_scroll.setWidget(self._card_container)
+        self._card_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._card_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
 
         layout = QVBoxLayout(self)
         layout.addWidget(title)
         layout.addWidget(top_row_widget)
         layout.addLayout(info_row)
         layout.addLayout(op_row)
-        layout.addWidget(self.log_view, stretch=1)
+        layout.addWidget(self._card_scroll, stretch=1)
         layout.addLayout(debug_row)
 
         self._all_buttons = [
@@ -169,15 +194,193 @@ class AccountPanel(QWidget):
             self.close_btn,
             self.refresh_btn,
             self.screenshot_btn,
+            self.taskflow_btn,
         ]
 
-        self.setStyleSheet(
-            load_qss(PROJECT_ROOT / "gui/styles/account_panel.qss")
-        )
+        # 定时检查 TaskFlow 服务器是否就绪
+        self._tf_ready_timer = QTimer(self)
+        self._tf_ready_timer.timeout.connect(self._check_taskflow_ready)
+        self._tf_ready_timer.start(2000)
+
+        self.setStyleSheet("""
+QWidget#AccountPanel {
+    background-color: transparent;
+}
+
+QLabel#AccountTitle {
+    font-size: 14px;
+    font-weight: bold;
+    color: #ffffff;
+}
+
+QWidget#ScriptSelect {
+    background-color: #323232;
+    border: 1px solid #3f3f3f;
+    border-radius: 6px;
+}
+
+QLabel#ScriptSelectLabel {
+    padding: 4px 8px;
+    background-color: #2b2b2b;
+    border-right: 1px solid #3f3f3f;
+    color: #cfcfcf;
+}
+
+QComboBox#ScriptSelectCombo {
+    border: none;
+    background-color: transparent;
+    color: #ffffff;
+    padding: 4px 6px;
+}
+
+QWidget#ScriptSelect:hover,
+QWidget#ScriptSelect:focus-within {
+    border-color: #4aa3ff;
+}
+
+QScrollArea#CardScroll {
+    border: none;
+    background-color: #1a1a1a;
+}
+
+#CardScroll QScrollBar:vertical {
+    background: #2a2a2a;
+    width: 10px;
+    margin: 0;
+}
+
+#CardScroll QScrollBar::handle:vertical {
+    background: #555555;
+    min-height: 30px;
+    border-radius: 5px;
+}
+
+#CardScroll QScrollBar::handle:vertical:hover {
+    background: #777777;
+}
+
+#CardScroll QScrollBar::add-line:vertical,
+#CardScroll QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+#CardScroll QScrollBar::add-page:vertical,
+#CardScroll QScrollBar::sub-page:vertical {
+    background: none;
+}
+
+QWidget#CardContainer {
+    background-color: #1a1a1a;
+}
+
+/* ===== TaskBallCard 水平分栏 ===== */
+QWidget#TaskBallCard {
+    background-color: transparent;
+    border-bottom: 1px solid #2a2a2a;
+}
+
+/* 左侧球列 */
+QWidget#BallColumn {
+    background-color: #1a1a1a;
+    border-right: 1px solid #2a2a2a;
+}
+
+/* 右侧内容区 */
+QWidget#CardContent {
+    background-color: #1e1e1e;
+}
+
+/* 头部 */
+QWidget#CardHeader {
+    background-color: #242424;
+    border-bottom: 1px solid #2a2a2a;
+}
+
+QWidget#CardHeader:hover {
+    background-color: #2c2c2c;
+}
+
+QLabel#CardTitle {
+    color: #e0e0e0;
+    font-weight: bold;
+    font-size: 12px;
+}
+
+QLabel#CardStatus {
+    color: #7bd88f;
+    font-size: 11px;
+}
+
+QLabel#CardArrow {
+    color: #666666;
+    font-size: 11px;
+}
+
+/* 日志体 */
+QWidget#CardBody {
+    background-color: #181818;
+}
+
+QTextEdit#CardLog {
+    background-color: #181818;
+    border: none;
+    font-family: Consolas;
+    font-size: 10pt;
+    color: #d4d4d4;
+    padding: 2px 8px;
+}
+
+#AccountHeader {
+    background-color: transparent;
+}
+
+#CloseXButton {
+    background: transparent;
+    color: #aaaaaa;
+    border: none;
+    font-weight: bold;
+    padding: 2px 6px;
+}
+
+#CloseXButton:hover {
+    color: #ffffff;
+    background-color: #e05a5a;
+    border-radius: 8px;
+}
+
+QPushButton#TabCloseButton[accountTab="true"] {
+    margin-left: 4px;
+}
+""")
 
         self.append_log(f"{account['name']} 已添加")
 
+    def _scroll_to_top(self):
+        self._card_scroll.verticalScrollBar().setValue(0)
+
+    def _mark_pending_cards_stopped(self):
+        """把所有还在"运行中"的旧卡片标为已停止"""
+        for i in range(self._card_layout.count()):
+            item = self._card_layout.itemAt(i)
+            if item and item.widget():
+                w = item.widget()
+                if isinstance(w, TaskBallCard) and w.status == "运行中":
+                    w.status = "已停止"
+
     def on_start_browser(self):
+        # 创建浏览器启动任务卡，捕获启动过程日志
+        self._ball_counter += 1
+        card = TaskBallCard("启动浏览器", index=self._ball_counter)
+        self._card_for_layout(card)
+        self._current_card = card
+
+        card.add_event(LogEvent(
+            account=self.account['name'],
+            level=LogLevel.INFO,
+            message="正在启动浏览器...",
+            source=LogSource.SYSTEM,
+        ))
+
         self.start_browser.emit(self.account)
         self.start_browser_btn.setEnabled(False)
 
@@ -190,18 +393,110 @@ class AccountPanel(QWidget):
 
         self.running = True
         self._update_buttons()
-        self.append_log(f"开始执行：{self.current_task}")
         self.set_browser_state(f'正在运行 "{self.current_task}"')
+
+        # 创建新任务卡（插到最前）
+        self._ball_counter += 1
+        card = TaskBallCard(self.current_task, index=self._ball_counter)
+        self._card_for_layout(card)
+        self._current_card = card
+
+        # 记录启动日志
+        ev = LogEvent(
+            account=self.account['name'],
+            level=LogLevel.INFO,
+            message=f"开始执行：{self.current_task}",
+            source=LogSource.SYSTEM,
+        )
+        card.add_event(ev)
+
+        # 限定卡片数量，移除最旧的
+        while self._card_layout.count() > 50:
+            item = self._card_layout.takeAt(self._card_layout.count() - 1)
+            if item and item.widget():
+                item.widget().deleteLater()
+        self._resize_content()
 
         self.start_task.emit(self.account, self.current_task)
 
     def on_reconnect_clicked(self):
-        self.append_log("请求重新连接浏览器")
+        # 把之前还在"运行中"的旧卡片标为已停止
+        self._mark_pending_cards_stopped()
+
+        self._ball_counter += 1
+        card = TaskBallCard("重新连接", index=self._ball_counter)
+        self._card_for_layout(card)
+        self._current_card = card
+
+        card.add_event(LogEvent(
+            account=self.account['name'],
+            level=LogLevel.INFO,
+            message="请求重新连接浏览器...",
+            source=LogSource.SYSTEM,
+        ))
+
         self.running = False
         self.set_browser_ready(False)
         self._update_buttons()
 
         self.reconnect.emit(self.account)
+
+    def on_close_clicked(self):
+        self._ball_counter += 1
+        card = TaskBallCard("关闭", index=self._ball_counter)
+        self._card_for_layout(card)
+        self._current_card = card
+
+        card.add_event(LogEvent(
+            account=self.account['name'],
+            level=LogLevel.INFO,
+            message="正在关闭浏览器...",
+            source=LogSource.SYSTEM,
+        ))
+
+        self.close.emit(self.account)
+
+    def on_taskflow_clicked(self):
+        if not taskflow_manager.server_running:
+            self.append_log("TaskFlow服务器尚未就绪，请稍后重试")
+            return
+        self.append_log("正在打开TaskFlow可视化工作流...")
+        self.open_taskflow.emit(self.account)
+
+    def _check_taskflow_ready(self):
+        """定时检查 TaskFlow 服务器是否已就绪"""
+        if taskflow_manager.server_running:
+            self.taskflow_btn.setEnabled(True)
+            self.taskflow_btn.setToolTip("打开TaskFlow可视化工作流")
+            self._tf_ready_timer.stop()
+
+    def _update_buttons(self):
+        # 先统一将 taskflow 按钮设为不可用（后面单独覆盖）
+        self.taskflow_btn.setEnabled(False)
+
+        if not self.browser_ready:
+            for w in self._all_buttons:
+                w.setEnabled(False)
+
+            self.reconnect_btn.setEnabled(True)
+            self.start_browser_btn.setEnabled(True)
+        else:
+            for w in self._all_buttons:
+                w.setEnabled(True)
+
+            if self.stopping:
+                self.start_btn.setEnabled(False)
+                self.stop_btn.setEnabled(False)
+            else:
+                self.start_btn.setEnabled(not self.running)
+                self.stop_btn.setEnabled(self.running)
+
+        # taskflow 按钮由服务器状态独立决定，不受浏览器状态影响
+        self.taskflow_btn.setEnabled(taskflow_manager.server_running)
+        self.taskflow_btn.setToolTip(
+            "打开TaskFlow可视化工作流" if taskflow_manager.server_running
+            else "TaskFlow服务器启动中…"
+        )
 
     def on_stop_clicked(self):
         if not self.running or self.stopping:
@@ -211,27 +506,30 @@ class AccountPanel(QWidget):
         self.set_browser_state("停止中...")
         self.stop_task.emit(self.account)
 
-    def _update_buttons(self):
-        if not self.browser_ready:
-            for w in self._all_buttons:
-                w.setEnabled(False)
+    def _resize_content(self):
+        """Match container width to viewport, height to total card height."""
+        total_h = 0
+        spacing = self._card_layout.spacing()
+        count = self._card_layout.count()
+        for i in range(count):
+            item = self._card_layout.itemAt(i)
+            if item and item.widget():
+                total_h += item.widget().sizeHint().height()
+        if count > 1:
+            total_h += spacing * (count - 1)
+        w = self._card_scroll.viewport().width()
+        self._card_container.resize(w, max(total_h, 0))
+        self._card_scroll.verticalScrollBar().setValue(0)
 
-            self.reconnect_btn.setEnabled(True)
-            self.start_browser_btn.setEnabled(True)
-            return
-
-        for w in self._all_buttons:
-            w.setEnabled(True)
-
-        if self.stopping:
-            self.start_btn.setEnabled(False)
-            self.stop_btn.setEnabled(False)
-            return
-
-        self.start_btn.setEnabled(not self.running)
-        self.stop_btn.setEnabled(self.running)
+    def _card_for_layout(self, card: TaskBallCard):
+        """Helper: add a card to layout, connect signal, resize content."""
+        self._card_layout.insertWidget(0, card)
+        card.cardResized.connect(self._resize_content)
+        self._scroll_to_top()
+        self._resize_content()
 
     def append_log(self, text: str):
+        """便捷方法：文本→LogEvent→发送到当前卡片"""
         event = LogEvent(
             account=self.account['name'],
             level=LogLevel.INFO,
@@ -241,54 +539,9 @@ class AccountPanel(QWidget):
         self.append_event(event)
 
     def append_event(self, event: LogEvent):
-        now = datetime.now()
-        ts = now.strftime("%Y-%m-%d %H:%M:%S")
-
-        if event.level == LogLevel.ERROR:
-            prefix = "[ERROR] "
-        elif event.level == LogLevel.WARNING:
-            prefix = "[WARN] "
-        else:
-            prefix = "[INFO] "
-
-        message = event.message
-        display_base = f"[{ts}] {prefix}{message}"
-
-        scrollbar = self.log_view.verticalScrollBar()
-        at_bottom = scrollbar.value() == scrollbar.maximum()
-
-        if self.last_log is None:
-            self.last_log = {
-                "message": message,
-                "start_time": now,
-                "count": 1
-            }
-            self.log_lines.append(display_base)
-
-        elif self.last_log["message"] == message:
-            self.last_log["count"] += 1
-            duration = int((now - self.last_log["start_time"]).total_seconds())
-            updated_line = f"{display_base} (x{self.last_log['count']}) - ({duration}s)"
-            if self.log_lines:
-                self.log_lines[-1] = updated_line
-            else:
-                self.log_lines.append(updated_line)
-
-        else:
-            self.last_log = {
-                "message": message,
-                "start_time": now,
-                "count": 1
-            }
-            self.log_lines.append(display_base)
-
-        if len(self.log_lines) > 100:
-            self.log_lines = self.log_lines[-100:]
-
-        self.log_view.setPlainText("\n".join(self.log_lines))
-
-        if at_bottom:
-            scrollbar.setValue(scrollbar.maximum())
+        """追加日志到当前任务卡（无折叠，全部保留）"""
+        if self._current_card is not None:
+            self._current_card.add_event(event)
 
     def set_browser_state(self, state: str):
         if self.browser_state == state:
@@ -343,6 +596,8 @@ class AccountPanel(QWidget):
 
         if ready:
             self.set_browser_state("浏览器就绪")
+            if self._current_card is not None:
+                self._current_card.status = "已完成"
             self.browser_ready_notify.emit(self.account["name"])
         else:
             self.set_browser_state("浏览器未就绪")
@@ -360,6 +615,7 @@ class AccountPanel(QWidget):
         running = status not in terminal_statuses and step not in terminal_steps
         self.set_running(running)
 
+        # 更新任务球状态
         state_map = {
             "running": "运行中",
             "stopping": "停止中...",
@@ -369,9 +625,15 @@ class AccountPanel(QWidget):
             "idle": "待命",
         }
         if step in state_map:
-            self.set_browser_state(state_map[step])
+            display = state_map[step]
+            self.set_browser_state(display)
+            if self._current_card is not None:
+                self._current_card.status = display
         elif status in state_map:
-            self.set_browser_state(state_map[status])
+            display = state_map[status]
+            self.set_browser_state(display)
+            if self._current_card is not None:
+                self._current_card.status = display
 
         if snapshot.message:
             self.append_log(snapshot.message)
@@ -398,7 +660,23 @@ class AccountPanel(QWidget):
         self.append_log("加载截图中... ...")
         from PySide6.QtGui import QPixmap
         pixmap = QPixmap.fromImage(qimage)
+
+        if hasattr(self, '_screenshot_viewer') and self._screenshot_viewer is not None:
+            try:
+                self._screenshot_viewer.update_image(pixmap)
+                self._screenshot_viewer.raise_()
+                self._screenshot_viewer.activateWindow()
+                self._screenshot_viewer.show()  # 关闭后重开必需
+                self.append_log("截图已更新")
+                return
+            except (RuntimeError, AttributeError):
+                # 窗口已被销毁，重新创建
+                pass
+
         self._screenshot_viewer = ScreenshotViewer(image=pixmap, account=self.account)
+        self._screenshot_viewer.refresh_requested.connect(
+            lambda: self.request_screenshot.emit(self.account)
+        )
         self._screenshot_viewer.show()
         self.append_log("截图已显示")
 

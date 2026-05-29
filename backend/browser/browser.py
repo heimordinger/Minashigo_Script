@@ -5,11 +5,11 @@ from typing import Optional
 
 import numpy as np
 
-from backend.browser.utils import get_port
+from .utils import get_port
 from backend.matcher.matcher import matcher
 from core.path import PROJECT_ROOT
 
-from backend.browser.mixins import (
+from .mixins import (
     BaseMixin,
     LifecycleMixin,
     NavigationMixin,
@@ -46,13 +46,13 @@ class Browser(
     通过多重继承整合各个功能模块
     """
 
-    def __init__(self,*, account: dict, controller):
+    def __init__(self, *, account: dict, controller, port: int | None = None):
         self.account = account
         self.controller = controller
         self.title = None
         self.url = None
 
-        self.port = get_port()
+        self.port = port if port is not None else get_port()
 
         self.user_data_dir = (
                 PROJECT_ROOT /
