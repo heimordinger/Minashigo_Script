@@ -115,25 +115,31 @@ class AccountManagerTab(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        self.resize_columns()
+        # 使用单次定时器避免频繁调用
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(50, self.resize_columns)
 
     def resize_columns(self):
-        total = self.table.viewport().width()
+        try:
+            total = self.table.viewport().width()
 
-        if total <= 0:
-            return
+            if total <= 0:
+                return
 
-        w0 = int(total * 8 / 3 / 10)
-        w1 = int(total * 8 / 3 / 10)
-        w2 = int(total * 8 / 3 / 10)
-        w3 = int(total * 2 / 10)
+            w0 = int(total * 8 / 3 / 10)
+            w1 = int(total * 8 / 3 / 10)
+            w2 = int(total * 8 / 3 / 10)
+            w3 = int(total * 2 / 10)
 
-        w3 = max(w3, 180)
+            w3 = max(w3, 180)
 
-        self.table.setColumnWidth(0, w0)
-        self.table.setColumnWidth(1, w1)
-        self.table.setColumnWidth(2, w2)
-        self.table.setColumnWidth(3, w3)
+            self.table.setColumnWidth(0, w0)
+            self.table.setColumnWidth(1, w1)
+            self.table.setColumnWidth(2, w2)
+            self.table.setColumnWidth(3, w3)
+        except Exception as e:
+            # 静默处理异常，避免警告
+            pass
 
     def toggle_password(self, row, btn):
         item = self.table.item(row, 2)

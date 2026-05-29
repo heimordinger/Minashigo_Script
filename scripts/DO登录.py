@@ -62,10 +62,10 @@ async def login(browser: UserBrowser, url: str):
             continue
 
         # ---------- 登录页 ----------
-        if LOGIN_KW in cur_url or "ログイン" in cur_title:
+        if FINAL_GAME_PATH not in cur_url and (LOGIN_KW in cur_url or "ログイン" in cur_title):
             stable_game_count = 0
             error_retry = 0
-            await browser.dmm_login(game_name="deepone")
+            await browser.dmm_login()
             continue
 
         # ---------- 最终游戏路径 ----------
@@ -99,7 +99,7 @@ async def login(browser: UserBrowser, url: str):
 
 
 class DOLoginState(Enum):
-    WAIT_GAME_LOAD = auto()  # 等待游戏加载
+    WAIT_GAME_LOAD = auto()  # 等待游戏加载（新增状态）
     INIT = auto()  # 初始
     START_DIALOG = auto()  # 第一次登录提示框
     TAP_SCREEN = auto()  # 点击任意位置进入
@@ -128,9 +128,12 @@ async def do_work(browser: UserBrowser):
 
         # ========== 【最高优先级】网络异常检测 ==========
         if state not in (DOLoginState.NETWORK_ERROR, DOLoginState.DONE):
-            if await browser.match_image(img_path / "err1") or await browser.match_image(img_path / "err3"):
+            if await browser.match_image(img_path / "err1"):
                 browser.script_log("检测到网络异常弹窗")
-                print("检测到网络异常弹窗")
+                state = DOLoginState.NETWORK_ERROR
+                continue
+            if await browser.match_image(img_path / "err3"):
+                browser.script_log("检测到网络异常弹窗")
                 state = DOLoginState.NETWORK_ERROR
                 continue
 
@@ -164,7 +167,7 @@ async def do_work(browser: UserBrowser):
             await browser.b_sleep(0.5)
             continue
 
-        # ---------- INIT ----------
+        # ---------- INIT（保留作为备选）----------
         if state == DOLoginState.INIT:
             browser.script_log("DO登录：INIT")
             # 直接进入等待加载状态

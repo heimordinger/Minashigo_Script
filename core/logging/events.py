@@ -24,4 +24,8 @@ class LogEvent:
     message: str                 # 原始文本
     level: LogLevel = LogLevel.INFO
     source: LogSource = LogSource.SYSTEM
-    timestamp: datetime = datetime.now()
+    timestamp: datetime = None   # 自动填充当前时间
+
+    def __post_init__(self):
+        if self.timestamp is None:
+            self.timestamp = datetime.now()

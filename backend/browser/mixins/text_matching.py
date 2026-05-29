@@ -1,4 +1,6 @@
 # backend/browser/mixins/text_matching.py
+import asyncio
+
 from core.match.match_result import MatchResult
 from core.logging.events import LogLevel
 
@@ -17,12 +19,16 @@ class TextMatchingMixin:
         if self._frame is None:
             await self.update_frame()
 
-        result = self.matcher.match(
-            target=self._frame,
-            text=text,
-            threshold=threshold,
-            match_type="text",
-            match_select=match_select
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(
+            None,
+            lambda: self.matcher.match(
+                target=self._frame,
+                text=text,
+                threshold=threshold,
+                match_type="text",
+                match_select=match_select,
+            )
         )
 
         if not result:

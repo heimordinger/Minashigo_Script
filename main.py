@@ -1,44 +1,98 @@
 # main.py
+import sys
+import os
+import tempfile
+import time
+
+
+def is_already_running():
+    """使用锁文件检查程序是否已经在运行"""
+    try:
+        # 创建临时锁文件
+        lock_file = os.path.join(tempfile.gettempdir(), "minashigo_script.lock")
+        
+        if os.path.exists(lock_file):
+            # 检查锁文件是否仍然有效
+            try:
+                # 尝试读取锁文件中的进程ID
+                with open(lock_file, 'r') as f:
+                    pid = int(f.read().strip())
+                
+                # 检查该进程是否还在运行
+                if os.name == 'nt':  # Windows
+                    import subprocess
+                    result = subprocess.run(['tasklist', '/FI', f'PID eq {pid}'], 
+                                        capture_output=True, text=True)
+                    if str(pid) in result.stdout:
+                        return True
+                else:  # Linux/Mac
+                    try:
+                        os.kill(pid, 0)  # 发送信号0检查进程是否存在
+                        return True
+                    except OSError:
+                        pass
+                
+                # 进程不存在，删除锁文件
+                os.remove(lock_file)
+            except (ValueError, FileNotFoundError):
+                # 锁文件损坏，删除它
+                try:
+                    os.remove(lock_file)
+                except:
+                    pass
+        
+        # 创建新的锁文件
+        with open(lock_file, 'w') as f:
+            f.write(str(os.getpid()))
+        
+        return False
+        
+    except Exception as e:
+        print(f"[Main] 检查运行状态失败: {e}")
+        return False
+
 
 def main():
-    print("正在加载……")
+    _t0 = time.time()
+    def ts(msg):
+        print(f"[{time.time()-_t0:7.3f}] {msg}")
 
-    from models.resource_manager import ensure_all_models
-    ensure_all_models()
+    # 检查是否已经在运行
+    if is_already_running():
+        print("[Main] 程序已经在运行中，退出...")
+        input("按任意键退出...")
+        return
 
-    print("开始运行程序,请稍等")
+    ts("启动主程序...")
 
-    import sys
-    from core.path import ICON_PATH
-    from PySide6.QtWidgets import QApplication
-    from gui.window.LoadingSplash import LoadingSplash
-    app = QApplication(sys.argv)
-    splash = LoadingSplash(ICON_PATH.parent / "loading.gif")
+    from core.loading_animation import LoadingAnimation
+    loading = LoadingAnimation()
+    loading.start()
 
-    from core.config.config import config
-    config.load()
+    from core.app_startup import AppStartup
+    app_startup = AppStartup(t0=_t0)
 
-    from controller.ctrl import Controller
-    controller = Controller()
+    ts("开始加载资源")
+    app_startup.load_resources()          # 加载模型资源
+    ts("加载配置")
+    app_startup.load_config()            # 加载配置
+    ts("设置端口")
+    app_startup.setup_ports()             # 设置端口
+    ts("设置控制器")
+    app_startup.setup_controller()        # 设置控制器
+    ts("设置外观层")
+    app_startup.setup_facade()           # 设置外观层
+    ts("设置GUI")
+    app_startup.setup_gui()              # 设置GUI
 
-    from gui.facade_impl import FacadeImpl
-    facade = FacadeImpl(controller)
+    app_startup.setup_quit_handler(loading)  # 退出加载动画
+    app_startup.show_main_window(loading)     # 显示主窗口
 
-    from gui.window.MainWindow import MainWindow
-    window = MainWindow(facadeImpl=facade, loop=None)
+    ts("启动TaskFlow后台")
+    app_startup.start_taskflow_background()  # 主窗口显示后异步启动TaskFlow
 
-    from PySide6.QtCore import QTimer
-    QTimer.singleShot(3000, lambda: (splash.close(), window.show()))
-
-    def on_about_to_quit():
-        print("Qt退出，关闭后端")
-        facade.shutdown()
-
-    app.aboutToQuit.connect(on_about_to_quit)
-
-    app.exec()
-
-    print("程序结束")
+    ts("进入事件循环")
+    app_startup.run()
 
 
 if __name__ == '__main__':

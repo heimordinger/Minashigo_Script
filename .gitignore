@@ -1,41 +1,67 @@
+# ========== IDE / Editor ==========
 .idea/
 .vscode/
 
+# ========== Claude Memory ==========
+.claude/
+
+# ========== Python cache ==========
 __pycache__/
 *.py[cod]
 *.pyo
 *.pyd
-
-build/
-dist/
-*.spec.tmp
-
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
 
+# ========== Build output ==========
+build/
+dist/
+*.spec
+*.spec.tmp
+
+# ========== Runtime data ==========
 runtime/
 browser_data/
 screenshot/
-taskflow/
 python/
 Minashigo_Script/
+config/ports.json
 
+# ========== Taskflow build artifacts ==========
+taskflow/dist/
+taskflow/__pycache__/
+taskflow/hybrid_ports.json
+taskflow/workflow.json
+taskflow/ws_port.js
+
+# ========== User data ==========
+json/accounts.json
+user/config.json
+
+# ========== Logs / Binary ==========
+*.log
+*.exe
+
+# ========== Standalone scripts ==========
+git_push_release.py
+compress_zip.py
+build.py
+
+# ========== OS desktop files ==========
+Thumbs.db
+Desktop.ini
+
+# ========== Temp / Debug ==========
+debug_sizes.txt
+backup_iframe_approach/
+click2.html
+game_minashigo.html
+accounts.html
+
+# ========== Models ==========
 models/*
 !models/
 !models/.gitkeep
 !models/resource_config.py
 !models/resource_manager.py
-
-json/accounts.json
-user/config.json
-
-*.log
-*.spec
-*.exe
-
-git_push_release.py
-build.py
-Thumbs.db
-Desktop.ini
-click2.html

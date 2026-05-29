@@ -44,7 +44,27 @@ class TaskController:
                 raise RuntimeError("Browser 未初始化")
 
             script = self._load_script()
-            user_browser = UserBrowser(browser=self.browser, task_ctrl=self)
+            
+            # 从全局browsers池获取UserBrowser实例
+            import sys
+            from pathlib import Path
+            taskflow_path = Path(__file__).parent.parent / "taskflow"
+            if str(taskflow_path) not in sys.path:
+                sys.path.insert(0, str(taskflow_path))
+            
+            from run_taskflow import browsers
+            account_email = self.account.get('email', '')
+            
+            if account_email and account_email in browsers:
+                user_browser = browsers[account_email]
+                print(f"[TaskController] 从全局browsers池获取UserBrowser: {account_email}")
+            else:
+                print(f"[TaskController] 无法找到UserBrowser: {account_email}")
+                print(f"[TaskController] 可用的browsers: {list(browsers.keys())}")
+                # 如果找不到，创建临时的（这种情况不应该发生）
+                user_browser = UserBrowser(browser=self.browser, task_ctrl=self)
+                print(f"[TaskController] 创建临时UserBrowser实例")
+            
             await script.do_work(user_browser)
 
             self.controller.on_task_finished(name)

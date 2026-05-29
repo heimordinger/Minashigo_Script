@@ -1,11 +1,11 @@
-﻿from PySide6.QtCore import Qt, QFile, QIODevice
+﻿from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTabWidget,
     QLabel, QStatusBar, QPushButton, QTabBar, QSystemTrayIcon
 )
 from PySide6.QtGui import QIcon, QFont, QImage, QShortcut, QKeySequence
-from pathlib import Path
 
+from core.app_info import VERSION as APP_VERSION
 from core.config.config import config
 from core.logging.events import LogEvent
 from core.state.events import StateEvent, StateDomain
@@ -15,7 +15,7 @@ from gui.panels.settings_panel import SettingsPanel
 from gui.tabs.StartTab import StartTab
 from gui.tabs.AccountManagerTab import AccountManagerTab
 from gui.panels.account_panel import AccountPanel
-from core.path import ICON_PATH, PROJECT_ROOT
+from core.path import ICON_PATH
 
 
 class MainWindow(QWidget):
@@ -51,22 +51,166 @@ class MainWindow(QWidget):
         font.setPointSize(13)
         self.setFont(font)
 
-        self.setWindowTitle(f"Minashigo_Script-{config.project_version}")
+        self.setWindowTitle(f"Minashigo_Script-{config.project_version or APP_VERSION}")
         self.setWindowIcon(QIcon(str(ICON_PATH)))
         self.resize(900, 600)
         self.setObjectName("MainWindow")
 
     def load_stylesheet(self):
-        style_path = PROJECT_ROOT / "gui" / "styles" / "main.qss"
+        self.setStyleSheet("""
+QWidget {
+    background-color: #2b2b2b;
+    color: #ffffff;
+    font-family: "Microsoft YaHei", "PingFang SC", "SimHei", sans-serif;
+    font-size: 13px;
+}
 
-        style_file = QFile(str(style_path))
-        if style_file.exists() and style_file.open(QIODevice.ReadOnly | QIODevice.Text):
-            stylesheet = style_file.readAll().data().decode('utf-8')
-            self.setStyleSheet(stylesheet)
-            style_file.close()
-            print(f"样式表加载成功: {style_path}")
-        else:
-            print(f"警告: 样式表文件不存在 - {style_path}")
+*:disabled {
+    color: #777777;
+}
+
+QLabel {
+    color: #ffffff;
+}
+
+QLabel#TitleLabel {
+    font-size: 16px;
+    font-weight: bold;
+    color: #4aa3ff;
+}
+
+QLabel#StatusLabel {
+    color: #7bd88f;
+    font-weight: bold;
+}
+
+QPushButton {
+    background-color: #3a3a3a;
+    color: #ffffff;
+    border: 1px solid #4a4a4a;
+    border-radius: 6px;
+    padding: 6px 14px;
+}
+
+QPushButton:hover {
+    background-color: #454545;
+    border-color: #5a5a5a;
+}
+
+QPushButton:pressed {
+    background-color: #1f1f1f;
+}
+
+QPushButton:disabled {
+    background-color: #2a2a2a;
+    color: #777777;
+    border-color: #333333;
+}
+
+QPushButton#SecondaryButton {
+    background-color: transparent;
+    border: 1px solid #555555;
+}
+
+QLineEdit,
+QTextEdit,
+QPlainTextEdit {
+    background-color: #1f1f1f;
+    color: #ffffff;
+    border: 1px solid #3f3f3f;
+    border-radius: 6px;
+    padding: 6px 8px;
+}
+
+QLineEdit:focus,
+QTextEdit:focus {
+    border-color: #4aa3ff;
+}
+
+QComboBox {
+    background-color: #1f1f1f;
+    color: #ffffff;
+    border: 1px solid #3f3f3f;
+    border-radius: 6px;
+    padding: 6px 8px;
+}
+
+QComboBox:hover {
+    border-color: #4aa3ff;
+}
+
+QComboBox::drop-down {
+    border-left: 1px solid #3f3f3f;
+    width: 20px;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #2b2b2b;
+    color: #ffffff;
+    selection-background-color: #4aa3ff;
+}
+
+QTabWidget::pane {
+    border: 1px solid #3f3f3f;
+    border-radius: 6px;
+    background-color: #2b2b2b;
+}
+
+QTabBar::tab {
+    background-color: #323232;
+    color: #cfcfcf;
+    padding: 8px 16px;
+    border-top-left-radius: 6px;
+    border-top-right-radius: 6px;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    background-color: #2b2b2b;
+    color: #ffffff;
+    border-bottom: 2px solid #4aa3ff;
+}
+
+QTabBar::tab:hover:!selected {
+    background-color: #3a3a3a;
+}
+
+QStatusBar {
+    background-color: #262626;
+    border-top: 1px solid #3f3f3f;
+}
+
+QStatusBar QLabel {
+    color: #cfcfcf;
+}
+
+QScrollBar {
+    background: transparent;
+}
+
+QScrollBar::handle {
+    background-color: #4a4a4a;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:hover {
+    background-color: #6a6a6a;
+}
+
+QScrollBar::add-line,
+QScrollBar::sub-line {
+    height: 0;
+    width: 0;
+}
+
+QToolTip {
+    background-color: #323232;
+    color: #ffffff;
+    border: 1px solid #4a4a4a;
+    border-radius: 4px;
+}
+""")
+        print("样式表加载完成（内联）")
 
     def setup_tabs(self):
         self.tabs = QTabWidget()
@@ -169,11 +313,12 @@ class MainWindow(QWidget):
         panel.start_task.connect(self.facade.start_task)
         panel.stop_task.connect(self.facade.stop_task)
         panel.start_browser.connect(self.facade.start_browser)
-        panel.close.connect(self.facade.close_browser)
+        panel.close.connect(self._close_account_tab)
         panel.browser_ready_notify.connect(self.on_browser_ready)
         panel.refresh_tasks.connect(self.on_refresh_tasks)
         panel.request_screenshot.connect(self.on_request_screenshot)
         panel.reconnect.connect(self.on_reconnect)
+        panel.open_taskflow.connect(self.on_open_taskflow)
         insert_index = self.tabs.count() - 2
         self.tabs.insertTab(insert_index, panel, name)
         self.tabs.setCurrentWidget(panel)
@@ -185,6 +330,12 @@ class MainWindow(QWidget):
         name = account["name"]
         print(f"请求重连: {name}")
         self.facade.reconnect_browser(account)
+
+    def on_open_taskflow(self, account: dict):
+        name = account["name"]
+        print(f"打开TaskFlow: {name}")
+        self.facade.register_account_to_taskflow(account)
+        self.facade.open_taskflow_browser(account)
 
     def add_tab_close_button(self, account: dict, index: int):
         """为账号 Tab 添加关闭按钮"""

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<title>Minashigo_Script-TaskFlow</title>
+<link rel="stylesheet" href="css/style.css">
+<link rel="stylesheet" href="css/style_2.css">
+<link rel="stylesheet" href="css/litegraph_2.css">
+<link rel="icon" type="image/png" href="../icon/icon.png">
+<script>
+  // TaskFlow全局化 - 不再从URL获取账号信息
+  // 账号信息将通过account-panel系统动态绑定到tab
+  console.log(`[Index] TaskFlow全局模式启动`);
+  
+  // 清除URL参数中的账号信息
+  window.accountInfo = null;
+</script>
+</head>
+<body>
+
+<div id="tab-bar">
+  <button id="new-tab-btn">+</button>
+</div>
+
+<div id="canvas-container"></div>
+
+<div id="node-panel">
+  <div id="panel-header">
+    <span id="panel-drag">☰ 节点库</span>
+    <div class="panel-actions">
+      <button id="panel-toggle">–</button>
+    </div>
+  </div>
+  <div id="panel-toolbar">
+    <div class="ns-toggle-row">
+      <span class="ns-toggle-label">排序</span>
+      <label class="ns-toggle-box" for="toggle-sort-mode">
+        <span class="ns-t off-label">频率</span>
+        <input id="toggle-sort-mode" type="checkbox">
+        <span class="ns-t-knob"></span>
+        <span class="ns-t on-label">名称</span>
+      </label>
+    </div>
+    <div class="ns-toggle-row">
+      <span class="ns-toggle-label">分类</span>
+      <label class="ns-toggle-box" for="toggle-category-mode">
+        <span class="ns-t off-label">不分类</span>
+        <input id="toggle-category-mode" type="checkbox" checked>
+        <span class="ns-t-knob"></span>
+        <span class="ns-t on-label">分类</span>
+      </label>
+    </div>
+  </div>
+  <div id="panel-body"></div>
+</div>
+
+<div id="control-panel">
+  <div id="control-header">
+    <span id="control-drag">☰ 控制面板</span>
+    <button id="control-toggle">–</button>
+  </div>
+
+  <div id="control-body">
+    <button id="btn-save">保存</button>
+    <button id="btn-load">加载</button>
+    <button id="btn-clear">清空</button>
+
+    <label class="panel-switch-row" for="toggle-node-order">
+      <span class="switch-text">
+        <span class="switch-title">节点顺序</span>
+      </span>
+      <span class="switch-control">
+        <input id="toggle-node-order" type="checkbox">
+        <span class="switch-slider"></span>
+      </span>
+    </label>
+
+    <div class="panel-input-row">
+      <span class="input-label">节点延迟(ms)</span>
+      <input id="node-delay-input" type="number" min="0" step="100" value="100">
+    </div>
+
+    <div class="mode-section">
+      <div class="mode-title">模式</div>
+
+      <div class="mode-item" data-mode="pan">
+        <span class="mode-dot"></span>
+        平移模式
+      </div>
+
+      <div class="mode-item" data-mode="select">
+        <span class="mode-dot"></span>
+        编辑模式
+      </div>
+
+      <div class="mode-item" data-mode="readonly">
+        <span class="mode-dot"></span>
+        只读模式
+      </div>
+    </div>
+  </div>
+
+  <input type="file" id="file-input" style="display:none">
+</div>
+
+<div id="runtime-panel">
+  <div id="runtime-header">
+    <span id="runtime-drag">▣ 运行状态</span>
+    <button id="runtime-toggle">–</button>
+  </div>
+
+  <div id="runtime-body">
+    <div class="runtime-section">
+      <div class="runtime-title">控制</div>
+      <table class="runtime-btn-grid">
+        <tr>
+          <td><button id="btn-start">运行</button></td>
+          <td><button id="btn-pause">暂停</button></td>
+        </tr>
+        <tr>
+          <td><button id="btn-resume">恢复</button></td>
+          <td><button id="btn-stop">停止</button></td>
+        </tr>
+      </table>
+    </div>
+
+    <div class="runtime-section">
+      <div class="runtime-title">当前节点</div>
+      <div id="current-node">-</div>
+    </div>
+
+    <div class="runtime-section">
+      <div class="runtime-title">运行信息</div>
+      <div>状态：<span id="run-state">idle</span></div>
+      <div>FPS：<span id="run-fps">0</span></div>
+      <div>延迟：<span id="run-delay">0ms</span></div>
+    </div>
+  </div>
+</div>
+
+<script src="./js/litegraph_dev.js?t=20260511_2410"></script>
+<script type="module" src="core/account-manager.js?t=20260511_2410"></script>
+<script type="module" src="core/account-api.js?t=20260511_2410"></script>
+<script type="module" src="js/state.js?t=20260511_2410"></script>
+<script type="module" src="js/main.js?t=20260511_2410"></script>
+<script type="module" src="js/tab.js?t=20260511_2410"></script>
+<script type="module" src="core/taskflow-backend.js?t=20260511_2410"></script>
+<script type="module" src="nodes/action/url.js?t=20260511_2410"></script>
+</body>
+</html>

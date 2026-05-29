@@ -6,12 +6,14 @@ class MouseActionsMixin:
     """鼠标操作相关方法混入类"""
 
     async def click(self, x, y, pianyi=(0, 0), down_time=0.12):
-        await self.page.bring_to_front()
-        await self.page.mouse.move(x + pianyi[0], y + pianyi[1])
+        cx = x + pianyi[0]
+        cy = y + pianyi[1]
+        # 跳过 bring_to_front（慢，且点击不需要）
+        await self.page.mouse.move(cx, cy)
         await self.page.mouse.down()
         await asyncio.sleep(down_time)
         await self.page.mouse.up()
-        print(f"{self.account['name']}: 点击 ({x}, {y})")
+        print(f"{self.account['name']}: 点击 ({cx}, {cy})")
 
     async def double_click(
             self,

@@ -1,10 +1,11 @@
 ﻿from pathlib import Path
 
-from PySide6.QtCore import QUrl
+from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
-    QPushButton, QGroupBox, QMessageBox, QFileDialog
+    QPushButton, QGroupBox, QMessageBox, QFileDialog, QCheckBox,
+    QScrollArea,
 )
 
 from core.config.config import config, _DEFAULT_CONFIG
@@ -19,7 +20,16 @@ class SettingsPanel(QWidget):
         self.reload_all()
 
     def _build_ui(self):
-        layout = QVBoxLayout(self)
+        outer_layout = QVBoxLayout(self)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setObjectName("SettingsScroll")
+
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setSpacing(12)
         layout.setContentsMargins(16, 16, 16, 16)
 
@@ -58,6 +68,14 @@ class SettingsPanel(QWidget):
 
         browser_layout.addLayout(user_data_layout)
 
+        # 加载动画设置
+        loading_box = QGroupBox("加载动画设置")
+        loading_layout = QVBoxLayout(loading_box)
+        
+        self.loading_topmost_checkbox = QCheckBox("加载动画始终置顶")
+        self.loading_topmost_checkbox.setToolTip("开启后，加载动画将始终显示在最上层")
+        loading_layout.addWidget(self.loading_topmost_checkbox)
+
         about_box = QGroupBox("关于")
         about_layout = QVBoxLayout(about_box)
         title = QLabel("Minashigo Script")
@@ -93,9 +111,13 @@ class SettingsPanel(QWidget):
         btn_layout.addWidget(self.save_btn)
 
         layout.addWidget(browser_box)
+        layout.addWidget(loading_box)
         layout.addWidget(about_box)
         layout.addStretch()
         layout.addLayout(btn_layout)
+
+        scroll.setWidget(content)
+        outer_layout.addWidget(scroll)
 
     def _set_style(self, edit: QLineEdit, is_user: bool):
         if is_user:
@@ -129,6 +151,12 @@ class SettingsPanel(QWidget):
         else:
             self.user_data_edit.setText(default_val)
             self._set_style(self.user_data_edit, False)
+        
+        # 加载动画置顶设置
+        loading_cfg = config.data.get("loading", {})
+        default_loading_cfg = _DEFAULT_CONFIG.get("loading", {"topmost": True})
+        topmost_val = loading_cfg.get("topmost", default_loading_cfg.get("topmost", True))
+        self.loading_topmost_checkbox.setChecked(topmost_val)
 
     def _select_browser_exe(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -163,6 +191,8 @@ class SettingsPanel(QWidget):
         try:
             config.set("browser.browser_path", path)
             config.set("browser.browser_data_dir", user_data)
+            # 保存加载动画置顶设置
+            config.set("loading.topmost", self.loading_topmost_checkbox.isChecked())
         except Exception as e:
             QMessageBox.warning(self, "配置错误", str(e))
             return
