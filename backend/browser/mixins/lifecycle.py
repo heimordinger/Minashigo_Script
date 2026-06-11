@@ -195,6 +195,13 @@ class LifecycleMixin:
             if self.context.pages:
                 self._log(f"[CONNECT-40] reuse existing page (count={len(self.context.pages)})")
                 self.page = self.context.pages[0]
+                # 关闭多余的标签页，只保留第一个
+                for extra in self.context.pages[1:]:
+                    try:
+                        await extra.close()
+                        self._log("[CONNECT-40A] closed extra page")
+                    except Exception as e:
+                        self._log(f"[CONNECT-40E] close extra page failed: {e}")
             else:
                 self._log("[CONNECT-41] no page found, creating new page")
                 self.page = await self.context.new_page()
@@ -386,6 +393,16 @@ class LifecycleMixin:
 
         # ====== 启动新浏览器 ======
         self._log(f"[BROWSER] 启动新浏览器 (port={self.port})")
+
+        # 清理用户数据目录中的会话文件，防止 Chrome 还原旧标签页
+        for session_file in ["Current Session", "Current Tabs", "Last Session", "Last Tabs", "Last Active Tabs"]:
+            fpath = self.user_data_dir / "Default" / session_file
+            if fpath.exists():
+                try:
+                    fpath.unlink()
+                    self._log(f"[BROWSER] 已清除会话文件: {session_file}")
+                except Exception as e:
+                    self._log(f"[BROWSER] 清除会话文件失败: {session_file} ({e})")
 
         # 构建控制表盘 URL 作为默认页
         try:

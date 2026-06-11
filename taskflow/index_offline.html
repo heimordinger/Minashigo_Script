@@ -65,7 +65,7 @@
     <button id="btn-load">加载</button>
     <button id="btn-clear">清空</button>
 
-    <label class="panel-switch-row" for="toggle-node-order">
+    <label class="panel-switch-row">
       <span class="switch-text">
         <span class="switch-title">节点顺序</span>
       </span>
@@ -74,6 +74,15 @@
         <span class="switch-slider"></span>
       </span>
     </label>
+
+    <div class="panel-input-row">
+      <span class="input-label">连线样式</span>
+      <select id="select-link-style">
+        <option value="spline">曲线</option>
+        <option value="straight">直线</option>
+        <option value="linear">直角线</option>
+      </select>
+    </div>
 
     <div class="panel-input-row">
       <span class="input-label">节点延迟(ms)</span>
@@ -138,7 +147,13 @@
   </div>
 </div>
 
-<script src="./js/litegraph_dev.js?t=20260511_2410"></script>
+<script src="./js/litegraph_dev.js"></script>
+<script type="module" src="core/account-manager.js"></script>
+<script type="module" src="core/account-api.js"></script>
+<script type="module" src="js/state.js"></script>
+<script type="module" src="js/main.js"></script>
+<script type="module" src="js/tab.js"></script>
+<script type="module" src="core/taskflow-backend.js"></script>
 <script>
 // @ts-nocheck
 (async () => {
@@ -155,6 +170,7 @@ let draggedTab = null;
 
 function setCurrentTab(tab) {
   currentTab = tab;
+  window.currentTab = tab;
 }
 function setDraggedTab(tab) {
   draggedTab = tab;
@@ -417,11 +433,15 @@ class WSManager {
         this.ws.onmessage = (event) => {
             try {
                 const msg = JSON.parse(event.data);
+
+                // 全局ping消息 - 后端在长时间操作中发来的保活信号
+                if (msg.type === "ping") {
+                    window.workflowController?.onPingResponse?.();
+                    console.debug("[WS] 收到ping保活信号");
+                    return;
+                }
+
                 if (msg.meta?.id && this.callbacks[msg.meta.id]) {
-                    // 检查是否是ping响应
-                    if (msg.task?.status === "ping") {
-                        window.workflowController?.onPingResponse?.();
-                    }
                     this.callbacks[msg.meta.id](msg);
                     delete this.callbacks[msg.meta.id];
                 }
@@ -494,21 +514,18 @@ class WSManager {
 }
 
 // ── core/node-reporter.js ──
-async function reportNodeEvent(node, event, payload = {}) {
-  try {
-    const backend = window.taskflow?.backend;
-    if (!backend) return;
+function reportNodeEvent(node, event, payload = {}) {
+  const backend = window.taskflow?.backend;
+  if (!backend) return;
 
-    await backend.invoke("node_event", {
-      node_id: node?.id ?? null,
-      node_type: node?.type ?? null,
-      node_title: node?.title ?? node?.constructor?.title ?? "unknown",
-      event,
-      payload,
-    });
-  } catch (error) {
-    console.warn("[node_event] 上报失败:", error?.message || error);
-  }
+  // Fire-and-forget: 不 await，避免日志上报阻塞任务执行
+  backend.invoke("node_event", {
+    node_id: node?.id ?? null,
+    node_type: node?.type ?? null,
+    node_title: node?.title ?? node?.constructor?.title ?? "unknown",
+    event,
+    payload,
+  }).catch(() => {});
 }
 
 
@@ -563,10 +580,11 @@ function ensurePropertyDialog() {
   ].join(";");
 
   wrap.innerHTML = `
-    <div style="width:500px;max-width:92vw;background:#1f1f1f;color:#eee;border-radius:10px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,0.5);max-height:80vh;overflow-y:auto;">
+    <div style="width:520px;max-width:92vw;background:#1f1f1f;color:#eee;border-radius:10px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,0.5);max-height:80vh;overflow-y:auto;">
       <div id="tf-property-title" style="font-size:16px;font-weight:bold;margin-bottom:12px;border-bottom:1px solid #444;padding-bottom:8px;">节点属性</div>
       <div id="tf-property-list" style="display:flex;flex-direction:column;gap:10px;"></div>
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;border-top:1px solid #444;padding-top:12px;">
+      <div id="tf-property-help" style="margin-top:12px;padding:10px 12px;background:rgba(255,200,50,0.08);border-left:3px solid #fc3;border-radius:4px;font-size:12px;color:#ccc;line-height:1.6;display:none;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;border-top:1px solid #444;padding-top:12px;">
         <button id="tf-property-cancel" style="height:32px;padding:0 16px;border:0;border-radius:6px;background:#444;color:#ddd;cursor:pointer;">取消</button>
         <button id="tf-property-ok" style="height:32px;padding:0 16px;border:0;border-radius:6px;background:#2d6cdf;color:#fff;cursor:pointer;">确定</button>
       </div>
@@ -766,26 +784,91 @@ function openNodePropertyEditor(node) {
     }
   }
 
-  // 如果没有 properties_info，从 properties 生成
+  // 如果没有 properties_info，从 widgets 自动推断控件类型
   if (propertiesInfo.length === 0 && Object.keys(properties).length > 0) {
+    // 构建 widget 名 → widget 映射
+    const widgetMap = {};
+    if (node.widgets) {
+      node.widgets.forEach(w => { if (w.name) widgetMap[w.name] = w; });
+    }
+
     Object.keys(properties).forEach(propName => {
-      // 跳过路径类型
       if (propName.toLowerCase().includes("path")) return;
 
-      const propValue = properties[propName];
-      const { container, input, type } = createPropertyInput(propName, propValue);
+      const widget = widgetMap[propName];
+      let autoConfig = {};
+
+      if (widget) {
+        // 从 widget 类型推断属性编辑器控件
+        switch (widget.type) {
+          case "combo":
+            autoConfig.type = "select";
+            autoConfig.values = (widget.options && widget.options.values) || [];
+            break;
+          case "toggle":
+            autoConfig.type = "boolean";
+            break;
+          case "number":
+            autoConfig.type = "number";
+            if (widget.options) {
+              if (widget.options.min !== undefined) autoConfig.min = widget.options.min;
+              if (widget.options.max !== undefined) autoConfig.max = widget.options.max;
+              if (widget.options.step !== undefined) autoConfig.step = widget.options.step;
+            }
+            break;
+          case "button":
+          case "preview_image":
+            return; // 跳过按钮和预览
+          default:
+            autoConfig.type = "text";
+        }
+      }
+
+      const propValue = widget ? widget.value ?? properties[propName] : properties[propName];
+      const { container, input, type } = createPropertyInput(propName, propValue, autoConfig);
       listEl.appendChild(container);
       propertyInputs.set(propName, { input, type });
     });
   } else {
-    // 使用 properties_info 生成
+    // 使用 properties_info 生成，但结合 widget 类型适配
     propertiesInfo.forEach(propConfig => {
       // 跳过路径类型
       if (propConfig.type === "path" || propConfig.name.toLowerCase().includes("path")) return;
 
       const propName = propConfig.name;
       const propValue = properties[propName];
-      const { container, input, type } = createPropertyInput(propName, propValue, propConfig);
+
+      // 查找匹配的 widget，确定最佳控件类型
+      let effectiveConfig = { ...propConfig };
+      const matchedWidget = propToWidgetMap.get(propName);
+      if (matchedWidget) {
+        // 用 widget 类型覆盖 properties_info 类型
+        switch (matchedWidget.type) {
+          case "combo":
+            effectiveConfig.type = "select";
+            effectiveConfig.values = (matchedWidget.options && matchedWidget.options.values) || propConfig.options || [];
+            break;
+          case "toggle":
+            effectiveConfig.type = "boolean";
+            break;
+          case "number":
+            effectiveConfig.type = "number";
+            if (matchedWidget.options) {
+              if (matchedWidget.options.min !== undefined) effectiveConfig.min = matchedWidget.options.min;
+              if (matchedWidget.options.max !== undefined) effectiveConfig.max = matchedWidget.options.max;
+              if (matchedWidget.options.step !== undefined) effectiveConfig.step = matchedWidget.options.step;
+            }
+            break;
+          case "button":
+          case "preview_image":
+            return; // 跳过按钮和预览
+          default:
+            // 保留 properties_info 中的 type
+            break;
+        }
+      }
+
+      const { container, input, type } = createPropertyInput(propName, propValue, effectiveConfig);
       listEl.appendChild(container);
       propertyInputs.set(propName, { input, type });
     });
@@ -798,6 +881,39 @@ function openNodePropertyEditor(node) {
     noProps.style.cssText = "text-align:center;color:#666;padding:20px;";
     listEl.appendChild(noProps);
   }
+
+  // ─── 动态说明 ───
+  const helpEl = el.querySelector("#tf-property-help");
+  function updateHelp() {
+    if (!helpEl) return;
+    if (typeof node.getHelpText === "function") {
+      // 构建临时 properties 快照
+      const snapshot = {};
+      propertyInputs.forEach(({ input, type }, propName) => {
+        switch (type) {
+          case "number": snapshot[propName] = parseFloat(input.value); break;
+          case "boolean": snapshot[propName] = input.checked; break;
+          default: snapshot[propName] = input.value;
+        }
+      });
+      // 合并原始属性（未在编辑器中显示的保留原值）
+      const merged = { ...node.properties, ...snapshot };
+      const text = node.getHelpText(merged);
+      if (text) {
+        helpEl.innerHTML = text;
+        helpEl.style.display = "block";
+        return;
+      }
+    }
+    helpEl.style.display = "none";
+  }
+
+  // 输入变化时刷新说明
+  propertyInputs.forEach(({ input }) => {
+    input.addEventListener("change", updateHelp);
+    input.addEventListener("input", updateHelp);
+  });
+  updateHelp();
 
   return new Promise(resolve => {
     let close = (save = false) => {
@@ -893,22 +1009,52 @@ function openNodePropertyEditor(node) {
 // ── core/workflow-controller.js ──
 // core/workflow-controller.js
 
+/**
+ * 图驱动执行控制器
+ * 不再构建线性序列，节点通过 execOutput 直接 await 驱动下游，
+ * 支持分支、循环、条件跳转，日志天然按执行顺序排列。
+ */
+
 class WorkflowController {
   constructor(getGraph) {
     this.getGraph = getGraph;
     this.state = STATE.IDLE;
     this.currentNode = null;
-    this.executionSequence = []; // 执行序列数组
-    this.currentLink = null; // 当前执行的连接线
-    this.lastBackendDelay = 0; // 最后一次后端响应延迟（毫秒）
-    this.requestStartTime = null; // 请求开始时间
-    this.errorNode = null; // 错误节点（红色高亮）
-    this.pingTimeout = 10000; // ping超时时间（毫秒）- 增加到10秒
-    this.nodeTimeout = 60000; // 节点执行超时时间（毫秒）- 增加到60秒
-    this.lastPingTime = null; // 最后一次ping时间
-    this.nodeExecutionStartTime = null; // 节点执行开始时间
-    this.timeoutCheckInterval = null; // 超时检查定时器
+    this.currentLink = null;
+    this.errorNode = null;
+    this.nodeTimeout = 60000;
+    this.nodeExecutionStartTime = null;
+    this.timeoutCheckInterval = null;
     this._startTimeoutChecker();
+    this._registerExecOutput();
+  }
+
+  /**
+   * 给所有 LGraphNode 挂载 execOutput 方法
+   * 用 queueMicrotask 断开调用栈，防止循环死递归
+   */
+  _registerExecOutput() {
+    if (LGraphNode.prototype._execOutputRegistered) return;
+    LGraphNode.prototype._execOutputRegistered = true;
+
+    LGraphNode.prototype.execOutput = async function (slot) {
+      const output = this.outputs?.[slot];
+      if (!output?.links?.length) return;
+      const graph = this.graph;
+      if (!graph) return;
+      const ctrl = window.workflowController;
+      if (!ctrl || ctrl.state !== STATE.RUNNING) return;
+
+      for (const linkId of output.links) {
+        const link = graph.links[linkId];
+        if (!link) continue;
+        const target = graph._nodes.find(n => n.id === link.target_id);
+        if (!target?.onAction) continue;
+        // 断开栈，防止循环中的递归栈溢出
+        await new Promise(r => queueMicrotask(r));
+        await ctrl._runNode(target, "flow", link.target_slot);
+      }
+    };
   }
 
   setState(state) {
@@ -917,16 +1063,14 @@ class WorkflowController {
     window.updateRuntimeState?.(state);
   }
 
-  start() {
+  async start() {
     if (this.state === STATE.RUNNING) return false;
     const startNode = this._findStartNode();
     if (!startNode) return false;
-
-    this.currentNode = null;
-    this.executionSequence = [];
-    this._buildExecutionSequence(startNode);
     this.setState(STATE.RUNNING);
-    this._executeNext();
+    // 从起点驱动整条链路，执行完成后 finish
+    await this._runNode(startNode, "flow");
+    if (this.state === STATE.RUNNING) this.finish();
     return true;
   }
 
@@ -938,233 +1082,95 @@ class WorkflowController {
   resume() {
     if (this.state !== STATE.PAUSED) return;
     this.setState(STATE.RUNNING);
-    this._executeNext();
+    // resume 后当前节点继续执行（在 waitUntilRunnable 中等待）
   }
 
   stop() {
     if (this.state === STATE.STOPPED || this.state === STATE.IDLE) return;
     this.setState(STATE.STOPPED);
     this.currentNode = null;
-    this.executionSequence = [];
     this.currentLink = null;
-    this.errorNode = null; // 清除错误节点
+    this.errorNode = null;
     window.updateCurrentNode?.(null);
     window.highlightLink?.(null);
-    window.highlightErrorNode?.(null); // 清除错误高亮
+    window.highlightErrorNode?.(null);
   }
 
   finish() {
-    // 防止重复调用
-    if (this.state === STATE.FINISHED || this.state === STATE.STOPPED) {
-      return;
-    }
+    if (this.state === STATE.FINISHED || this.state === STATE.STOPPED) return;
     this.setState(STATE.FINISHED);
     this.currentNode = null;
-    this.executionSequence = [];
     this.currentLink = null;
-    this.errorNode = null; // 清除错误节点
+    this.errorNode = null;
     window.updateCurrentNode?.(null);
     window.highlightLink?.(null);
-    window.highlightErrorNode?.(null); // 清除错误高亮
+    window.highlightErrorNode?.(null);
   }
 
-  onNodeStart(node) {
-    this.currentNode = node;
-    window.updateCurrentNode?.(node);
-  }
+  // ==================== 节点执行 ====================
 
-  onNodeFinish(node) {
-    if (this.currentNode === node) {
-      this.currentNode = null;
-      window.updateCurrentNode?.(null);
-    }
-  }
+  async _runNode(node, action, targetSlot) {
+    if (!node || this.state !== STATE.RUNNING) return;
 
-  async waitUntilRunnable() {
+    // 暂停等待
     while (this.state === STATE.PAUSED) {
-      await new Promise(resolve => setTimeout(resolve, 80));
+      await new Promise(r => setTimeout(r, 80));
     }
-    return this.state === STATE.RUNNING;
-  }
+    if (this.state !== STATE.RUNNING) return;
 
-  // 构建执行序列
-  _buildExecutionSequence(startNode) {
-    const graph = this.getGraph?.();
-    if (!graph) return;
-
-    this.executionSequence = [startNode];
-    this._appendNextNodes(startNode);
-  }
-
-  // 递归添加后续节点
-  _appendNextNodes(node) {
-    console.log(`[WorkflowController] _appendNextNodes: 处理节点 ${node.title}, 当前序列: ${this.executionSequence.map(n => n.title).join(", ")}`);
-
-    if (!node.outputs) return;
-
-    const graph = this.getGraph?.();
-    if (!graph) return;
-
-    for (const output of node.outputs) {
-      if (!output.links || output.links.length === 0) continue;
-
-      for (const linkId of output.links) {
-        const link = graph.links[linkId];
-        if (!link) continue;
-
-        const targetNode = graph._nodes.find(n => n.id === link.target_id);
-        console.log(`[WorkflowController] _appendNextNodes: 找到连接 ${node.title} -> ${targetNode?.title || 'unknown'}`);
-        if (targetNode && !this.executionSequence.includes(targetNode)) {
-          this.executionSequence.push(targetNode);
-          console.log(`[WorkflowController] _appendNextNodes: 添加节点 ${targetNode.title}, 序列: ${this.executionSequence.map(n => n.title).join(", ")}`);
-          this._appendNextNodes(targetNode);
-        } else if (targetNode) {
-          console.log(`[WorkflowController] _appendNextNodes: 节点 ${targetNode.title} 已在序列中，跳过`);
-        }
-      }
-    }
-  }
-
-  // 执行下一个节点
-  async _executeNext() {
-    if (this.state !== STATE.RUNNING || this.executionSequence.length === 0) {
-      if (this.executionSequence.length === 0 && this.state === STATE.RUNNING) {
-        this.finish();
-      }
-      return;
-    }
-
-    // 检查点1：onAction前检查暂停状态
-    await this.waitUntilRunnable();
-
-    const node = this.executionSequence[0];
-    console.log(`[WorkflowController] 执行节点: ${node.title} (id: ${node.id}), 剩余节点: ${this.executionSequence.length}`);
-
-    // 先高亮节点
-    this.onNodeStart(node);
+    this.currentNode = node;
+    this.nodeExecutionStartTime = Date.now();
+    window.updateCurrentNode?.(node);
     window.highlightNode?.(node);
-
-    // 高亮连接线（从上一个节点到当前节点）
-    if (this.executionSequence.length > 1) {
-      const prevNode = this.executionSequence[1];
-      const link = this._findLinkBetweenNodes(prevNode, node);
-      if (link) {
-        this.currentLink = link;
-        window.highlightLink?.(link);
-      }
-    }
 
     // 节点延迟
     const delay = window.getNodeDelay?.() || 0;
-    if (delay > 0) {
-      console.log(`[WorkflowController] 节点延迟: ${delay}ms`);
-      await new Promise(resolve => setTimeout(resolve, delay));
-    }
-
-    // 记录节点执行开始时间
-    this.nodeExecutionStartTime = Date.now();
+    if (delay > 0) await new Promise(r => setTimeout(r, delay));
 
     try {
-      await node.onAction?.("flow");
+      await node.onAction?.(action, null, null, targetSlot);
     } catch (err) {
-      console.error(`[WorkflowController] 节点执行错误:`, err);
-      // 取消正常高亮，设置错误节点（红色高亮）
+      console.error(`[Workflow] 节点 ${node.title} 失败:`, err);
       window.unhighlightNode?.(node);
       this.setErrorNode(node);
-      // 停止流程
       this.stop();
-      // 显示错误信息
       window.showToast?.(`节点 ${node.title} 执行失败: ${err.message}`, "error");
       return;
     }
 
-    // 检查点2：onAction后检查暂停状态
-    await this.waitUntilRunnable();
-
-    // 移除已执行的节点（在onAction完成后）
-    // 注意：如果节点在onAction中修改了executionSequence，需要确保移除的是正确的节点
-    const index = this.executionSequence.indexOf(node);
-    if (index !== -1) {
-      this.executionSequence.splice(index, 1);
-    } else {
-      console.warn(`[WorkflowController] 节点 ${node.title} 不在序列中，当前序列: ${this.executionSequence.map(n => n.title).join(", ")}`);
-    }
-
-    // 取消高亮
+    // 执行完成后清理
+    this.nodeExecutionStartTime = null;
+    this.currentNode = null;
     window.unhighlightNode?.(node);
     window.highlightLink?.(null);
     this.currentLink = null;
-    this.onNodeFinish(node);
-
-    // 清除节点执行开始时间
-    this.nodeExecutionStartTime = null;
-
-    console.log(`[WorkflowController] 节点 ${node.title} 执行完成，剩余节点: ${this.executionSequence.length}, 序列: ${this.executionSequence.map(n => n.title).join(", ")}`);
-
-    // 继续执行下一个
-    if (this.state === STATE.RUNNING) {
-      this._executeNext();
-    }
+    window.updateCurrentNode?.(null);
   }
 
-  // 查找两个节点之间的连接线
-  _findLinkBetweenNodes(sourceNode, targetNode) {
-    const graph = this.getGraph?.();
-    if (!graph) return null;
+  // ==================== 工具 ====================
 
-    for (const linkId in graph.links) {
-      const link = graph.links[linkId];
-      if (link.source_id === sourceNode.id && link.target_id === targetNode.id) {
-        return link;
-      }
-    }
-    return null;
+  waitUntilRunnable() {
+    return this.state === STATE.RUNNING;
   }
 
-  // 开始后端请求计时
   startRequest() {
-    this.requestStartTime = Date.now();
-    this.lastPingTime = Date.now();
+    this.nodeExecutionStartTime = Date.now();
   }
 
-  // 收到后端ping响应，计算网络延迟
-  onPingResponse() {
-    if (this.requestStartTime) {
-      this.lastBackendDelay = Date.now() - this.requestStartTime;
-      this.requestStartTime = null;
-    }
-    this.lastPingTime = Date.now();
-  }
-
-  // 结束后端请求计时（保留用于兼容，实际延迟由onPingResponse计算）
   endRequest() {
-    // 如果没有收到ping响应，则使用当前时间计算（兼容旧逻辑）
-    if (this.requestStartTime) {
-      this.lastBackendDelay = Date.now() - this.requestStartTime;
-      this.requestStartTime = null;
-    }
+    this.nodeExecutionStartTime = null;
   }
 
-  // 检查ping超时
-  checkPingTimeout() {
-    if (this.lastPingTime && this.state === STATE.RUNNING) {
-      const elapsed = Date.now() - this.lastPingTime;
-      if (elapsed > this.pingTimeout) {
-        console.log(`[WorkflowController] Ping超时检查: ${elapsed}ms > ${this.pingTimeout}ms`);
-        console.log(`[WorkflowController] 当前节点: ${this.currentNode?.title || 'unknown'}`);
-        console.log(`[WorkflowController] 最后ping时间: ${new Date(this.lastPingTime).toISOString()}`);
-        
-        // 只有在没有正在执行的节点时才报告超时
-        if (!this.currentNode) {
-          throw new Error(`Ping超时: ${elapsed}ms > ${this.pingTimeout}ms`);
-        } else {
-          console.log(`[WorkflowController] 节点正在执行，忽略ping超时`);
-        }
-      }
-    }
+  setErrorNode(node) {
+    this.errorNode = node;
+    window.highlightErrorNode?.(node);
   }
 
-  // 检查节点执行超时
+  clearErrorNode() {
+    this.errorNode = null;
+    window.highlightErrorNode?.(null);
+  }
+
   checkNodeTimeout() {
     if (this.nodeExecutionStartTime && this.state === STATE.RUNNING) {
       const elapsed = Date.now() - this.nodeExecutionStartTime;
@@ -1174,38 +1180,21 @@ class WorkflowController {
     }
   }
 
-  // 设置错误节点（红色高亮）
-  setErrorNode(node) {
-    this.errorNode = node;
-    window.highlightErrorNode?.(node);
-  }
-
-  // 清除错误节点
-  clearErrorNode() {
-    this.errorNode = null;
-    window.highlightErrorNode?.(null);
-  }
-
-  // 启动超时检查器
   _startTimeoutChecker() {
     this.timeoutCheckInterval = setInterval(() => {
       if (this.state === STATE.RUNNING) {
         try {
-          this.checkPingTimeout();
           this.checkNodeTimeout();
         } catch (err) {
-          console.error(`[WorkflowController] 超时检查失败:`, err);
-          if (this.currentNode) {
-            this.setErrorNode(this.currentNode);
-          }
+          console.error(err);
+          if (this.currentNode) this.setErrorNode(this.currentNode);
           this.stop();
           window.showToast?.(`超时错误: ${err.message}`, "error");
         }
       }
-    }, 1000); // 每秒检查一次
+    }, 1000);
   }
 
-  // 停止超时检查器
   _stopTimeoutChecker() {
     if (this.timeoutCheckInterval) {
       clearInterval(this.timeoutCheckInterval);
@@ -1213,42 +1202,15 @@ class WorkflowController {
     }
   }
 
-  // 在指定位置插入节点到执行序列
-  _insertNodeAfter(node, insertAfterNode) {
-    const index = this.executionSequence.indexOf(insertAfterNode);
-    console.log(`[WorkflowController] _insertNodeAfter: 插入节点 ${node.title} 到 ${insertAfterNode.title} 之后, index=${index}, 当前序列: ${this.executionSequence.map(n => n.title).join(", ")}`);
-
-    if (index !== -1) {
-      // 移除insertAfterNode之后的所有节点
-      this.executionSequence = this.executionSequence.slice(0, index + 1);
-      // 添加新节点
-      this.executionSequence.push(node);
-      console.log(`[WorkflowController] _insertNodeAfter: 插入后序列: ${this.executionSequence.map(n => n.title).join(", ")}`);
-      // 重新构建后续节点序列
-      this._appendNextNodes(node);
-      console.log(`[WorkflowController] _insertNodeAfter: _appendNextNodes后序列: ${this.executionSequence.map(n => n.title).join(", ")}`);
-    } else {
-      console.warn(`[WorkflowController] _insertNodeAfter: 未找到insertAfterNode ${insertAfterNode.title}, 将直接添加到序列末尾`);
-      // 如果找不到insertAfterNode，直接添加到序列末尾
-      this.executionSequence.push(node);
-      console.log(`[WorkflowController] _insertNodeAfter: 添加后序列: ${this.executionSequence.map(n => n.title).join(", ")}`);
-      // 重新构建后续节点序列
-      this._appendNextNodes(node);
-      console.log(`[WorkflowController] _insertNodeAfter: _appendNextNodes后序列: ${this.executionSequence.map(n => n.title).join(", ")}`);
-    }
-  }
-
   _findStartNode() {
     const graph = this.getGraph?.();
     if (!graph) return null;
-
-    const startNode = graph._nodes.find(node => node.type === "flow/start");
-    if (!startNode) {
-      window.showToast?.("未找到 Start 节点，请添加流程起点", "error");
+    const node = graph._nodes.find(n => n.type === "flow/start");
+    if (!node) {
+      window.showToast?.("未找到 Start 节点", "error");
       this.setState(STATE.IDLE);
-      return null;
     }
-    return startNode;
+    return node;
   }
 }
 
@@ -1260,13 +1222,13 @@ const STATE = {
   FINISHED: "finished",
 };
 
+
 // ── core/action-node.js ──
 
 class ActionNode extends LiteGraph.LGraphNode {
   constructor(title) {
     super();
     this.title = title;
-    this._running = false;
   }
 
   _controller() {
@@ -1277,58 +1239,62 @@ class ActionNode extends LiteGraph.LGraphNode {
     return window.taskflow?.backend;
   }
 
-  async _waitControllerReady() {
-    const controller = this._controller();
-    if (!controller) return false;
-    return controller.waitUntilRunnable();
-  }
-
   async callBackend(taskName, properties, timeout = 30000) {
     const backend = this._backend();
-    if (!backend) {
-      throw new Error("Taskflow backend is not ready");
-    }
-    
-    // 添加账号信息到请求参数
+    if (!backend) throw new Error("Taskflow backend is not ready");
     const propertiesWithAccount = window.accountManager?.addAccountToParams(properties) || properties;
-    
     const controller = this._controller();
     controller?.startRequest?.();
     const response = await backend.invoke(taskName, propertiesWithAccount, timeout);
+    if (response?.data?.error) {
+      const m = response.data.error;
+      if (m.includes("连接已断开") || m.includes("Target closed") || m.includes("has been closed")) {
+        throw new Error(m);
+      }
+    }
     return response;
   }
 
   async run(action) {
-    if (this._running) return;
-
     if (action && action !== "trigger" && action !== "flow") return;
 
     const canRun = await this._waitControllerReady();
     if (!canRun) return;
 
-    this._running = true;
     this._controller()?.onNodeStart?.(this);
     await reportNodeEvent(this, "start", { action });
 
     try {
       await this.onRun();
       await reportNodeEvent(this, "success");
-      const stillRunnable = await this._waitControllerReady();
-      if (stillRunnable) {
-        this.triggerSlot(0);
-      }
+      // 执行完成后驱动 slot 0（下一步）
+      // 非 ActionNode 子类可覆盖此行为
+      await this.execOutput(0);
     } catch (error) {
       await reportNodeEvent(this, "error", { message: error.message || String(error) });
       console.error(`[${this.title}]`, error);
       window.showToast?.(`${this.title} 执行失败: ${error.message}`, "error");
       this._controller()?.stop();
     } finally {
-      this._running = false;
       this._controller()?.onNodeFinish?.(this);
     }
   }
 
   async onRun() {}
+
+  async _waitControllerReady() {
+    const ctrl = this._controller();
+    if (!ctrl) return false;
+    while (ctrl.state === "paused") {
+      await new Promise(r => setTimeout(r, 80));
+    }
+    return ctrl.state === "running";
+  }
+
+  log(message, level = "info") {
+    const title = this.title || this.constructor.title || "节点";
+    window.taskflowLog?.(level, `[${title}] ${message}`);
+  }
 }
 
 
@@ -1698,6 +1664,7 @@ function createNodeButton(entry, sortMode) {
   btn.className = "node-button";
 
   if (sortMode === "frequency") {
+    // 显示频率标记
     const freq = entry.freq;
     const freqBadge = freq > 0 ? ` <span class="node-freq-badge">${freq}</span>` : "";
     btn.innerHTML = `${entry.title}${freqBadge}`;
@@ -1727,12 +1694,15 @@ function createNodeButton(entry, sortMode) {
 
     // 记录频率并重新渲染
     recordNodeUse(entry.type);
+    // 直接更新频率数字，避免全量重排闪烁
     const freqEl = btn.querySelector(".node-freq-badge");
     if (freqEl) {
       freqEl.textContent = getFrequency(entry.type);
     } else if (sortMode === "frequency") {
       btn.innerHTML = `${entry.title} <span class="node-freq-badge">${getFrequency(entry.type)}</span>`;
     }
+    // 全量重渲染（确保排序更新）
+    // 改为节流，避免频繁重绘
     scheduleRender();
   });
 
@@ -1817,17 +1787,17 @@ function formatCategoryName(category) {
   });
 })();
 
+
 // ── core/runtime-panel.js ──
 // taskflow/core/runtime-panel.js
 
 function initRuntimePanel() {
   const panel = document.getElementById("runtime-panel");
   const header = document.getElementById("runtime-drag");
-  const toggle = document.getElementById("runtime-toggle");
-
   let dragging = false, offsetX = 0, offsetY = 0;
 
   header.addEventListener("mousedown", e => {
+    if (e.target.tagName === "BUTTON") return;
     dragging = true;
     const rect = panel.getBoundingClientRect();
     offsetX = e.clientX - rect.left;
@@ -1859,8 +1829,6 @@ function initRuntimePanel() {
       panel.style.transition = "transform 0.2s ease, height 0.25s ease, box-shadow 0.2s ease";
     }
   });
-
-  toggle.addEventListener("click", () => panel.classList.toggle("collapsed"));
 
   // ===== 控制按钮 =====
   const btnStart = document.getElementById("btn-start");
@@ -1920,8 +1888,8 @@ function initRuntimePanel() {
     return window.workflowController;
   }
 
-  btnStart.onclick = () => {
-    getController()?.start();
+  btnStart.onclick = async () => {
+    await getController()?.start();
     // 状态由workflow-controller管理，通过updateRuntimeState更新
   };
   btnPause.onclick = () => {
@@ -1985,6 +1953,44 @@ function initRuntimePanel() {
   updateRunButtons();
 }
 
+// ===== 模块级事件委托：折叠按钮 =====
+// 使用 document 委托确保即使 initRuntimePanel 未执行也能正常工作
+document.addEventListener("click", (e) => {
+  const btn = e.target.closest("#runtime-toggle");
+  if (!btn) return;
+
+  const p = document.getElementById("runtime-panel");
+  if (!p) return;
+
+  const isCollapsed = p.classList.contains("collapsed");
+  const COLLAPSED_H = 36;
+
+  if (isCollapsed) {
+    p.classList.remove("collapsed");
+    const fullH = p.scrollHeight;
+    p.classList.add("collapsed");
+    p.style.height = COLLAPSED_H + "px";
+    p.style.overflow = "hidden";
+    void p.offsetHeight;
+    p.classList.remove("collapsed");
+    p.style.height = fullH + "px";
+  } else {
+    const curH = p.offsetHeight;
+    p.style.height = curH + "px";
+    p.style.overflow = "hidden";
+    void p.offsetHeight;
+    p.classList.add("collapsed");
+    p.style.height = COLLAPSED_H + "px";
+  }
+
+  const cleanup = () => {
+    p.style.height = "";
+    p.style.overflow = "";
+  };
+  p.addEventListener("transitionend", cleanup, { once: true });
+  setTimeout(cleanup, 300);
+});
+
 
 // ── core/control-panel.js ──
 // taskflow/core/control-panel.js
@@ -2018,12 +2024,16 @@ function applyExecutionOrderState(visible) {
   });
 }
 
+let _initialized = false;
 function initControlPanel() {
+  if (_initialized) { console.warn("[ControlPanel] 重复调用 initControlPanel，跳过"); return; }
+  _initialized = true;
   const saveBtn = document.getElementById("btn-save");
   const loadBtn = document.getElementById("btn-load");
   const clearBtn = document.getElementById("btn-clear");
   const fileInput = document.getElementById("file-input");
   const orderToggle = document.getElementById("toggle-node-order");
+  const linkStyleSelect = document.getElementById("select-link-style");
   const nodeDelayInput = document.getElementById("node-delay-input");
 
   const btnStart = document.getElementById("btn-start");
@@ -2105,6 +2115,16 @@ function initControlPanel() {
     );
   }
 
+  function applyLinkStyleState(mode) {
+    tabs.forEach(tab => {
+      const canvas = tab.graphCanvas;
+      if (!canvas) return;
+      canvas.links_render_mode = mode;
+      canvas.setDirty(true, true);
+      canvas.draw(true, true);
+    });
+  }
+
   function updateControlUI(state) {
     btnStart.disabled = state === "running";
     btnPause.disabled = state !== "running";
@@ -2116,39 +2136,232 @@ function initControlPanel() {
     item.addEventListener("click", () => setMode(item.dataset.mode));
   });
 
-  saveBtn.onclick = () => {
+  saveBtn.onclick = async () => {
     const tab = currentTab;
     if (!tab) return;
 
     const data = tab.graph.serialize();
-    const blob = new Blob([JSON.stringify(data, null, 2)], {
-      type: "application/json"
+    const jsonStr = JSON.stringify(data, null, 2);
+
+    // 获取已有工作流列表用于展示
+    let existingFiles = [];
+    try {
+      const resp = await fetch("/api/list_workflows");
+      const result = await resp.json();
+      if (result.success) existingFiles = result.files || [];
+    } catch (_) {}
+
+    // 创建保存对话框
+    const picker = document.createElement("div");
+    picker.id = "workflow-save-picker";
+    picker.style.cssText =
+      "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);" +
+      "background:#2a2a2a;border:1px solid #555;border-radius:8px;" +
+      "padding:16px;z-index:10000;min-width:320px;max-height:460px;overflow-y:auto;" +
+      "box-shadow:0 4px 20px rgba(0,0,0,0.5);";
+    picker.innerHTML = `<h3 style="margin:0 0 12px;color:#eee;font-size:16px;">保存工作流</h3>`;
+
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.value = "workflow";
+    nameInput.style.cssText =
+      "width:calc(100% - 16px);padding:8px;margin-bottom:12px;border:1px solid #555;" +
+      "border-radius:4px;background:#3a3a3a;color:#eee;font-size:14px;outline:none;";
+    nameInput.placeholder = "输入文件名";
+    picker.appendChild(nameInput);
+
+    const hint = document.createElement("div");
+    hint.style.cssText = "color:#888;font-size:12px;margin-bottom:8px;";
+    hint.textContent = "点击下方已有文件可覆盖保存：";
+    picker.appendChild(hint);
+
+    const list = document.createElement("div");
+    list.style.cssText = "max-height:200px;overflow-y:auto;margin-bottom:12px;";
+    existingFiles.forEach(file => {
+      const item = document.createElement("div");
+      item.style.cssText =
+        "padding:6px 10px;margin:3px 0;background:#3a3a3a;border-radius:4px;" +
+        "cursor:pointer;color:#aaa;font-size:13px;transition:background .15s;";
+      item.textContent = file;
+      item.onmouseenter = () => { item.style.background = "#4a4a4a"; };
+      item.onmouseleave = () => { item.style.background = "#3a3a3a"; };
+      item.onclick = () => { nameInput.value = file.replace(/\.json$/, ""); };
+      list.appendChild(item);
     });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
+    if (!existingFiles.length) {
+      hint.textContent = "（暂无已保存的工作流）";
+    }
+    picker.appendChild(list);
 
-    a.href = url;
-    a.download = "workflow.json";
-    a.click();
+    // 按钮行
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display:flex;gap:8px;justify-content:flex-end;";
 
-    URL.revokeObjectURL(url);
-    showToast("已保存当前流程", "success");
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "取消";
+    cancelBtn.style.cssText =
+      "padding:6px 16px;background:#555;color:#eee;border:none;border-radius:4px;cursor:pointer;";
+    cancelBtn.onclick = () => picker.remove();
+    btnRow.appendChild(cancelBtn);
+
+    const saveBtn2 = document.createElement("button");
+    saveBtn2.textContent = "保存";
+    saveBtn2.style.cssText =
+      "padding:6px 16px;background:#4a9eff;color:#fff;border:none;border-radius:4px;cursor:pointer;" +
+      "font-weight:bold;";
+    saveBtn2.onclick = async () => {
+      const name = nameInput.value.trim();
+      if (!name) { showToast("请输入文件名", "warn"); return; }
+      try {
+        const resp = await fetch("/api/save_workflow", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, content: jsonStr }),
+        });
+        const result = await resp.json();
+        if (result.success) {
+          showToast(`已保存: ${name}.json`, "success");
+        } else {
+          showToast(`保存失败: ${result.error}`, "error");
+        }
+      } catch (e) {
+        showToast(`保存失败: ${e.message}`, "error");
+      }
+      picker.remove();
+    };
+    btnRow.appendChild(saveBtn2);
+    picker.appendChild(btnRow);
+
+    document.body.appendChild(picker);
+    nameInput.focus();
+    nameInput.select();
   };
 
-  loadBtn.onclick = () => {
-    fileInput.value = "";
-    fileInput.click();
+  loadBtn.onclick = async () => {
+    // 获取可用工作流列表
+    try {
+      const resp = await fetch("/api/list_workflows");
+      const result = await resp.json();
+      const files = result.success ? (result.files || []) : [];
+
+      // 动态创建加载选择器
+      let picker = document.getElementById("workflow-picker");
+      if (!picker) {
+        picker = document.createElement("div");
+        picker.id = "workflow-picker";
+        picker.style.cssText =
+          "position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);" +
+          "background:#2a2a2a;border:1px solid #555;border-radius:8px;" +
+          "padding:16px;z-index:10000;min-width:320px;max-height:460px;overflow-y:auto;" +
+          "box-shadow:0 4px 20px rgba(0,0,0,0.5);";
+
+        const headerRow = document.createElement("div");
+        headerRow.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;";
+        const title = document.createElement("h3");
+        title.style.cssText = "margin:0;color:#eee;font-size:16px;";
+        title.textContent = "选择工作流";
+        headerRow.appendChild(title);
+
+        const browseBtn = document.createElement("span");
+        browseBtn.title = "从其他位置选择文件";
+        browseBtn.textContent = "📂";
+        browseBtn.style.cssText =
+          "font-size:20px;cursor:pointer;padding:2px 6px;border-radius:4px;transition:background .15s;" +
+          "line-height:1;";
+        browseBtn.onmouseenter = () => { browseBtn.style.background = "#444"; };
+        browseBtn.onmouseleave = () => { browseBtn.style.background = "transparent"; };
+        browseBtn.onclick = (e) => {
+          e.stopPropagation();
+          fileInput.value = "";
+          fileInput.click();
+        };
+        headerRow.appendChild(browseBtn);
+        picker.appendChild(headerRow);
+
+        const list = document.createElement("div");
+        list.id = "wp-list";
+        list.style.cssText = "max-height:300px;overflow-y:auto;margin-bottom:12px;";
+        picker.appendChild(list);
+
+        const closeBtn = document.createElement("button");
+        closeBtn.textContent = "取消";
+        closeBtn.style.cssText =
+          "padding:6px 16px;background:#555;color:#eee;border:none;border-radius:4px;cursor:pointer;";
+        closeBtn.onclick = () => picker.remove();
+        picker.appendChild(closeBtn);
+        document.body.appendChild(picker);
+      } else {
+        picker.style.display = "block";
+      }
+
+      const list = document.getElementById("wp-list");
+      list.innerHTML = "";
+      if (!files.length) {
+        const empty = document.createElement("div");
+        empty.style.cssText = "color:#888;font-size:13px;text-align:center;padding:20px 0;";
+        empty.textContent = "script/ 目录为空，点击右上角 📂 选择其他文件";
+        list.appendChild(empty);
+      } else {
+        files.forEach(file => {
+          const item = document.createElement("div");
+          item.style.cssText =
+            "padding:8px 12px;margin:4px 0;background:#3a3a3a;border-radius:4px;" +
+            "cursor:pointer;color:#ddd;transition:background .15s;";
+          item.textContent = file;
+          item.onmouseenter = () => { item.style.background = "#4a4a4a"; };
+          item.onmouseleave = () => { item.style.background = "#3a3a3a"; };
+          item.onclick = async () => {
+            try {
+              const loadResp = await fetch(`/api/load_workflow?name=${encodeURIComponent(file)}`);
+              const loadResult = await loadResp.json();
+              if (!loadResult.success) {
+                showToast(`加载失败: ${loadResult.error}`, "error");
+                return;
+              }
+
+              let tab = currentTab;
+              if (!tab) {
+                showToast("没有当前标签页，正在创建新标签页", "info");
+                // (离线模式: createTab 已在 bundle 中)
+                createTab();
+                tab = currentTab;
+                if (!tab) {
+                  showToast("创建标签页失败", "error");
+                  return;
+                }
+              }
+
+              const graphData = JSON.parse(loadResult.content);
+              const graph = tab.graph;
+              graph.clear();
+              graph.configure(graphData);
+
+              console.log(`[Load] 加载完成: ${file}, 节点数: ${graph._nodes.length}`);
+              tab.graphCanvas.render_execution_order = showExecutionOrder;
+              tab.graphCanvas.setDirty(true, true);
+              showToast(`已加载：${file}`, "success");
+            } catch (e) {
+              showToast(`加载失败: ${e.message}`, "error");
+            }
+            picker.remove();
+          };
+          list.appendChild(item);
+        });
+      }
+    } catch (e) {
+      showToast(`获取工作流列表失败: ${e.message}`, "error");
+    }
   };
 
+  // 文件选择器：加载任意位置的 .json 工作流
+  fileInput.accept = ".json";
   fileInput.onchange = async e => {
     const file = e.target.files[0];
     if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async ev => {
+    try {
+      const text = await file.text();
       let tab = currentTab;
       if (!tab) {
-        // 如果没有当前tab，创建一个新的
         showToast("没有当前标签页，正在创建新标签页", "info");
         // (离线模式: createTab 已在 bundle 中)
         createTab();
@@ -2158,25 +2371,19 @@ function initControlPanel() {
           return;
         }
       }
-
-      const data = JSON.parse(ev.target.result);
+      const graphData = JSON.parse(text);
       const graph = tab.graph;
-
-      // 清空当前graph
       graph.clear();
-
-      // 直接使用graph.configure加载完整数据
-      graph.configure(data);
-
-      console.log(`[Load] 加载完成，节点数: ${graph._nodes.length}, 连接数: ${graph.links.length}`);
-      console.log(`[Load] 节点列表:`, graph._nodes.map(n => ({id: n.id, type: n.type, title: n.title})));
-
+      graph.configure(graphData);
       tab.graphCanvas.render_execution_order = showExecutionOrder;
       tab.graphCanvas.setDirty(true, true);
-      showToast(`已加载文件：${file.name}`, "success");
-    };
-
-    reader.readAsText(file);
+      showToast(`已加载：${file.name}`, "success");
+    } catch (e) {
+      showToast(`加载失败: ${e.message}`, "error");
+    }
+    // 关闭加载选择器（如果有）
+    const picker = document.getElementById("workflow-picker");
+    if (picker) picker.remove();
   };
 
   clearBtn.onclick = () => {
@@ -2189,11 +2396,78 @@ function initControlPanel() {
     }
   };
 
-  btnStart.onclick = () => {
+  // 检查后端浏览器是否就绪
+  async function checkBrowserReady() {
+    const backend = window.taskflow?.backend;
+    if (!backend) {
+      return { ready: false, reason: "后端服务未连接" };
+    }
+
+    const ws = backend.wsManager?.ws;
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return { ready: false, reason: "与后端的WebSocket连接未建立" };
+    }
+
+    const account = backend.getCurrentTabAccount();
+    if (!account || !account.email) {
+      return { ready: false, reason: "当前标签页未绑定账号" };
+    }
+
+    // 快速检查浏览器状态（5秒超时）
+    try {
+      const response = await backend.invoke("account_operation", {
+        operation: "get_status",
+        parameters: {}
+      }, 5000);
+
+      const data = response?.data;
+      if (data?.result?.has_browser) {
+        return { ready: true, account };
+      }
+      return { ready: false, reason: `账号 "${account.name}" 的浏览器未启动，请先在主界面启动浏览器` };
+    } catch {
+      return { ready: false, reason: `账号 "${account.name}" 的浏览器未启动，请先在主界面启动浏览器` };
+    }
+  }
+
+  // 显示模态警告弹窗
+  function showWarningModal(message) {
+    const existing = document.getElementById("warning-modal-overlay");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "warning-modal-overlay";
+    overlay.className = "warning-modal-overlay";
+
+    overlay.innerHTML = `
+      <div class="warning-modal">
+        <div class="warning-modal-header">
+          <span class="warning-icon">!</span>
+          <span>警告</span>
+        </div>
+        <div class="warning-modal-body">${message}</div>
+        <div class="warning-modal-footer">
+          <button class="warning-modal-btn">确定</button>
+        </div>
+      </div>
+    `;
+
+    overlay.querySelector(".warning-modal-btn").onclick = () => overlay.remove();
+    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+    document.body.appendChild(overlay);
+  }
+
+  btnStart.onclick = async () => {
+    const check = await checkBrowserReady();
+    if (!check.ready) {
+      showWarningModal(check.reason);
+      return;
+    }
+
     const ctrl = getController();
     if (!ctrl) return;
 
-    const ok = ctrl.start();
+    const ok = await ctrl.start();
     if (!ok) return;
 
     showToast("开始运行", "success");
@@ -2226,8 +2500,32 @@ function initControlPanel() {
     updateControlUI(ctrl.state);
   };
 
-  orderToggle?.addEventListener("change", e => {
-    updateExecutionOrder(e.target.checked);
+  // 节点顺序开关 — 拦截 label 默认行为防止浏览器双重触发
+  const orderLabel = orderToggle?.closest("label");
+  orderLabel?.addEventListener("click", e => {
+    e.preventDefault();
+    const newState = !orderToggle.checked;
+    orderToggle.checked = newState;
+    updateExecutionOrder(newState);
+  });
+
+  // 连线样式下拉
+  // LiteGraph 命名与字面相反：STRAIGHT_LINK=直角折线，LINEAR_LINK=接近直线
+  const LINK_STYLE_MAP = {
+    spline: LiteGraph.SPLINE_LINK,
+    straight: LiteGraph.LINEAR_LINK,
+    linear: LiteGraph.STRAIGHT_LINK,
+  };
+  const LINK_STYLE_LABEL = {
+    spline: "曲线",
+    straight: "直线",
+    linear: "直角线",
+  };
+  linkStyleSelect?.addEventListener("change", e => {
+    const mode = LINK_STYLE_MAP[e.target.value];
+    if (mode == null) return;
+    applyLinkStyleState(mode);
+    showToast(`连线样式: ${LINK_STYLE_LABEL[e.target.value]}`, "info");
   });
 
   nodeDelayInput?.addEventListener("input", e => {
@@ -2269,7 +2567,35 @@ document.addEventListener("mouseup", () => {
 });
 
 controlToggle.addEventListener("click", () => {
-  controlPanel.classList.toggle("collapsed");
+  const isCollapsed = controlPanel.classList.contains("collapsed");
+  const COLLAPSED_H = 32;
+
+  if (isCollapsed) {
+    // === 展开动画 ===
+    controlPanel.classList.remove("collapsed");
+    const fullH = controlPanel.scrollHeight;
+    controlPanel.classList.add("collapsed");
+    controlPanel.style.height = COLLAPSED_H + "px";
+    controlPanel.style.overflow = "hidden";
+    void controlPanel.offsetHeight;
+    controlPanel.classList.remove("collapsed");
+    controlPanel.style.height = fullH + "px";
+  } else {
+    // === 折叠动画 ===
+    const curH = controlPanel.offsetHeight;
+    controlPanel.style.height = curH + "px";
+    controlPanel.style.overflow = "hidden";
+    void controlPanel.offsetHeight;
+    controlPanel.classList.add("collapsed");
+    controlPanel.style.height = COLLAPSED_H + "px";
+  }
+
+  const cleanup = () => {
+    controlPanel.style.height = "";
+    controlPanel.style.overflow = "";
+  };
+  controlPanel.addEventListener("transitionend", cleanup, { once: true });
+  setTimeout(cleanup, 300);
 });
 
 
@@ -2480,12 +2806,20 @@ window.accountAPI = accountAPI;
 
 
 // ── js/tab.js ──
+/**
+ * Fix tab.js: use dynamic getTabBar() instead of cached import reference.
+ * The cached tabBar from state.js can become stale if the DOM element is replaced.
+ */
+
+function getTabBar() {
+  return document.getElementById("tab-bar");
+}
 
 function createTab(customTitle = null) {
 
   // 检查是否已存在相同标题的tab
   if (customTitle) {
-    const existingTab = tabs.find(tab => 
+    const existingTab = tabs.find(tab =>
       tab.btn.querySelector('span')?.textContent === customTitle
     );
     if (existingTab) {
@@ -2503,9 +2837,9 @@ function createTab(customTitle = null) {
   btn.onclick = () => switchTab(tabId);
 
   const span = document.createElement("span");
-  
+
   console.log(`[Tab] createTab called with customTitle:`, customTitle);
-  
+
   // 如果有自定义标题，使用自定义标题，否则使用默认标题
   if (customTitle) {
     span.textContent = customTitle;
@@ -2514,7 +2848,7 @@ function createTab(customTitle = null) {
     span.textContent = "Tab " + (tabs.length + 1);
     console.log(`[Tab] Using default title: Tab ${tabs.length + 1}`);
   }
-  
+
   btn.appendChild(span);
 
   // ===== 重命名 =====
@@ -2547,70 +2881,7 @@ function createTab(customTitle = null) {
   btn.appendChild(closeBtn);
 
   // 确保tab插入到+号按钮前面
-if (tabBar) {
-    // 重新获取newTabBtn确保它在DOM中
-    const currentNewTabBtn = document.getElementById("new-tab-btn");
-    
-    if (currentNewTabBtn && tabBar.contains(currentNewTabBtn)) {
-        // 确保newTabBtn可见且在正确位置
-        currentNewTabBtn.style.display = 'inline-block';
-        currentNewTabBtn.style.visibility = 'visible';
-        
-        // 插入到+号按钮前面
-        tabBar.insertBefore(btn, currentNewTabBtn);
-        console.log('[Tab] 使用insertBefore插入成功，+号按钮保持可见');
-    } else {
-        // 如果找不到newTabBtn，创建它并添加到tabBar
-        if (!currentNewTabBtn) {
-            const newBtn = document.createElement("button");
-            newBtn.id = "new-tab-btn";
-            newBtn.textContent = "+";
-            newBtn.className = "new-tab-btn";
-            newBtn.onclick = () => {
-                showTabCreationDropdown();
-            };
-            tabBar.appendChild(newBtn);
-            console.log('[Tab] 重新创建+号按钮');
-        }
-        
-        // 然后插入tab按钮
-        const retryNewTabBtn = document.getElementById("new-tab-btn");
-        if (retryNewTabBtn) {
-            tabBar.insertBefore(btn, retryNewTabBtn);
-            console.log('[Tab] 插入到重新创建的+号按钮前');
-        } else {
-            tabBar.appendChild(btn);
-            console.log('[Tab] 添加到末尾');
-        }
-    }
-} else {
-    console.warn('[Tab] tabBar未找到，延迟插入');
-    setTimeout(() => {
-        const retryTabBar = document.getElementById("tab-bar");
-        if (retryTabBar) {
-            // 确保tab-bar中有+号按钮
-            let retryNewTabBtn = document.getElementById("new-tab-btn");
-            if (!retryNewTabBtn) {
-                const newBtn = document.createElement("button");
-                newBtn.id = "new-tab-btn";
-                newBtn.textContent = "+";
-                newBtn.className = "new-tab-btn";
-                newBtn.onclick = () => {
-                    if (typeof createTab === 'function') {
-                        createTab();
-                    }
-                };
-                retryTabBar.appendChild(newBtn);
-                retryNewTabBtn = newBtn;
-                console.log('[Tab] 延迟重新创建+号按钮');
-            }
-            
-            // 插入tab按钮
-            retryTabBar.insertBefore(btn, retryNewTabBtn);
-            console.log('[Tab] 延迟插入成功，+号按钮保持可见');
-        }
-    }, 100);
-}
+  insertTabButton(btn, tabId);
 
   // ===== canvas =====
   const canvas = document.createElement("canvas");
@@ -2622,9 +2893,12 @@ if (tabBar) {
 
   const graph = new LGraph();
   const graphCanvas = new LGraphCanvas(canvas, graph);
+  graphCanvas.render_connection_arrows = false; // 关闭连线上的箭头
+  graphCanvas.render_link_tooltip = false;      // 关闭连线中点的悬停圆点（点击连接线菜单入口）
 
-  // 节点顺序显示
-  // graphCanvas.render_execution_order = true;
+  // 全局关闭 widget 弹出式菜单/编辑器，所有修改走属性编辑器（双击节点）
+  LiteGraph.disable_combo_menu = true;          // combo 下拉菜单
+  LiteGraph.disable_inline_editor = true;       // string/text 内联编辑
 
   graph.checkWorkflowStop = function(node, canvas) {
 
@@ -2681,12 +2955,12 @@ if (tabBar) {
   // 绑定账号信息到tab
   const accountInfo = window.accountInfo || { name: 'default', email: 'default@example.com' };
   console.log(`[Tab] 绑定账号信息到tab ${tabId}:`, accountInfo);
-  
-  const tabObj = { 
-    id: tabId, 
-    btn, 
-    canvas, 
-    graph, 
+
+  const tabObj = {
+    id: tabId,
+    btn,
+    canvas,
+    graph,
     graphCanvas,
     account: accountInfo  // 绑定账号信息到tab
   };
@@ -2698,6 +2972,97 @@ if (tabBar) {
   setTimeout(() => {
     resizeCanvas(canvas);
   }, 0);
+}
+
+/**
+ * Insert a tab button into the tab bar before the "+" button.
+ * Uses live DOM lookup to avoid stale reference issues.
+ */
+function insertTabButton(btn, tabId) {
+  const tabBar = getTabBar();
+  if (!tabBar) {
+    console.warn('[Tab] tabBar未找到，延迟插入');
+    setTimeout(() => {
+      const retryTabBar = document.getElementById("tab-bar");
+      if (retryTabBar) {
+        insertIntoBar(retryTabBar, btn);
+      }
+    }, 100);
+    return;
+  }
+
+  const newTabBtn = document.getElementById("new-tab-btn");
+
+  if (newTabBtn && tabBar.contains(newTabBtn)) {
+    // +号按钮存在且在tabBar中，直接插入前面
+    tabBar.insertBefore(btn, newTabBtn);
+    console.log('[Tab] 插入到+号按钮前');
+  } else {
+    // +号按钮不存在或不在当前tabBar中，重建
+    if (!newTabBtn) {
+      const newBtn = document.createElement("button");
+      newBtn.id = "new-tab-btn";
+      newBtn.textContent = "+";
+      newBtn.className = "new-tab-btn";
+      newBtn.onclick = () => { showTabCreationDropdown(); };
+      tabBar.appendChild(newBtn);
+      console.log('[Tab] 重新创建+号按钮');
+    }
+
+    // 检查tabBar是否在DOM中
+    if (!document.body.contains(tabBar)) {
+      console.warn('[Tab] tabBar已脱离DOM，使用实时查找');
+      const liveBar = document.getElementById("tab-bar");
+      if (liveBar) {
+        ensureNewBtnExists(liveBar);
+        liveBar.insertBefore(btn, document.getElementById("new-tab-btn"));
+        return;
+      }
+    }
+
+    const retryNewTabBtn = document.getElementById("new-tab-btn");
+    if (retryNewTabBtn && tabBar.contains(retryNewTabBtn)) {
+      tabBar.insertBefore(btn, retryNewTabBtn);
+      console.log('[Tab] 插入到重新创建的+号按钮前');
+    } else if (retryNewTabBtn) {
+      // retryNewTabBtn存在但不在tabBar中 → tabBar引用可能已失效
+      console.warn('[Tab] +号按钮不在tabBar中，尝试实时查找tabBar');
+      const liveBar = document.getElementById("tab-bar");
+      if (liveBar && liveBar !== tabBar) {
+        liveBar.insertBefore(btn, retryNewTabBtn);
+        console.log('[Tab] 使用实时tabBar插入成功');
+      } else {
+        tabBar.appendChild(btn);
+        console.log('[Tab] 添加到末尾');
+      }
+    } else {
+      tabBar.appendChild(btn);
+      console.log('[Tab] 添加到末尾');
+    }
+  }
+}
+
+function ensureNewBtnExists(bar) {
+  if (!document.getElementById("new-tab-btn")) {
+    const newBtn = document.createElement("button");
+    newBtn.id = "new-tab-btn";
+    newBtn.textContent = "+";
+    newBtn.className = "new-tab-btn";
+    newBtn.onclick = () => showTabCreationDropdown();
+    bar.appendChild(newBtn);
+  }
+}
+
+/** Insert into bar before + button (helper for delayed insertion). */
+function insertIntoBar(bar, btn) {
+  ensureNewBtnExists(bar);
+  const newBtn = document.getElementById("new-tab-btn");
+  if (newBtn && bar.contains(newBtn)) {
+    bar.insertBefore(btn, newBtn);
+  } else {
+    bar.appendChild(btn);
+  }
+  console.log('[Tab] 延迟插入成功');
 }
 
 function closeTab(tabId) {
@@ -2736,23 +3101,43 @@ function resizeCanvas(canvas) {
   if (ctx) {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   }
+
+  // 同步 LiteGraph 的 bgcanvas
+  const tab = tabs.find(t => t.canvas === canvas);
+  if (tab?.graphCanvas) {
+    const gc = tab.graphCanvas;
+    if (gc.bgcanvas && gc.bgcanvas !== canvas) {
+      gc.bgcanvas.width = canvas.width;
+      gc.bgcanvas.height = canvas.height;
+      gc.bgcanvas.style.width = canvas.style.width;
+      gc.bgcanvas.style.height = canvas.style.height;
+    }
+    gc.setDirty(true, true);
+  }
 }
+
+// 窗口缩放时自适应所有 canvas
+window.addEventListener("resize", () => {
+  tabs.forEach(tab => {
+    if (tab.canvas) resizeCanvas(tab.canvas);
+  });
+});
 
 // 显示tab创建下拉菜单
 function showTabCreationDropdown() {
     console.log('[Tab] 显示tab创建下拉菜单');
-    
+
     // 检查是否已有下拉菜单
     let dropdown = document.getElementById("tab-creation-dropdown");
     if (dropdown) {
         dropdown.remove();
     }
-    
+
     // 创建下拉菜单
     dropdown = document.createElement("div");
     dropdown.id = "tab-creation-dropdown";
     dropdown.className = "tab-creation-dropdown";
-    
+
     // 添加默认选项：新tab（空account）
     const defaultOption = document.createElement("div");
     defaultOption.className = "dropdown-item";
@@ -2778,13 +3163,17 @@ function showTabCreationDropdown() {
             accountOption.className = "dropdown-item";
             accountOption.textContent = `${account.name} (${account.email})`;
             accountOption.onclick = () => {
-                createTabWithAccount(account);
+                if (typeof window.createAccountTab === 'function') {
+                    window.createAccountTab(account);
+                } else {
+                    createTabWithAccount(account);
+                }
                 hideTabCreationDropdown();
             };
             dropdown.appendChild(accountOption);
         });
     }
-    
+
     // 定位下拉菜单
     const newTabBtn = document.getElementById("new-tab-btn");
     if (newTabBtn) {
@@ -2795,7 +3184,7 @@ function showTabCreationDropdown() {
 
         // 添加到页面
         document.body.appendChild(dropdown);
-        
+
         // 点击其他地方关闭下拉菜单
         setTimeout(() => {
             document.addEventListener('click', hideTabCreationDropdown);
@@ -2815,16 +3204,16 @@ function hideTabCreationDropdown() {
 // 使用账号信息创建tab（从下拉菜单调用）
 function createTabWithAccount(accountInfo) {
     console.log('[Tab] 使用账号信息创建tab:', accountInfo);
-    
+
     // 设置当前账号信息
     window.currentAccount = accountInfo;
     window.accountInfo = accountInfo;
-    
+
     // 使用原有的createTab函数创建tab
     if (typeof createTab === 'function') {
         // 使用账号名称作为tab标题
-        createTab(`${accountInfo.name} (${accountInfo.email})`);
-        console.log('[Tab] 已调用createTab函数，标题:', `${accountInfo.name} (${accountInfo.email})`);
+        createTab(accountInfo.name);
+        console.log('[Tab] 已调用createTab函数，标题:', accountInfo.name);
     } else {
         console.warn('[Tab] createTab函数未找到');
     }
@@ -2833,7 +3222,7 @@ function createTabWithAccount(accountInfo) {
 // 根据账号信息创建tab的独立函数（便于后续整合）
 function createTabFromAccount(accountInfo) {
     console.log('[Tab] 根据账号信息创建tab:', accountInfo);
-    
+
     // 验证账号信息
     if (!accountInfo || !accountInfo.name) {
         console.warn('[Tab] 账号信息无效，使用默认值');
@@ -2842,15 +3231,15 @@ function createTabFromAccount(accountInfo) {
             email: 'default@example.com'
         };
     }
-    
+
     // 设置当前账号信息
     window.currentAccount = accountInfo;
     window.accountInfo = accountInfo;
-    
+
     // 创建tab
     if (typeof createTab === 'function') {
-        createTab(`${accountInfo.name} (${accountInfo.email})`);
-        console.log('[Tab] 已创建账号tab，标题:', `${accountInfo.name} (${accountInfo.email})`);
+        createTab(accountInfo.name);
+        console.log('[Tab] 已创建账号tab，标题:', accountInfo.name);
         return true;
     } else {
         console.warn('[Tab] createTab函数未找到');
@@ -2881,6 +3270,16 @@ async function loadAllNodes(){
 
 
 
+
+
+
+
+
+
+
+
+
+
 }
 
 // ── js/main.js ──
@@ -2888,22 +3287,18 @@ async function loadAllNodes(){
 
 
 
-// 使用实时WebSocket端口 (ws_port + 100)
-const REALTIME_WS_PORT = WS_PORT + 100;  // 8011 + 100 = 8111
-const wsUrl = `ws://127.0.0.1:${REALTIME_WS_PORT}`;
-const ws = new WSManager(wsUrl);
+// WSManager（任务执行）连旧端口 8011，那里有 TaskDispatcher 处理 task 消息
+const TASK_WS_PORT = WS_PORT;  // 8011
+const REALTIME_WS_PORT = WS_PORT + 100;  // 8111，实时事件
 
-// 立即初始化WebSocket连接
-console.log("[Main] 开始初始化实时WebSocket连接...");
+const taskWsUrl = `ws://127.0.0.1:${TASK_WS_PORT}`;
+const ws = new WSManager(taskWsUrl);
+ws.connect(taskWsUrl);
+console.log(`[Main] WSManager已连接任务WebSocket: ${taskWsUrl}`);
 
-// 直接使用实时WebSocket端口
-const currentWsUrl = `ws://127.0.0.1:${REALTIME_WS_PORT}`;
-console.log(`[Main] 使用实时WebSocket端口: ${REALTIME_WS_PORT}`);
-console.log(`[Main] 实时WebSocket URL: ${currentWsUrl}`);
-
-// 更新WebSocket管理器的URL
-ws.url = currentWsUrl;
-console.log("[Main] WebSocket管理器URL已更新");
+// connectWebSocket（接收create_tab等命令）连实时端口 8111
+const eventWsUrl = `ws://127.0.0.1:${REALTIME_WS_PORT}`;
+console.log(`[Main] 事件WebSocket端口: ${REALTIME_WS_PORT}`);
 
 // 简单的WebSocket连接管理
 let wsConnection = null;
@@ -2931,7 +3326,7 @@ function connectWebSocket() {
     console.log('[Main] 开始连接WebSocket...');
 
     try {
-        wsConnection = new WebSocket('ws://127.0.0.1:8111');
+        wsConnection = new WebSocket(eventWsUrl);
 
         wsConnection.onopen = () => {
             console.log('[Main] WebSocket连接成功');
@@ -2979,95 +3374,59 @@ function setupMessageHandler() {
             const data = JSON.parse(event.data);
             console.log('[Main] 解析后的WebSocket数据:', data);
             
-            if (data.type === 'command') {
-                console.log('[Main] 检测到command类型消息，添加到任务队列:', data.payload);
-                // 将命令添加到任务队列
-                taskQueue.addTask({
-                    type: 'create_account_tab',
-                    data: data.payload.account_info
-                });
+            if (data.type === 'init_accounts') {
+                // 后端下发的已注册账号列表（页面刷新后重建账号池）
+                console.log('[Main] 收到账号列表:', data.accounts);
+                if (!window.accountPool) window.accountPool = [];
+                for (const acct of data.accounts) {
+                    if (!window.accountPool.find(a => a.email === acct.email)) {
+                        window.accountPool.push(acct);
+                    }
+                }
+                console.log('[Main] 账号池已重建:', window.accountPool);
+
+            } else if (data.type === 'log_output') {
+                // 后端推来的日志
+                window.taskflowLog?.(data.level || 'info', data.message);
+
+            } else if (data.type === 'command') {
+                console.log('[Main] 检测到command类型消息:', data.payload);
+
+                if (data.payload.type === 'create_tab') {
+                    // 创建新tab
+                    taskQueue.addTask({
+                        type: 'create_account_tab',
+                        data: data.payload.account_info
+                    });
+                } else if (data.payload.type === 'focus_tab') {
+                    // 聚焦已有tab
+                    const existing = tabs.find(t =>
+                        t.account && t.account.email === data.payload.account_info.email
+                    );
+                    if (existing) {
+                        console.log('[Main] 聚焦到已有tab:', existing.id, existing.account?.name);
+                        switchTab(existing.id);
+                    } else {
+                        console.log('[Main] 未找到对应tab，回退创建新tab:', data.payload.account_info);
+                        taskQueue.addTask({
+                            type: 'create_account_tab',
+                            data: data.payload.account_info
+                        });
+                    }
+                }
             }
         } catch (e) {
             console.warn('[Main] 解析WebSocket消息失败:', e);
         }
     };
     
-    // 连接成功后延迟添加账号和tab
+    // 连接成功后等待WS命令创建账号tab
     setTimeout(() => {
-        console.log('[Main] ========== 延迟添加账号和tab ==========');
-        addAccountAndCreateTab();
+        console.log('[Main] WebSocket就绪，等待后端创建账号tab...');
+        taskQueue.setWebSocketReady(true);
     }, 2000);
 }
 
-// 延迟添加账号和创建tab
-function addAccountAndCreateTab() {
-    console.log('[Main] 开始添加账号和创建tab...');
-    
-    // 设置测试账号信息
-    const testAccount = {
-        name: 'test_account',
-        email: 'test@example.com'
-    };
-    
-    // 添加账号到全局状态
-    window.accountInfo = testAccount;
-    console.log('[Main] 已设置账号信息:', testAccount);
-    
-    // 更新TaskflowBackend账号
-    if (typeof backend !== 'undefined') {
-        backend.setAccount(testAccount);
-        console.log('[Main] 已更新TaskflowBackend账号');
-    }
-    
-    // 创建tab
-    setTimeout(() => {
-        console.log('[Main] 开始创建tab...');
-        createTabWithAccount(testAccount);
-    }, 1000);
-}
-
-// 使用账号信息创建tab
-function createTabWithAccount(accountInfo) {
-    console.log('[Main] 使用账号信息创建tab:', accountInfo);
-    
-    // 设置当前账号信息
-    window.currentAccount = accountInfo;
-    
-    // 设置账号信息到全局状态
-    window.accountInfo = accountInfo;
-    
-    // 使用原有的createTab函数创建tab
-    if (typeof createTab === 'function') {
-        // 使用账号名称作为tab标题
-        createTab(accountInfo.name);
-        console.log('[Main] 已调用createTab函数，标题:', accountInfo.name);
-    } else {
-        console.warn('[Main] createTab函数未找到');
-    }
-}
-
-// 更新tab UI
-function updateTabUI() {
-    console.log('[Main] 更新tab UI...');
-    
-    // 更新tab宽度
-    if (typeof updateTabWidths === 'function') {
-        updateTabWidths();
-        console.log('[Main] 已调用updateTabWidths函数');
-    } else {
-        console.warn('[Main] updateTabWidths函数未找到');
-    }
-}
-
-// 初始化tab canvas
-function initializeTabCanvas(tab) {
-    console.log('[Main] 初始化tab canvas:', tab);
-    
-    // 这里可以添加canvas初始化逻辑
-    // 例如创建新的LiteGraph实例等
-}
-
-// 全局连接函数
 window.connectWebSocket = connectWebSocket;
 
 // 页面加载后连接WebSocket
@@ -3096,43 +3455,25 @@ function initializeAccountPool() {
 }
 
 const backend = new TaskflowBackend(ws);
+// 账号由getCurrentTabAccount()在运行时从当前tab获取，不在加载时预设
 
-// 设置正确的账号信息 - 立即设置并确保正确
-function setupAccount() {
-    console.log(`[Main] ========== 设置TaskflowBackend账号 ==========`);
-    console.log(`[Main] 当前accountInfo:`, window.accountInfo);
-    
-    if (window.accountInfo?.email) {
-        const correctEmail = window.accountInfo.email;
-        backend.setAccount(correctEmail);
-        console.log(`[Main] ✅ 已设置TaskflowBackend账号: ${correctEmail}`);
-        console.log(`[Main] TaskflowBackend当前账号: ${backend.defaultAccount}`);
-        
-        // 验证设置是否成功
-        if (backend.defaultAccount === correctEmail) {
-            console.log(`[Main] ✅ 账号设置验证成功`);
-        } else {
-            console.error(`[Main] ❌ 账号设置验证失败: 期望 ${correctEmail}, 实际 ${backend.defaultAccount}`);
-        }
-    } else {
-        console.error(`[Main] ❌ 警告: 无法获取账号信息，使用默认账号`);
-        console.log(`[Main] TaskflowBackend当前账号: ${backend.defaultAccount}`);
-    }
-}
-
-// 立即设置
-setupAccount();
-
-// 也延迟设置一次，以防accountInfo加载延迟
-setTimeout(setupAccount, 100);
-
-// 在页面完全加载后再次设置
-setTimeout(setupAccount, 500);
+// 同步tabs引用到window，供TaskflowBackend等通过window.tabs读取
+window.tabs = tabs;
 
 window.taskflow = { backend };
 
 const controller = new WorkflowController(() => currentTab?.graph);
 window.workflowController = controller;
+
+// ===== 聚焦/置顶功能：点击悬浮窗时提高显示优先级 =====
+let _focusZ = 10001;
+document.addEventListener("mousedown", (e) => {
+  const panel = e.target.closest("#node-panel, #control-panel, #runtime-panel, #log-panel");
+  if (panel) {
+    _focusZ++;
+    panel.style.zIndex = _focusZ;
+  }
+}, true); // 使用 capture 确保不被子元素 stopPropagation 阻断
 
 try {
         console.log("[Main] 开始加载节点库...");
@@ -3243,6 +3584,10 @@ function switchTab(tabId) {
       setCurrentTab(tab);
     }
   });
+
+  // 同步到window，供TaskflowBackend等外部模块读取当前账号
+  window.tabs = tabs;
+  window.currentTab = currentTab;
 }
 
 // ===== 任务队列系统 =====
@@ -3324,7 +3669,7 @@ const taskQueue = new TaskQueue();
 // ===== 全局TaskFlow初始化 =====
 function initializeGlobalTaskFlow() {
     console.log('[Main] 初始化全局TaskFlow，建立WebSocket连接');
-    
+
     // 清除现有tabs，保留+号按钮
     tabs.length = 0;
     const tabBar = document.getElementById("tab-bar");
@@ -3340,6 +3685,10 @@ function initializeGlobalTaskFlow() {
     newBtn.onclick = () => showTabCreationDropdown();
     tabBar.appendChild(newBtn);
 
+    // 初始化日志面板
+    const logPanel = new LogPanel();
+    window._logPanel = logPanel;
+
     // 不再检查URL参数，完全依赖任务队列
     console.log('[Main] 全局TaskFlow初始化完成，等待WebSocket连接和任务');
 }
@@ -3349,83 +3698,18 @@ function initializeGlobalTaskFlow() {
 function createAccountTab(accountInfo) {
     console.log(`[Main] ========== 开始创建账号tab ==========`);
     console.log(`[Main] 从account-panel接收账号: ${accountInfo.name} (${accountInfo.email})`);
-    console.log(`[Main] 当前tabs数量: ${tabs.length}`);
-    
-    // 检查是否已存在相同账号的tab
-    const existingTab = tabs.find(tab => 
-        tab.account && tab.account.email === accountInfo.email
-    );
-    
-    if (existingTab) {
-        console.log(`[Main] 账号tab已存在，切换到现有tab: ${accountInfo.email}`);
-        switchTab(existingTab.id);
-        console.log(`[Main] ========== 账号tab切换完成 ==========`);
-        return existingTab;
-    }
-    
-    // 创建新tab并绑定账号信息
-    const tabTitle = `${accountInfo.name} (${accountInfo.email})`;
-    console.log(`[Main] 创建新tab: ${tabTitle}`);
-    
-    const tabId = "tab" + (tabs.length + 1);
-    console.log(`[Main] 生成tabId: ${tabId}`);
-    
-    const btn = document.createElement("button");
-    btn.className = "tab-btn";
-    btn.dataset.tabId = tabId;
-    btn.onclick = () => switchTab(tabId);
 
-    const span = document.createElement("span");
-    span.textContent = tabTitle;
-    btn.appendChild(span);
-    console.log(`[Main] tab按钮创建完成`);
+    // 计算同名账号的序号（支持同一账号开多个tab）
+    const sameNameCount = tabs.filter(t =>
+        t.account && t.account.email === accountInfo.email
+    ).length;
+    const suffix = sameNameCount > 0 ? ` #${sameNameCount + 1}` : '';
+    const tabTitle = `${accountInfo.name} (${accountInfo.email})${suffix}`;
+    createTab(tabTitle);
 
-    // 添加到tab栏
-    const newTabBtn = document.getElementById("new-tab-btn");
-    const tabBar = document.getElementById("tab-bar");
-    console.log(`[Main] tab栏找到: ${tabBar ? '是' : '否'}, 新建按钮找到: ${newTabBtn ? '是' : '否'}`);
-    
-    if (tabBar && newTabBtn) {
-        tabBar.insertBefore(btn, newTabBtn);
-        console.log(`[Main] tab按钮已添加到tab栏`);
-    } else {
-        console.error(`[Main] 无法找到tab栏或新建按钮`);
-    }
-
-    // 创建canvas
-    const canvas = document.createElement("canvas");
-    canvas.id = tabId;
-    const canvasContainer = document.getElementById("canvas-container");
-    console.log(`[Main] canvas容器找到: ${canvasContainer ? '是' : '否'}`);
-    
-    if (canvasContainer) {
-        canvasContainer.appendChild(canvas);
-        resizeCanvas(canvas);
-        setTimeout(() => resizeCanvas(canvas), 0);
-        console.log(`[Main] canvas已添加到容器`);
-    } else {
-        console.error(`[Main] 无法找到canvas容器`);
-    }
-
-    const graph = new LGraph();
-    const graphCanvas = new LGraphCanvas(canvas, graph);
-    console.log(`[Main] graph和graphCanvas创建完成`);
-
-    // 绑定账号信息到tab
-    const tabObj = { 
-        id: tabId, 
-        btn, 
-        canvas, 
-        graph, 
-        graphCanvas,
-        account: accountInfo  // 绑定账号信息
-    };
-    tabs.push(tabObj);
-    console.log(`[Main] tab对象已添加到tabs数组，当前tabs数量: ${tabs.length}`);
-
-    setupDrag(btn, tabObj);
-    updateTabWidths();
-    switchTab(tabId);
+    // 覆盖账号信息为真实账号
+    const tab = tabs[tabs.length - 1];
+    if (tab) tab.account = accountInfo;
 
     // 同步到 accountManager，确保 callBackend/addAccountToParams 能获取到真实账号
     if (window.accountManager) {
@@ -3433,9 +3717,15 @@ function createAccountTab(accountInfo) {
         console.log(`[Main] accountManager 已更新为: ${accountInfo.name} (${accountInfo.email})`);
     }
 
-    console.log(`[Main] ========== 账号tab创建完成 ==========`);
-    console.log(`[Main] 最终tab对象:`, tabObj);
-    return tabObj;
+    // 将账号添加到账号池（供+号下拉菜单使用）
+    if (!window.accountPool) window.accountPool = [];
+    if (!window.accountPool.find(a => a.email === accountInfo.email)) {
+        window.accountPool.push(accountInfo);
+        console.log(`[Main] 账号已添加到账号池: ${accountInfo.name}`);
+    }
+
+    console.log(`[Main] ========== 账号tab创建完成: ${tabTitle} ==========`);
+    return tab;
 }
 
 // 全局函数，供account-panel调用
@@ -3486,15 +3776,24 @@ class Start extends LiteGraph.LGraphNode {
         this.addOutput("next", LiteGraph.EVENT);
     }
 
-    start() {
-        console.log(`[Start] ========== 节点开始执行 ==========`);
+    getHelpText() {
+        return "流程起点，开始执行的地方";
+    }
+
+    onDblClick() {
+        openNodePropertyEditor(this);
+        return true;
+    }
+
+    async onAction() {
+        await this.execOutput(0);
+        window.taskflowLog?.("info", "[起点] 流程开始");
         reportNodeEvent(this, "start");
-        // 新架构：不需要手动triggerSlot，由WorkflowController控制执行顺序
-        console.log(`[Start] ========== 节点执行完成 ==========`);
     }
 }
 
 LiteGraph.registerNodeType("flow/start", Start);
+
 
 // ── nodes/flow/delay.js ──
 // taskflow/nodes/flow/delay.js
@@ -3533,6 +3832,10 @@ class DelayNode extends LiteGraph.LGraphNode {
     ];
   }
 
+  getHelpText() {
+        return "延迟指定毫秒数后继续执行";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
@@ -3550,10 +3853,11 @@ class DelayNode extends LiteGraph.LGraphNode {
   }
 
   async onAction() {
+    window.taskflowLog?.("info", `[延迟] ${this.properties.ms}ms`);
     reportNodeEvent(this, "trigger", { ms: this.properties.ms });
     const ms = Math.max(0, Number(this.properties.ms) || 0);
     await new Promise(resolve => setTimeout(resolve, ms));
-    this.triggerSlot(0);
+    await this.execOutput(0);
   }
 }
 
@@ -3571,36 +3875,18 @@ class LabelNode extends LiteGraph.LGraphNode {
 
     this.addOutput("标记", LiteGraph.EVENT);
 
-    this.properties = {
-      label: "label_1"
-    };
+    this.properties = { label: "label_1" };
 
-    this._labelWidget = this.addWidget("text", "标签名", this.properties.label, (value) => {
-      this.properties.label = value;
-    });
+    this._labelWidget = this.addWidget("text", "标签名", this.properties.label, v => (this.properties.label = v));
+
+    this._labelWidget.onKeyDown = e => { e.stopPropagation(); e.preventDefault(); return false; };
 
     this.size = [200, 80];
-
-    // 禁用widget的键盘输入，强制使用属性编辑器
-    if (this.widgets) {
-      this.widgets.forEach(widget => {
-        widget.onKeyDown = (e) => {
-          e.stopPropagation();
-          e.preventDefault();
-          return false;
-        };
-      });
-    }
-
-    // 添加属性配置
-    this.properties_info = [
-      {
-        name: "label",
-        type: "text",
-        label: "标签名"
-      }
-    ];
   }
+
+  getHelpText() {
+        return "标记位置，供跳转节点使用<br>标签名: 跳转目标名称";
+    }
 
   onDblClick() {
     openNodePropertyEditor(this);
@@ -3609,18 +3895,12 @@ class LabelNode extends LiteGraph.LGraphNode {
 
   onConfigure(info) {
     // 同步widget值到properties
-    if (this._labelWidget) {
-      this._labelWidget.value = this.properties.label;
-    }
+    if (this._labelWidget) this._labelWidget.value = this.properties.label;
   }
 
-  onAction(action, param, options) {
-    console.log(`[LabelNode] ========== 节点开始执行 ==========`);
-    console.log(`[LabelNode] 当前属性: label=${this.properties.label}`);
-    console.log(`[LabelNode] onAction被调用, action=${action}, label=${this.properties.label}`);
+  async onAction(action, param, options) {
+    window.taskflowLog?.("info", `[标签] ${this.properties.label}`);
     reportNodeEvent(this, "trigger", { label: this.properties.label });
-
-    console.log(`[LabelNode] ========== 节点执行完成 ==========`);
   }
 }
 
@@ -3671,41 +3951,23 @@ class GotoNode extends LiteGraph.LGraphNode {
 
   onConfigure(info) {
     // 同步widget值到properties
-    if (this._targetWidget) {
-      this._targetWidget.value = this.properties.target;
-    }
+    if (this._targetWidget) this._targetWidget.value = this.properties.target;
   }
 
-  onAction(action, param, options) {
-    console.log(`[GotoNode] ========== 节点开始执行 ==========`);
-    console.log(`[GotoNode] 当前属性: target=${this.properties.target}`);
-    console.log(`[GotoNode] onAction被调用, action=${action}, target=${this.properties.target}`);
-    reportNodeEvent(this, "trigger", { action, target: this.properties.target });
-
-    const graph = this.graph;
+  async onAction(action, param, options) {
     const target = String(this.properties.target || "").trim();
-
-    if (!graph || !target) {
-      console.warn("[GotoNode] graph或target为空");
+    if (!target) {
+      window.taskflowLog?.("warn", "[跳转] 目标标签为空");
+      window.workflowController?.stop();
       return;
     }
 
-    const nodes = graph._nodes || [];
-    const normalize = value => String(value ?? "").trim();
-    const knownLabelTypes = new Set(["flow/label", "label"]);
+    const graph = this.graph;
+    if (!graph) return;
 
-    const getNodeLabelCandidates = node => {
-      const candidates = [];
-      const props = node.properties || {};
-      candidates.push(props.label, props.target, props.name, props.id, props.tag);
-      candidates.push(node.title, node.constructor?.title);
-      if (Array.isArray(node.widgets)) {
-        for (const widget of node.widgets) {
-          candidates.push(widget?.value);
-        }
-      }
-      return candidates.map(normalize).filter(Boolean);
-    };
+    const nodes = graph._nodes || [];
+    const normalize = v => String(v ?? "").trim();
+    const knownLabelTypes = new Set(["flow/label", "label"]);
 
     console.log(`[GotoNode] 查找label节点, target=${target}, 总节点数=${nodes.length}`);
     console.log(`[GotoNode] 所有节点:`, nodes.map(n => ({id: n.id, type: n.type, title: n.title})));
@@ -3714,71 +3976,37 @@ class GotoNode extends LiteGraph.LGraphNode {
       const type = normalize(node.type).toLowerCase();
       const title = normalize(node.title);
       const isLabelLike = knownLabelTypes.has(type) || title === "Label" || title === "标签";
+      console.log(`[GotoNode] 节点: type="${type}" title="${title}" isLabel=${isLabelLike} props=${JSON.stringify(node.properties)}`);
       if (!isLabelLike) continue;
 
-      const candidates = getNodeLabelCandidates(node);
-      console.log(`[GotoNode] 检查节点 ${node.id} (${node.type}), candidates=${candidates.join(", ")}`);
-      if (candidates.includes(target)) {
-        console.log(`[GotoNode] 找到匹配的label节点 ${node.id}`);
-        reportNodeEvent(this, "goto_hit", { target, matched_node_id: node.id });
+      const candidates = [node.properties?.label, node.properties?.target, node.properties?.name,
+                          node.properties?.id, node.properties?.tag, node.title, node.constructor?.title];
+      if (node.widgets) {
+        for (const w of node.widgets) candidates.push(w?.value);
+      }
+      const vals = candidates.map(normalize).filter(Boolean);
+      console.log(`[GotoNode] 候选值: ${JSON.stringify(vals)} 目标="${target}"`);
+      if (vals.includes(target)) {
+        window.taskflowLog?.("info", `[跳转] 找到标签节点: ${target}`);
 
-        // 将label节点插入到执行序列中goto的下一位
-        const controller = window.workflowController;
-        if (controller) {
-          console.log(`[GotoNode] 将label节点 ${node.id} 插入到执行序列`);
-          controller._insertNodeAfter(node, this);
+        // 图驱动：执行标签节点的 onAction，然后驱动其下游
+        window.taskflowLog?.("info", `[跳转] 跳转到标签节点: ${target}`);
+        await node.onAction?.("flow", param, options);
+        // 驱动标签节点的下游
+        if (typeof node.execOutput === "function") {
+          await node.execOutput(0);
         }
-
-        console.log(`[GotoNode] ========== 节点执行完成 ==========`);
         return;
       }
     }
 
-    reportNodeEvent(this, "goto_miss", { target });
-    console.warn("[GotoNode] label not found:", target);
-
-    // 弹窗提醒并暂停流程
-    window.showToast?.(`未找到目标标签: ${target}`, "error");
+    window.taskflowLog?.("error", `[跳转] 未找到目标标签: ${target}`);
     window.workflowController?.stop();
-
-    console.log(`[GotoNode] ========== 节点执行完成（错误） ==========`);
   }
 }
 
 LiteGraph.registerNodeType("flow/goto", GotoNode);
-
-// ── nodes/flow/multi_input.js ──
-
-class MultiInputNode {
-  static title = "多输入汇合";
-
-  constructor() {
-    this.addInput("输入_1", LiteGraph.EVENT);
-    this.addOutput("下一步", LiteGraph.EVENT);
-
-    this.input_count = 1;
-
-    this.addWidget(
-      "button",
-      "新增输入",
-      null,
-      () => {
-        this.addNewInput();
-      }
-    );
-  }
-
-  addNewInput() {
-    this.input_count++;
-
-    this.addInput("输入_" + this.input_count, LiteGraph.EVENT);
-    reportNodeEvent(this, "add_input", { input_count: this.input_count });
-
-    this.setDirtyCanvas(true, true);
-  }
-}
-
-LiteGraph.registerNodeType("flow/multi_input", MultiInputNode);
+// MISSING: nodes/flow/multi_input.js
 
 // ── nodes/flow/end.js ──
 // taskflow/nodes/flow/end.js
@@ -3790,24 +4018,27 @@ class End extends LiteGraph.LGraphNode {
         this.addInput("结束", LiteGraph.EVENT);
     }
 
+    getHelpText() {
+        return "流程终点，停止执行";
+    }
+
+    onDblClick() {
+        openNodePropertyEditor(this);
+        return true;
+    }
+
     onAction() {
-        console.log(`[End] ========== 节点开始执行 ==========`);
+        window.taskflowLog?.("info", "[结束] 流程结束");
         reportNodeEvent(this, "finish");
-        console.log("流程结束");
-        // 通知控制器
         const controller = window.workflowController;
         if (controller) {
-            console.log(`[End] 调用controller.finish()，当前状态: ${controller.state}`);
             controller.finish();
-            console.log(`[End] controller.finish()完成，新状态: ${controller.state}`);
-        } else {
-            console.warn(`[End] workflowController不存在`);
         }
-        console.log(`[End] ========== 节点执行完成 ==========`);
     }
 }
 
 LiteGraph.registerNodeType("flow/end", End);
+
 
 // ── nodes/flow/wait_image.js ──
 
@@ -3826,7 +4057,7 @@ class WaitImage extends ActionNode {
         this.addOutput("是否超时", "boolean");
 
         this.properties = {
-            img_path: "",
+            image: "",
             threshold: 0.9,
             match_select: "best",
             use_color_check: false,
@@ -3844,11 +4075,16 @@ class WaitImage extends ActionNode {
         );
 
         this._imgPathWidget = this.addWidget(
-            "text", "图片", this.properties.img_path,
-            v => this.properties.img_path = v
+            "text", "图片", this.properties.image,
+            v => this.properties.image = v
         );
         this.addWidget("button", "选择图片", null, () => this._selectImage());
+        this.addWidget("button", "从库选择", null, () => this._selectFromAssets());
         this.addWidget("number", "超时(ms)", this.properties.timeout, v => (this.properties.timeout = v));
+        this.addWidget("preview_image", "", null, null);
+
+        this.previewImage = null;
+        this.size = [360, 300];
 
         // 禁用widget的键盘输入，强制使用属性编辑器
         if (this.widgets) {
@@ -3861,7 +4097,7 @@ class WaitImage extends ActionNode {
             });
         }
 
-        // 添加属性配置（不包含img_path，使用文件选择器）
+        // 添加属性配置（不包含image，使用文件选择器）
         this.properties_info = [
             {
                 name: "threshold",
@@ -3902,6 +4138,10 @@ class WaitImage extends ActionNode {
         ];
     }
 
+    getHelpText() {
+        return "等待屏幕上出现指定图片<br>超时: 最大等待时间(秒)";
+    }
+
     onDblClick() {
         openNodePropertyEditor(this);
         return true;
@@ -3916,7 +4156,12 @@ class WaitImage extends ActionNode {
                 } else if (widget.name === "颜色校验") {
                     widget.value = this.properties.use_color_check;
                 } else if (widget.name === "图片") {
-                    widget.value = this.properties.img_path;
+                    if (this.properties.image && this.properties.image.startsWith("data:image")) {
+                        widget.value = "(内嵌图片)";
+                        this._loadPreviewFromBase64(this.properties.image);
+                    } else {
+                        widget.value = this.properties.image;
+                    }
                 } else if (widget.name === "超时(ms)") {
                     widget.value = this.properties.timeout;
                 }
@@ -3938,8 +4183,9 @@ class WaitImage extends ActionNode {
             // 转换为base64存储
             const reader = new FileReader();
             reader.onload = e => {
-                this.properties.img_path = e.target.result; // 存储base64
+                this.properties.image = e.target.result; // 存储base64
                 this._imgPathWidget.value = path; // widget显示路径
+                this._loadPreviewFromBase64(e.target.result);
                 this.setDirtyCanvas(true, true);
             };
             reader.readAsDataURL(file);
@@ -3948,21 +4194,43 @@ class WaitImage extends ActionNode {
         input.click();
     }
 
-    onAction(action) {
-        this.run(action);
+    _selectFromAssets() {
+        pickFromAssets((dataUrl, fileName) => {
+            this.properties.image = dataUrl;
+            this._imgPathWidget.value = fileName;
+            this._loadPreviewFromBase64(dataUrl);
+            this.setDirtyCanvas(true, true);
+        });
+    }
+
+    async onAction(action) {
+        await this.run(action);
+    }
+
+    _loadPreviewFromBase64(base64) {
+        const img = new Image();
+        img.onload = () => {
+            this.previewImage = img;
+            this.setDirtyCanvas(true, true);
+        };
+        img.src = base64;
     }
 
     async onRun() {
-        const img_path = this.getInputData(1) ?? this.properties.img_path;
-        if (!img_path) throw new Error("img_path 为空");
+        const image = this.getInputData(1) ?? this.properties.image;
+        if (!image) throw new Error("image 为空");
+        const name = image.startsWith("data:") ? "(内嵌图片)" : image.split("/").pop();
+        this.log(`等待图片: ${name} (超时=${this.properties.timeout}ms)`);
         const response = await this.callBackend("wait_image", {
-            img_path,
+            image,
             threshold: this.properties.threshold,
             match_select: this.properties.match_select,
             use_color_check: this.properties.use_color_check,
             timeout: this.properties.timeout,
         }, this.properties.timeout);
-        this.setOutputData(1, !response?.success);
+        const timedOut = !response?.success;
+        this.setOutputData(1, timedOut);
+        this.log(timedOut ? "等待超时，图片未出现" : "图片已出现", timedOut ? "warn" : "info");
     }
 }
 
@@ -4032,6 +4300,10 @@ class SleepNode extends LiteGraph.LGraphNode {
     this.mode = LiteGraph.ALWAYS;
   }
 
+  getHelpText() {
+        return "等待指定时间(秒)<br>支持小数，如 0.5 表示 500ms";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
@@ -4051,18 +4323,13 @@ class SleepNode extends LiteGraph.LGraphNode {
   }
 
   async onAction(action, param, options) {
-    console.log(`[SleepNode] ========== 节点开始执行 ==========`);
-    console.log(`[SleepNode] 当前属性: seconds=${this.properties.seconds}, upper_limit=${this.properties.upper_limit}`);
-    console.log(`[SleepNode] onAction被调用, action=${action}`);
-
     const seconds = this.getInputData(1) ?? this.properties.seconds;
     const upper_limit = this.getInputData(2) ?? this.properties.upper_limit;
 
-    console.log(`[SleepNode] 实际等待时间: seconds=${seconds}`);
+    window.taskflowLog?.("info", `[等待] 等待 ${seconds} 秒${upper_limit != null ? ` (上限 ${upper_limit}s)` : ""}`);
 
     if (seconds <= 0) {
-      console.log(`[SleepNode] 等待时间为0，直接完成`);
-      console.log(`[SleepNode] ========== 节点执行完成 ==========`);
+      window.taskflowLog?.("info", "[等待] 等待时间为0，跳过");
       return;
     }
 
@@ -4079,8 +4346,7 @@ class SleepNode extends LiteGraph.LGraphNode {
     while (elapsed < delayMs) {
       // 检查控制器状态，如果停止则中断
       if (controller && (controller.state === "stopped" || controller.state === "idle")) {
-        console.log(`[SleepNode] 控制器状态为 ${controller.state}，中断等待`);
-        console.log(`[SleepNode] ========== 节点执行完成（中断） ==========`);
+        window.taskflowLog?.("warn", "[等待] 控制器已停止，中断等待");
         return;
       }
 
@@ -4089,8 +4355,8 @@ class SleepNode extends LiteGraph.LGraphNode {
       elapsed = Date.now() - startTime;
     }
 
-    console.log(`[SleepNode] 等待完成，实际耗时 ${elapsed}ms`);
-    console.log(`[SleepNode] ========== 节点执行完成 ==========`);
+    window.taskflowLog?.("info", `[等待] 等待完成 (${(elapsed/1000).toFixed(2)}s)`);
+    await this.execOutput(0);
   }
 
   onExecute(param, options) {
@@ -4112,9 +4378,19 @@ class Screenshot extends LiteGraph.LGraphNode{
     this.addOutput("下一步",LiteGraph.EVENT)
   }
 
-  onAction() {
+  getHelpText() {
+        return "截取当前屏幕";
+    }
+
+  onDblClick() {
+    openNodePropertyEditor(this);
+    return true;
+  }
+
+  async onAction() {
+    window.taskflowLog?.("info", "[截图] 执行截图");
     reportNodeEvent(this, "trigger");
-    this.triggerSlot(0);
+    await this.execOutput(0);
   }
 }
 
@@ -4211,13 +4487,17 @@ class ClickNode extends ActionNode {
     this._executed = false;
   }
 
+  getHelpText() {
+        return "点击指定坐标位置<br>x/y: 点击坐标<br>按下时长: 鼠标按下的时间(秒)";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
   }
 
-  onAction(action) {
-    this.run(action);
+  async onAction(action) {
+    await this.run(action);
   }
 
   async onRun() {
@@ -4228,6 +4508,7 @@ class ClickNode extends ActionNode {
       throw new Error("x 或 y 为空");
     }
 
+    this.log(`点击坐标: (${x}, ${y})`);
     const response = await this.callBackend("click", {
       x,
       y,
@@ -4238,6 +4519,7 @@ class ClickNode extends ActionNode {
       start_count: this.properties.start_count,
     });
     this.setOutputData(1, !!response?.success);
+    this.log(response?.success ? "点击完成" : "点击失败", response?.success ? "info" : "warn");
   }
 }
 
@@ -4284,20 +4566,26 @@ class urlGoto extends ActionNode {
     ];
   }
 
+  getHelpText() {
+        return "导航到指定 URL<br>等待加载: 是否等待页面完全加载";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
   }
 
-  onAction(action) {
-    this.run(action);
+  async onAction(action) {
+    await this.run(action);
   }
 
   async onRun() {
     const url = this.getInputData(1) ?? this.properties.url;
     if (!url) throw new Error("url 为空");
+    this.log(`跳转到: ${url}`);
     const response = await this.callBackend("goto", { url });
     this.setOutputData(1, !!response?.success);
+    this.log(response?.success ? "跳转成功" : "跳转失败", response?.success ? "info" : "warn");
   }
 }
 
@@ -4346,14 +4634,14 @@ class URLNode extends ActionNode {
         const url = this.getInputData(0) || this.properties.url;
         const waitForLoad = this.getInputData(1) ?? this.properties.wait_for_load;
         const timeout = this.getInputData(2) ?? this.properties.timeout;
-        
-        console.log(`[URLNode] 跳转到: ${url}`);
-        
+
+        this.log(`跳转到: ${url}`);
+
         if (!url) {
-            console.error(`[URLNode] ❌ URL为空`);
+            this.log(`URL为空`, "error");
             throw new Error("URL不能为空");
         }
-        
+
         // 获取当前tab的账号信息
         const currentTabAccount = this.getCurrentTabAccount();
         const callParams = {
@@ -4362,22 +4650,21 @@ class URLNode extends ActionNode {
             timeout: timeout,
             account: currentTabAccount
         };
-        
+
         try {
             const result = await this.callBackend("goto", callParams);
-            
+
             if (result && result.success) {
-                console.log(`[URLNode] ✅ 跳转成功: ${url}`);
+                this.log(`跳转成功: ${url}`);
                 this.setOutputData(1, true);
                 this.setOutputData(2, url);
-                this.triggerSlot(0);
+                await this.execOutput(0);
             } else {
-                console.error(`[URLNode] ❌ 跳转失败: ${result?.error || '未知错误'}`);
+                this.log(`跳转失败: ${result?.error || '未知错误'}`, "error");
                 throw new Error(result?.error || "跳转失败");
             }
         } catch (error) {
-            console.error(`[URLNode] ❌ 执行异常:`, error);
-            console.error(`[URLNode] 异常详情:`, error.stack);
+            this.log(`执行异常: ${error.message}`, "error");
             throw error;
         }
     }
@@ -4447,11 +4734,11 @@ class URLNode extends ActionNode {
             
             // 最后回退到默认账号
             console.log(`[URLNode] ❌ 使用默认账号`);
-            return { name: 'default', email: 'default@example.com' };
+            return { name: 'default', email: 'default@example.com' }";
             
         } catch (error) {
             console.error(`[URLNode] 获取当前tab账号失败:`, error);
-            return { name: 'default', email: 'default@example.com' };
+            return { name: 'default', email: 'default@example.com' }";
         }
     }
 
@@ -4488,13 +4775,14 @@ class ClickImageNode extends ActionNode {
     this.addInput("触发", LiteGraph.EVENT);
     this.addInput("图片路径", "string");
     this.addOutput("下一步", LiteGraph.EVENT);
-    this.addOutput("成功", "boolean");
+    this.addOutput("成功", LiteGraph.EVENT);
+    this.addOutput("失败", LiteGraph.EVENT);
     this.addOutput("点击X", "number");
     this.addOutput("点击Y", "number");
     this.addOutput("匹配度", "number");
 
     this.properties = {
-      img_path: "",
+      image: "",
       threshold: 0.9,
       pianyi_x: 0,
       pianyi_y: 0,
@@ -4506,10 +4794,15 @@ class ClickImageNode extends ActionNode {
       use_human_offset: true,
     };
 
-    this._imgPathWidget = this.addWidget("text", "图片路径", this.properties.img_path, v => (this.properties.img_path = v));
+    this._imgPathWidget = this.addWidget("text", "图片路径", this.properties.image, v => (this.properties.image = v));
     this.addWidget("button", "选择图片", null, () => this._selectImage());
+    this.addWidget("button", "从库选择", null, () => this._selectFromAssets());
     this.addWidget("number", "阈值", this.properties.threshold, v => (this.properties.threshold = v));
     this.addWidget("number", "按下时长", this.properties.down_time, v => (this.properties.down_time = v));
+    this.addWidget("preview_image", "", null, null);
+
+    this.previewImage = null;
+    this.size = [360, 300];
 
     // 禁用widget的键盘输入，强制使用属性编辑器
     if (this.widgets) {
@@ -4522,7 +4815,7 @@ class ClickImageNode extends ActionNode {
       });
     }
 
-    // 添加属性配置（不包含img_path，使用文件选择器）
+    // 添加属性配置（不包含image，使用文件选择器）
     this.properties_info = [
       {
         name: "threshold",
@@ -4594,9 +4887,32 @@ class ClickImageNode extends ActionNode {
     ];
   }
 
+  getHelpText() {
+        return "在屏幕上找到图片并点击<br>阈值: 匹配灵敏度(0-1)<br>偏移: 点击位置的偏移像素";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
+  }
+
+  onConfigure(info) {
+    if (this.widgets) {
+      this.widgets.forEach(widget => {
+        if (widget.name === "图片路径") {
+          if (this.properties.image && this.properties.image.startsWith("data:image")) {
+            widget.value = "(内嵌图片)";
+            this._loadPreviewFromBase64(this.properties.image);
+          } else {
+            widget.value = this.properties.image;
+          }
+        } else if (widget.name === "阈值") {
+          widget.value = this.properties.threshold;
+        } else if (widget.name === "按下时长") {
+          widget.value = this.properties.down_time;
+        }
+      });
+    }
   }
 
   _selectImage() {
@@ -4613,8 +4929,9 @@ class ClickImageNode extends ActionNode {
       // 转换为base64存储
       const reader = new FileReader();
       reader.onload = e => {
-        this.properties.img_path = e.target.result; // 存储base64
+        this.properties.image = e.target.result; // 存储base64
         this._imgPathWidget.value = path; // widget显示路径
+        this._loadPreviewFromBase64(e.target.result);
         this.setDirtyCanvas(true, true);
       };
       reader.readAsDataURL(file);
@@ -4623,20 +4940,48 @@ class ClickImageNode extends ActionNode {
     input.click();
   }
 
-  onAction(action) {
-    this.run(action);
+  _selectFromAssets() {
+    pickFromAssets((dataUrl, fileName) => {
+      this.properties.image = dataUrl;
+      this._imgPathWidget.value = fileName;
+      this._loadPreviewFromBase64(dataUrl);
+      this.setDirtyCanvas(true, true);
+    });
+  }
+
+  _loadPreviewFromBase64(base64) {
+    const img = new Image();
+    img.onload = () => {
+      this.previewImage = img;
+      this.setDirtyCanvas(true, true);
+    };
+    img.src = base64;
+  }
+
+  async onAction(action) {
+    await this.run(action);
   }
 
   async onRun() {
-    const img_path = this.getInputData(1) ?? this.properties.img_path;
-    if (!img_path) throw new Error("img_path 为空");
+    const image = this.getInputData(1) ?? this.properties.image;
+    if (!image) throw new Error("image 为空");
 
-    const response = await this.callBackend("click_image", { ...this.properties, img_path });
+    const name = image.startsWith("data:") ? "(内嵌图片)" : image.split("/").pop();
+    this.log(`点击图片: ${name}`);
+
+    const response = await this.callBackend("click_image", { ...this.properties, image });
     const data = response?.data || {};
-    this.setOutputData(1, !!response?.success);
-    this.setOutputData(2, data.clicked_x ?? null);
-    this.setOutputData(3, data.clicked_y ?? null);
-    this.setOutputData(4, data.match_value ?? null);
+    this.setOutputData(3, data.clicked_x ?? null);
+    this.setOutputData(4, data.clicked_y ?? null);
+    this.setOutputData(5, data.match_value ?? null);
+
+    if (data.clicked_x != null) {
+      this.log(`点击完成: (${data.clicked_x}, ${data.clicked_y})`);
+      await this.execOutput(1); // 成功
+    } else {
+      this.log(`点击失败: 未找到图片`, "warn");
+      await this.execOutput(2); // 失败
+    }
   }
 }
 
@@ -4756,23 +5101,33 @@ class ClickTextNode extends ActionNode {
     this._executed = false;
   }
 
+  getHelpText() {
+        return "点击屏幕上指定文本的位置";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
   }
 
-  onAction(action) {
-    this.run(action);
+  async onAction(action) {
+    await this.run(action);
   }
 
   async onRun() {
     const text = this.getInputData(1) ?? this.properties.text;
     if (!text) throw new Error("text 为空");
+    this.log(`点击文本: "${text}"`);
     const response = await this.callBackend("click_text", { ...this.properties, text });
     const data = response?.data || {};
     this.setOutputData(1, !!response?.success);
     this.setOutputData(2, data.clicked_x ?? null);
     this.setOutputData(3, data.clicked_y ?? null);
+    if (data.clicked_x != null) {
+      this.log(`文本点击完成: (${data.clicked_x}, ${data.clicked_y})`);
+    } else {
+      this.log(`文本未找到: "${text}"`, "warn");
+    }
   }
 }
 
@@ -4793,7 +5148,7 @@ class ClickUntilGoneNode extends ActionNode {
     this.addOutput("点击次数", "number");
 
     this.properties = {
-      img_path: "",
+      image: "",
       timeout: 10,
       threshold: 0.9,
       pianyi_x: 0,
@@ -4803,13 +5158,18 @@ class ClickUntilGoneNode extends ActionNode {
       use_color_check: false
     };
 
-    this._imgPathWidget = this.addWidget("text", "图片路径", this.properties.img_path, (v) => {
-      this.properties.img_path = v;
+    this._imgPathWidget = this.addWidget("text", "图片路径", this.properties.image, (v) => {
+      this.properties.image = v;
     });
     this.addWidget("button", "选择图片", null, () => this._selectImage());
+    this.addWidget("button", "从库选择", null, () => this._selectFromAssets());
     this.addWidget("number", "超时(秒)", this.properties.timeout, (v) => {
       this.properties.timeout = v;
     });
+    this.addWidget("preview_image", "", null, null);
+
+    this.previewImage = null;
+    this.size = [360, 300];
 
     // 禁用widget的键盘输入，强制使用属性编辑器
     if (this.widgets) {
@@ -4822,7 +5182,7 @@ class ClickUntilGoneNode extends ActionNode {
       });
     }
 
-    // 添加属性配置（不包含img_path，使用文件选择器）
+    // 添加属性配置（不包含image，使用文件选择器）
     this.properties_info = [
       {
         name: "timeout",
@@ -4876,9 +5236,32 @@ class ClickUntilGoneNode extends ActionNode {
     this._clickCount = 0;
   }
 
+  getHelpText() {
+        return "重复点击直到目标消失<br>用于关闭弹窗等场景";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
+  }
+
+  onConfigure(info) {
+    if (this.widgets) {
+      this.widgets.forEach(widget => {
+        if (widget.name === "图片路径") {
+          if (this.properties.image && this.properties.image.startsWith("data:image")) {
+            widget.value = "(内嵌图片)";
+            this._loadPreviewFromBase64(this.properties.image);
+          } else {
+            widget.value = this.properties.image;
+          }
+        } else if (widget.name === "超时(秒)") {
+          widget.value = this.properties.timeout;
+        } else if (widget.name === "阈值") {
+          widget.value = this.properties.threshold;
+        }
+      });
+    }
   }
 
   _selectImage() {
@@ -4895,8 +5278,9 @@ class ClickUntilGoneNode extends ActionNode {
       // 转换为base64存储
       const reader = new FileReader();
       reader.onload = e => {
-        this.properties.img_path = e.target.result; // 存储base64
+        this.properties.image = e.target.result; // 存储base64
         this._imgPathWidget.value = path; // widget显示路径
+        this._loadPreviewFromBase64(e.target.result);
         this.setDirtyCanvas(true, true);
       };
       reader.readAsDataURL(file);
@@ -4905,17 +5289,38 @@ class ClickUntilGoneNode extends ActionNode {
     input.click();
   }
 
-  onAction(action) {
-    this.run(action);
+  _selectFromAssets() {
+    pickFromAssets((dataUrl, fileName) => {
+      this.properties.image = dataUrl;
+      this._imgPathWidget.value = fileName;
+      this._loadPreviewFromBase64(dataUrl);
+      this.setDirtyCanvas(true, true);
+    });
+  }
+
+  async onAction(action) {
+    await this.run(action);
+  }
+
+  _loadPreviewFromBase64(base64) {
+    const img = new Image();
+    img.onload = () => {
+      this.previewImage = img;
+      this.setDirtyCanvas(true, true);
+    };
+    img.src = base64;
   }
 
   async onRun() {
-    const img_path = this.getInputData(1) ?? this.properties.img_path;
-    if (!img_path) throw new Error("img_path 为空");
-    const response = await this.callBackend("click_until_gone", { ...this.properties, img_path });
+    const image = this.getInputData(1) ?? this.properties.image;
+    if (!image) throw new Error("image 为空");
+    const name = image.startsWith("data:") ? "(内嵌图片)" : image.split("/").pop();
+    this.log(`点到消失: ${name} (超时=${this.properties.timeout}s)`);
+    const response = await this.callBackend("click_until_gone", { ...this.properties, image });
     const data = response?.data || {};
     this.setOutputData(1, !!response?.success);
     this.setOutputData(2, data.click_count ?? 0);
+    this.log(`点到消失完成, 点击次数: ${data.click_count ?? 0}`);
   }
 }
 
@@ -4984,19 +5389,25 @@ class DMMLoginNode extends ActionNode {
     ];
   }
 
+  getHelpText() {
+        return "DMM 自动登录<br>需提前在浏览器中登录过 DMM";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
   }
 
-  onAction(action) {
-    this.run(action);
+  async onAction(action) {
+    await this.run(action);
   }
 
   async onRun() {
     if (!this.properties.game_name) throw new Error("game_name 为空");
+    this.log(`DMM登录: ${this.properties.game_name}`);
     const response = await this.callBackend("dmm_login", { ...this.properties }, this.properties.timeout);
     this.setOutputData(1, !!response?.success);
+    this.log(response?.success ? "DMM登录成功" : "DMM登录失败", response?.success ? "info" : "warn");
   }
 }
 
@@ -5016,6 +5427,8 @@ class MatchImage extends ActionNode {
 
 
     this.addOutput("下一步", LiteGraph.EVENT);
+    this.addOutput("成功", LiteGraph.EVENT);
+    this.addOutput("失败", LiteGraph.EVENT);
     this.addOutput("x","number");
     this.addOutput("y","number");
     this.addOutput("max_val","number");
@@ -5023,7 +5436,7 @@ class MatchImage extends ActionNode {
 
     /* ========= Properties ========= */
     this.properties = {
-      img_path: "",
+      image: "",
       threshold: 0.9,
       match_select: "best",
       use_color_check: false
@@ -5072,11 +5485,14 @@ class MatchImage extends ActionNode {
     this._imgPathWidget = this.addWidget(
       "text",
       "图片路径",
-      this.properties.img_path,
-      v => (this.properties.img_path = v)
+      this.properties.image,
+      v => (this.properties.image = v)
     );
 
     this.addWidget("button", "选择图片", null, () => this._selectImage());
+    this.addWidget("button", "从库选择", null, () => this._selectFromAssets());
+
+    this.addWidget("preview_image", "", null, null);
 
     // 禁用widget的键盘输入，强制使用属性编辑器
     if (this.widgets) {
@@ -5089,7 +5505,7 @@ class MatchImage extends ActionNode {
       });
     }
 
-    // 添加属性配置（不包含img_path，使用文件选择器）
+    // 添加属性配置（不包含image，使用文件选择器）
     this.properties_info = [
       {
         name: "threshold",
@@ -5125,9 +5541,36 @@ class MatchImage extends ActionNode {
     // this.size = [360, 380];
   }
 
+  getHelpText() {
+        return "在屏幕上匹配图片位置<br>阈值: 匹配灵敏度(0-1)";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
+  }
+
+  onConfigure(info) {
+    // 从properties同步widget值
+    if (this.widgets) {
+      this.widgets.forEach(widget => {
+        if (widget.name === "阈值") {
+          widget.value = this.properties.threshold;
+        } else if (widget.name === "匹配策略") {
+          widget.value = this.properties.match_select;
+        } else if (widget.name === "颜色校验") {
+          widget.value = this.properties.use_color_check;
+        } else if (widget.name === "图片路径") {
+          // base64数据不显示原始字符串，显示占位文本
+          if (this.properties.image && this.properties.image.startsWith("data:image")) {
+            widget.value = "(内嵌图片)";
+            this._loadPreviewFromBase64(this.properties.image);
+          } else {
+            widget.value = this.properties.image;
+          }
+        }
+      });
+    }
   }
 
   /* ========= File Picker ========= */
@@ -5146,7 +5589,7 @@ class MatchImage extends ActionNode {
       // 转换为base64存储
       const reader = new FileReader();
       reader.onload = e => {
-        this.properties.img_path = e.target.result; // 存储base64
+        this.properties.image = e.target.result; // 存储base64
         this._imgPathWidget.value = path; // widget显示路径
         this._loadPreviewFromBase64(e.target.result);
         this.setDirtyCanvas(true, true);
@@ -5155,6 +5598,17 @@ class MatchImage extends ActionNode {
     };
 
     input.click();
+  }
+
+  /* ========= Select from Assets ========= */
+
+  _selectFromAssets() {
+    pickFromAssets((dataUrl, fileName) => {
+      this.properties.image = dataUrl;
+      this._imgPathWidget.value = fileName;
+      this._loadPreviewFromBase64(dataUrl);
+      this.setDirtyCanvas(true, true);
+    });
   }
 
   /* ========= Load Preview from Base64 ========= */
@@ -5168,73 +5622,50 @@ class MatchImage extends ActionNode {
     img.src = base64;
   }
 
-  /* ========= Draw Preview ========= */
-
-  onDrawForeground(ctx) {
-  if (!this.previewImage) return;
-
-  const img = this.previewImage;
-
-  const padding = 10;
-
-  const widgetHeight = this.widgets
-    ? this.widgets.length * LiteGraph.NODE_WIDGET_HEIGHT
-    : 0;
-
-  const previewTop =
-    LiteGraph.NODE_TITLE_HEIGHT + widgetHeight + 20;
-
-  const maxW = this.size[0] - padding * 2;
-  const maxH = this.size[1] - previewTop - padding;
-
-  const scale = Math.min(maxW / img.width, maxH / img.height, 1);
-
-  const w = img.width * scale;
-  const h = img.height * scale;
-
-  // ===== 真正的水平居中 =====
-  const x = (this.size[0] - w) * 0.5;
-
-  // ===== 垂直居中 =====
-  const y = previewTop + (maxH - h) * 0.5;
-
-  ctx.drawImage(img, x, y, w, h);
-
-  ctx.strokeStyle = "#666";
-  ctx.strokeRect(x, y, w, h);
-}
-
   /* ========= Execution ========= */
 
-  onAction(action) {
-    this.run(action);
+  async onAction(action) {
+    await this.run(action);
   }
 
   async onRun() {
     const {
-      img_path,
+      image,
       threshold,
       match_select,
       use_color_check
     } = this.properties;
 
-    if (!img_path) {
-      console.warn("MatchImageNode: img_path empty");
+    if (!image) {
+      console.warn("MatchImageNode: image empty");
       return;
     }
 
+    const name = image.startsWith("data:") ? "(内嵌图片)" : image.split("/").pop();
+    this.log(`匹配图片: ${name} (阈值=${threshold})`);
+
     try {
       const response = await this.callBackend("match_image", {
-        img_path,
+        image,
         threshold,
         match_select,
         use_color_check
       });
       const result = response?.data || {};
-      this.setOutputData(1, result.x ?? null);
-      this.setOutputData(2, result.y ?? null);
-      this.setOutputData(3, result.max_val ?? 0);
+      this.setOutputData(3, result.x ?? null);
+      this.setOutputData(4, result.y ?? null);
+      this.setOutputData(5, result.max_val ?? 0);
+
+      const matched = result.x != null;
+      if (matched) {
+        this.log(`匹配成功: (${result.x}, ${result.y}), 匹配度=${result.max_val?.toFixed(3)}`);
+        await this.execOutput(1); // 成功
+      } else {
+        this.log(`匹配失败: 未找到 (匹配度=${result.max_val?.toFixed(3)})`, "warn");
+        await this.execOutput(2); // 失败
+      }
     } catch (e) {
+      this.log(`匹配异常: ${e.message}`, "error");
       console.error("MatchImageNode failed:", e);
       throw e;
     }
@@ -5500,7 +5931,7 @@ class TestErrorNode extends LiteGraph.LGraphNode {
           }
         };
       default:
-        return Error;
+        return "Error";
     }
   }
 }

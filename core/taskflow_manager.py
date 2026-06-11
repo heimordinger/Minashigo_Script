@@ -296,10 +296,7 @@ class TaskflowManager:
             should_open = ws is None or ws.get_client_count() == 0
 
         if should_open:
-            import time
-            # 使用时间戳做缓存破坏，确保浏览器每次都加载最新页面
-            cache_buster = int(time.time() * 1000)
-            url = f"http://127.0.0.1:{self.http_port}/taskflow/index.html?_t={cache_buster}"
+            url = f"http://127.0.0.1:{self.http_port}/taskflow/index.html"
             try:
                 print(f"[TaskflowManager] 首次打开TaskFlow页面: {url}")
                 webbrowser.open(url)

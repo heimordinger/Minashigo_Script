@@ -1,0 +1,1560 @@
+{
+  "last_node_id": 24,
+  "last_link_id": 15,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "flow/update_frame",
+      "pos": {
+        "0": 1513,
+        "1": 527,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 78
+      },
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 7,
+          "slot_index": 0
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": [
+            4
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "成功",
+          "type": "boolean",
+          "links": null
+        }
+      ],
+      "properties": {
+        "save_screenshot": false
+      }
+    },
+    {
+      "id": 5,
+      "type": "action/click_image",
+      "pos": {
+        "0": 1745,
+        "1": 527,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": [
+        360,
+        412.9737147281044
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 4
+        },
+        {
+          "name": "图片路径",
+          "type": "string",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": [],
+          "slot_index": 0
+        },
+        {
+          "name": "成功",
+          "type": -1,
+          "links": [
+            14
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "失败",
+          "type": -1,
+          "links": [
+            5
+          ],
+          "slot_index": 2
+        },
+        {
+          "name": "点击X",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "点击Y",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "匹配度",
+          "type": "number",
+          "links": null
+        }
+      ],
+      "properties": {
+        "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEwAAAAjCAYAAAA+NeykAAAAAXNSR0IArs4c6QAAH1NJREFUaENlmmd8Hdd55v9nZm6/F733wgaQICkWsFeRokSqK6KsarlKVmxllShFuxvb642TeL2OYsdWItmyZdmSbPXKKlEkxd7BChZ0gES7wAVun3bWM2R++bDzAXfmYubOOc95y/M+7xHRH94vfdLCECAEWFLBl9bJ+j14yaB4LIZjChOmIGQlmVSC5Kg2AU0SMFTCQQtDegioNkIBERDoGdxDS1oQVFBSFkRUsCUUqzBkXb/hPw9x40Te+HSulRtfOs/4BBjy+nfOp19ArgI1jciyOqSnGjtpIfv2orR3gjMXG5ASO1/BHLGw/QKZtlEUgZDOPCW6JTE9YObW4KmqQC2SeBNn0HQvWiEoegiW3IIINv3XUIf+5kHpACWkjRASPaXjC3oxbIFipzGUJMdoIJyXj2+8l4nRKIppENZU8v0qQY8HvybwKAqqtPFXWYhxm2zaQ0joGMJHwGNAoYIcshCVGrLf/P8Bc8ByMJIgIgqkbGe+16+9AmlK5xTLkjBHw65VsOV6rMI5WKaNYZnYmVMoO3biiUtUCdIG268gLY2YniaV8bivEMLCCgTBEyCjR0m1PoivpBhfSCXc8yH+1DA+aeL1edGW5aLlL0ENVKPYUUTfk3dIgTOY6ytqGwbC48GybTKahq1l0W9+nIop0xm7dIb+80cZHteZvHKRGp9BYdCLkB4i9XXIoQHCxRkUE5RJFb+wmUx7qCq2UWZ4EWey2LaBonqxslnsTBbV70fxerAyGdRAwB2DpSdRvSH33EwmUUMhjHgCEQqhK5LsehVjXJLNWY6tLSSpZzEtE9M+hTy0l9Ao+FTIJLIkNS8lS1bSfu4K6aF+d5aW6qFoSiNTFrTSNd5HNNSCkBY+Dexr7+KPxgipFqGoTbBVI9AcIRguxOdJI9q/eZcMmFmku5yQ9gXwZVPolk3UkuTMaqby3q+RP2UGlpEmMRHjwokzfParfycnPkRhKEDRrDqs6gas4cMEOnW8SFTDIsejIlJZKqvD+Bu8eDpN103MiUmkZSFtG10N4lVMhGUiVBUtFESfmETRNHc8DohmOo1hGOhCpV9oTCwMI8PO7ExMsYJwfjPFJQVEo7vo+vAE/qFBTNuD34gzWtjALd/7CfpQLyc/+4jBjk6MbJZgZSWb/+dPXM9JTEYZ7G1juP8k8ZE4sTNdCDOBPpikOJwit0KhqD5EQVAgur+6QTqTcP3SWVELTNPEUKAzYVD9Zw8zde1GgnkQH77E5TPn+eyDL+i71EXQ0qmpqWHdNx/AV3ETmXgU62IbI4f20XP5Inka+BUPVT6D/IBCWCh4nThkWy5wQghs2/FESVKECJNCqAo9NSuYPqMO48hWrNgotu24nGRct+mbupDyO+9B9RlM9O3gi0OnCeeVM3PhPcy8aSPdp45w9MX/TXIkhmVDZGoLX3nhNZAWejbNxVMn+fyDdzl9+CD//PrbFJaUI804Z88cZO/uz1m1ZjMN06ZjpFN0Ht9H1673SXVfoSooqAp7ERcfXScnUyY+n0o8baIIiROSYxmDMaHQ8sx3mTJ3GnZmkH179vLSbz4mMdhH2IISv5cir0ZxVRENN9/CvLV3U1xaRjI2Rl/HFc7v28Xo3l1UezLkZCX1JR7yPAoeITCyNoGQSiZpkUnaeAMKpi4papkOKzZiK4o7SfMPP8eyJYYNfVGdPhQK77iX+Y8/S3JyiPOHD/L+9tdonrGC+x55ElVV6Dp5hN//9Mf4FZUVd97F2ke/jp3qpPNyF4cPHuPA53uZHBjk+Xe3UFhcztjoMDs/fpfXXvw59dVlfPPZZ2mat5x00uTyySO8+YO/o9jjpTmgIw7et1qmTIuMaaFbFqZQ0LJpxjwBKC/n9u//X7KpCXZ/vpUt27bQ2TNMWV4R1UVF5HsUcnND5JdWUFxRyYI1cyitqgA1B90KM9zTyYE3XmHk2CFyE+NUaYISj0JEFYSDKkbGSTQQKdCIj5lukM+bPx112QY8tkAkviC95Ywb1EXfOFdLcjgzZCAWr2DJk39NYUUVyckJfvb8T6iqrmbjHXdRVFJKNp3luScep6S0hPsefYSpzfWMdh/llV+/S9vpSyTGouT6Avzru1tdwEaGB9ny4dv86hf/QkhKnnr2WVauW01Ofh6D/cO88v3vYQ0NMt2TRRx9dJ0cEBEmc4quxw6/z3UVLT+PypYWlty9mcmxKCdPHufCpXZURSUvXEBhTsRN86oH/DJF/5VuMnacppZ6WuYtIlwyE6GGuHTsEJ/99pdMth2hWlpUqZJin0ZQgColwRyPa2mpuImeloSmgdI6E59djifTTurTftTxFJmSMLGESduYTax+BrMffoxZy1tRPSFefeVXqLbF/PlzmTK9HkX18Nyz36Nh2izuuHMjkyOd7Nm5nW1bdjM2NE7Qo1BSWMy/vP0BhSUV1wH74E1e+rd/wi8Vblu/ibW3Lqd2ag19vVFe+9dfIEdGmOoDceara+VE82rmfP07JMaGkFK9nt8VgSfgISesonm8CMXj5HdQHEAVUokJurt76L7UxljnMS4dv8CJC720zG3kzx68nbkr1qF48kEJ8Pvnf8Kx9/5IRSZLnbSozgmSl02jZk1yy8J4/AqJqI7QFPJsg9DSGlBVrJ4oyYtRlNIIim0SH0pxIRjmWiCX/Ns2sHzzHe4Cvv2HtxkeHKK2tpxZc+pJJLPs3n+RGc3zqK+uYPfOrXz6+WEmr/bjMSwiHo2CwhL++c03KCitYmR4mK0fvsXLv/gRuR6FKSWNrNq0luaFN3G6rZ3f/uwFCjWNGX4v4oNlM+XotEZW/PnfUTe9GMVXgm0r2GYSaUQxkj3YtonqieAJVqAGalA1H13njvLJ9u18tuszon0XCaZNpB0gkhNg0fJZPPnXj6N5VfBW8cpPX2b3O+9TqniYodhUB4OUJGOEfUG8ZgYhJarPg21YLmhlxX4s3YZkmqGUJFeRCEUw6vczpgi6sxbp5hYWfP0p1EwHP/vlJ5y/NEBBfojq8nzOXbzKQ/etp666lIsd/Wzbd5KikhISF8+gTEziRyOvuJjvv/4SuaX1REdjbP/4PX79wo8JKxbVuVWs/9KjzFu/kUMH9/P6Cz8l1+NhWn4u4peL58hgvZ+sP4e7v3svmWSYTEqQTMTp7+2ls2eQq8MxyuumsWjFBua3rsIydQw9Q8/lC2z94B3e+8MbREzHzVT8CuQXFzB94SxmLaqnJ+ZFtwPosTjRs6dJtZ2g0Q9lmSyF/gBB28QvrevE3gliQuDTLYI+iEsF07F253tFwVAUdFVytmwq9Q8+hgwE2XZ4Hwe2fsrYeBQ16EVTBNlokpvv2sTk6CimYbPp4UdZvGQZZ77Yw6533qL71AnyC4t45mc/p37mbFKpFFs+fIsXf/YP1BbkseHWB1m68S6qp88gEZ9gZGiIXZ/8kcmhEcQrq1tkd8YmrqrMuXsdPVeHGY6OkcokSSZTxBMZ/JFCbt10F7dtvJPSikqkbdF+/gy7dm7l4Kc7iHV1UpATIWLYeCyJpalkfQG8uRq185ew+OZN1NVNZbjjMkffeo2xttOUx2PUVhWRLySp3hFqKyKuy/n9oGdtt4ryOyWREGQy16+FXyHrU+mums6cp/6CvKkzGRgd5fLZNrKZDMGcXCKRCNKw8IdCbvZTFcGcha2UV1YyMTrGmWNHudJ2EtU2Wf/AQxRXVWNZFlf7e7ncftYlyjUVEQIBlayhk0ol6b82TvuZUxjZEcSLX3lIJjQfhs9P1YwZDI9HmUzGMe3/Kl9KyipZvHQ5LbNmoIkU0s7QfvYsR4+fp6frKj4jS9jrxWtZWBkTA0FWqBjCYM7SWdzUOpOKqlKyqSzth9vZ//7nJM+00VhdQJWRYOhUP00lfiZGM5Q3lSGKi0ic60D+KdtldYnXA4mURHoE8aDKeN00Fjz9V9SsWIOwJvnj794imUrRctMcFi5e5PLJg1/s59z58+SEA6xbu5ScokqkkeJa/wBdV7qYHBtj1uI1lFRUIPVJuq5c5NDxsyTHxhHZUZLxMZKJBLqeZTIxgcQkN6IjPn7x5zIrFXRhIxXV5WFuAQf4vF7K6uqpqakjLz+CJpKkYt1cutzO+HCMZNZPKLeM2toq0imL6NUBMsnU9RJLQsY2KcpN4fOMO9TUTRiKqOby2RE6Pv2cSj1KrdSR/Ql8CoRsqGkpRfi8pIYniPbHSSOprQ67rtnVn2DSssnOmcXiv3iGqqXLEeYwTz3ybcYmYtz1wD089PiX3ff/+sUX2fLJNspKC/kff/NtShtmER/upu3EKdrazrkWue6uR2mcMRMyo+z4+F3++ccv4HNqaltQXFZJKBIhPjyImZmgOOil0ikDn1vYJK9OZolJScLhOzLjBnmhKJSWFbHpG99i9fqNFOerJKOdnD15mr//0SvExscQepbWuU185+kvc6pjgu2v/4HBzi5M07heODuKhUM9hCRrOzFII2DpKPgoVFTmhDVqbZtyxUYkbYoiCl6noAOSWZtrEwZeTVBT6CFjwNkxnZSUKC0trPjLZ6hZucrN6E8/9hixxAS3b97M5i897D7/u9++zLZPPqSosJhnnn2Omrpa+ro6+M3LL7Hlg/cpyc3lue/9PbMXrcDrC7Lz4w/40XefQ3XjsODex75Gy00L2PPm7zjW1k6ukaFcVRB/P2uaHEJBGgZxp75Dots2eeWlrL31FtZ/5evk5/vJjHWzb+8XvPTbrYwnkqRGriF1nfLKUtbfdjP3P/4deq5c4v03/sDR3bsxk5PYih9FqISdwK5A1ondQNBh64ogYlmU2ZImTcHnE1SEFBK6ZDBukZK4XC1HEQxaEketyVMFMdtmYuYs1vzV09Qvb8VWIrz0ws8Ziw6zoLWVdRvucAHb8tE7nDp1ksKCEu68427KK8L0dF/jN//+H3y69RMikTwe//a3uHn9akqKC9nxyVZ+8Oxz+IE1q9ey/v4vMXPpSkauDXD087188eYf8EZHEP80u0kmMxmkqmE49ZZT2eXm0LS0lbUPP0bN1GLio73s2nWAT7btp3dgkPvvuwefL8jZU2e5cv4cOX7J5q89ypwFrYyNpTnbdpYLbcfoOdZGOjaBrZuEBWhu1Qh5AhxdImxZVNiSQo+gJqC5mXE8a9MTt9CEcAFz7k/fkMDywyrj0qa3soFV3/46TbeuxbYMtu34gtTkBFOnNDB7QasL2MlDB7jS1UsoFGTpgibySqvo7h7m5V/8B7s//pCcnFwe+PZTbLh1DWWlxez4ZBv/4y+fw6eofPWp77Du9tuori/DSE9w9col3nzpj0TbLiBebGqUaUs68hNSkWhFBeTObmH+xvXMWDqficEL7N19iJ27jzM8lmLZkgVs3nwvwdwCzp+9wsG9+7h0+ggRH9z94N3MXrgQtBDdXQNcOHKMoe4Bhq4OIcfHEckEenScPCEpF4Js1kQxLVYWe/CHcxgajDGm2+g3pDGfC9aNeKooVIVULiZMktPqWfqtx2i5/TakOcGLL/yRxGSc1sVzWHnzShewz7Z9xvGT58nLC3H/HcvJq5pJd/cIL//iRT796CPywzncev+fcfcDt1JbX8uB/Ud5/v/8zFEu+fNnnmZhawsBLcv4yFW2b9vD0V0n0XsGEK80TZETuomlKMT9XhpXLeKm22+jcFoDY8NXOLp3L9t2nWEyY7Bo0TweeeQhqurKUYRNMqFz8WIvW7d9yudvvsGCJU3csmkl8xYtIK+kGqGEuTY4Sff5Kwx1XGa8t5f+s5coyk7iH48hYmkGTZvlEZWinCAHr8Xx6xZSUVzdyjBMVxl1CvEcTSGoCi7qJvmzprLwiUeZdfsGpJ3lW48+Q3R8jLvuv42Hv/yAC9jLL73Klm2fU15azH//66cob2ymu2uQV37xInu2bMPvj7B48SIeevJeps+Zxbn2Pt5+Zwv5BQXcfed6qsvDTIz2c+LwKZ7/6RtkRicocRSW386cIkd1C0IBmjdvZM5dm/AFBO2nj7N12x4+33WcYG4hG25bw9333Er9tGnYRgw9HWV4YIDegUnOdyd48zevuqs8f95U7rl3IUtXT8MfaEF4Cq+XVTd4qSMdtb33PqfeeJ/EhS4ymSzlqsqiEi8TaZto1mIwYWCrKqpl4VFVsqqCpRuuiqI7xXvTFOY/8SCzN61GqDk8/dVnGBsb4fb7NvKlxx5x3/XKSy+zfccut1Z8+unv0Dilkp7LXbz2wn9weOfneLUwU5um8thffZnmhQu43DnEZ7sOsXLFSupqC/Ep45w6fpRfv/wRZ4+fJ9dRZ1QV8fOmBqkX59H02NeYv6ycns5Oduw8zuEj7cSTE5Q2TOP2O+9h8YLpVJZ5UWQSY3SQbbtP8Nn+02QsLytWraYwqPH2Hz+mt7efmsoc1tw8lzvXLSFcXonidUIppFMZDuw+zPuv7iDbe5UptkUqoVNm29wchDFNYzBrMeT0AFSVgGkQ8PswdIMxR3IGEkiCzVNZ860HmbNpFU4jYcu2w2QTCaZPraJ5znT3XaePn+dy1zWCQR/L5jcSKS7lWuclXn3hdxzaeYgAPjTNyxM/fIJlG1YTT/kYGjGprlDxKEkGujrY+tFuXntjF35DUq2olDk9i5e/cY/McUhlqIqBq+fo7OpjYDhOOJLHiqVzmLNkPrU1Zfg9w4wO9XKmLcaRY2fp7humoKSKRUtaWb1yPuGgj5Mn+jiw/wCXzp3ESKepr6ti5apZzJ1fQHFRkMFelR/846sMXxrElzWZqeL2EKqkdEGLKSoZ23ZVDK9TLVg2AVUh68jlEnSH+jjJY9ZU7v5vj9C8ciaIKG++dYpMPMusmXXMa21xATuy/6TrZj6fj5WLGihvjHB0fwfvvrqVy0cv4BF+FAmPPPsAa+5chT9chGEH8GlxRgf6+fD9XWzdcpDhgRgVmkajkFR6NMRPvn6PTNgKI9EUw6O9RAoLqKiuZNrUWppn1BLODTE4MkxXxxmuXO6kt9dkMmtR29jE4iXzaV0wnZqKEIg4k6Mqx46dZ8vHOziy9xiRgJ+pU8uoawhSXJGHQgkv/Wor3oxNgYQK2yJimOSBm86d2sJxv1pVwRYwpFt4HElbSvf/cWDCqZYaa1jx+C3MWVNOR8cQb791AkV4WLV6PrduWu4C9uF7n/PFF6dITCZpnl7J+o2zuXBhhB0f7KP7bBcBvDi6zPr7b2HD5vXUTa/BtmziY0Ns33qI7R/v4Up7DxHhc4FqxKbEthF/MbNe9usK5OVQWBJh9vzpNDRU4tUURkdHGRwc5GLXIL39Y+i6pKK8hAWL57B4xRoaGwoJ+uJkkkOMjw9xrStOZ8c459v76W3vxExmiMcnrwfvQJDi8mL6O4bIsSUlpkWhbROUktwbcrXisECnq6YI99Nw/khJAIkmFLIKjDgZvaSQwtZ6yuf6OH48walTHa4accfda3joofXXmf5vPmHbR3sYujpMRU0VTz652W2U7Nt1kJMHTmNN6gQ1lWUbb+aWzetpml2DkZngamc/P37+TdpPtqPpJoWKhwKhUOz3EDZMxN9Oq5ZjoXxqFywgJy9CVsbo6uhgoHOAq+NxFMcMVZWKhgaWrljGbWuXM2V6sauDW+Yg8Xgn3Z0d7Nub4bN954iOxJjTPI377t3Eub1HOdXWTse1UbfODEgbVSgUSknYsvGYBnler2tFXsvGVBUU28bnnDsytqYSMk0CEkL+64mjU1G5qjjFvUaPhJTq8CGL+ik1bNy0ivs3r3Hv+/3vt/Pp1n1kdZtlG9bxtS/f6sbDk0dP8s5rH9O25xSlRfl86Yl7Wbp2HsGcAKZpMdgzwD/+8NdcPNNFwNIoUxWKvB6mzJ7OaO8A4hvlZbLU7yWmaYyoKpPSJmWksS0dAmFa161jXksTzU2llJUG8QpBuGCC7ovjXLp4jWMnzrF/fxvptKSorIj1axdx880rqGxoIBlPse/wBT54/UOGT58nKG2KgNys7sapXEeuEeDVHErrGJN023uKEK7u71wHLBuvlC5gCacsWraM6tU3kZMvsVUnCjs+CsFgmJLyYspril3A+ruGGB0aJZtJ4fEJyqrHURRJOp7LoX1X2bnlILdvWMWSWxZQlO9zQddyC7BMi1/+8gP2bjmIcjXKlJCfZfNnkoxEOH32MuKZshIZdFJ4wEeXM7CyEsoaKqisL6W4tpS6GTn41Ay27mFiHHr7R2jv6OJa3wix6CSxeBbDVli+eCZz505nVssUyitKUBQVT3CS0egEh/dcYNd7h7l44golTtPasTbb5oFSPweHs6QUBdOyXM0raxj4PR63v7BRhYTHw6mM6WZIVVWJlxaRyIugewWGRyGjam7Hq76ulKXL59C6eK4L2M6dBzh+7CzDV0fQzCyKJ+10q7FEiEheOc1N01ja2sxYbJC+PzVEcvMDrNkwF2QBly4MsP29fVw7d4WCoJ9NX9rAibMDHN59CPHd8lLpMOvKkhzU+hr0okLChXkE8sMUVoa52tfOeHKc+ASMj0tGonF6+qIuLyovL2Dq1BrqG+tYtGgGFaVFRPJUVC1BOj5GX/8o5y7003V5nMttVxm7NOC6WK5hkCMELV6NEdMm50br/prTqnY66IrTrbZYl+/FjmXZ7ZbrAs3pVRaGieoWHVmdMdNGd6zUllQ1VHDLbUu49/7rMex3b3zCjh0H6O++Rg7CjYf+gIeaxioWLJnLgvktLtk9uP8o3T2DNE4p55tPrKewtBQj5edS+1UG+kfwaSrzWpt54d/eoe3AScT/qiyXprTJDagULV1IOhxgYCzO4GQcWzW4ePoSWSdMON0kj4dIJIecvDCFBfnMu2k6y5Y3U99YhNdvkYpnSWcmmIgP0t/Xy+F9Ufbsvcj4aJqQLShRBOFsljzLxo90C/EKj4dSj0LMsBhyYrwQ6KbpBtrpwibm9TKU0cnz+6kozSGDzbhlM2ZYnBhPYWsaKVsSrixjybrFPPSV21zAXn9rJ9u3fUF/51UCio/8nDCl1XksWdZMQ2Ml3d1D7Dt4mo4r10jE00xrqOD++5ezcmMFXrUSRc1zO/ROWNBTBn/7lz+mv70b8f2qCqlLm7gtSagqaUUhZlsknBQvBF7VRFOcnoigoLCImS0trLyllRnTywiHfAg1g+ofxsz0Mjwc5+K5JPsPRjlyrJ9kbBzLhIDTUEWS7ygV6QyViootbWwk3j9ltJqAj4GsgeHEoxtxLOKcKyq6ItyEsa4kjOJXSBkGSQlJ1c+FwTGEL0CnaeOtLmf+hqXc88h1C3v97c/Y+cluRrqvURjOZ/bsacxZNgOppDl8sI19e84SVBQiWoAx3bpOgeqLefiZJqbMbHJBM7MRhKPk/MlgvveDX9N35iLiH6oqpFNyJG2bcQcsIYhL2x2UNxBg/qKFNDYWU19fTHFFEbn5YQrKUniUYVLJOMODFj2dks6ea+w7cJbo1XHMjMRvaq70a1mOy0lClkXItgk7G3iEIG3brjjoqF8+VXVjmOOKTtA3gJvCASJehXOxDJa0uac6hO1kTltiOruMbMnpCYNY1qbDsMlvbmDD47cxd0Hd9Sz54RG2bTtCJpZiRmMtxUE/l7v7iI7HyOhZjKxBjiMzOWNxSm7F0eK85NYVct83mmmZV0IwlI8QpeijCu9uOcpnWw4jfjS1UTr8hOJ8/A2V4PfizQ8Rzg8SDniJFJVSUJzA5wmQTnuJxWLEMwmudnfTPxhlbCxDKmYRS0kS0Rgia+JsIwlLhYy00QzD5VkOKchF0uDxuNJN2rTotSyC7vT+63BAi1o2T1bnoqmwo3eSUQmP5mpYeX6Xn7masG1zdCjNKcOxUwg1N3LnU7cwa7Fjs/CTfznEF3s6kfEs1eEQIVUhFk8wmsle71IpCkHLwmdZLim2HenJ78PUVCrrw0xbOYWl66ZR2xDEygree7+Hj989hXi+oVY6EzPycqC8GNunoUaC5BSFXLdJOPRbHcfQBclJyeRknHjaIjkaY2IyhZ7V0VwJRsMvJY4rRWzb3Z/h0AFh2+Q4LF7ADAQOhUkaJhGvxslU1pVy/vNw5ByHYoybJpsCGvXY/C4t0VSFetuitTiA9KsulbCHkrybsZlwQofjIYV5NCydzowlxSTTE2z5qJO+rglyshZTPSoqEmen1JDh7PKR7lgdmuOzbQp8XsfxXOVk8oY6UlpXTGlTCblVKlK1OHM2Q2/7KOJfa6tk1qnRpGRE4g4goygUBDQ6krqrkrp70xyNytmM5oj1jgW5Eozt+IYLmEM4nZUqcHbg6IbbiXbczQEqiGBJwNkWBZbTVXcGJQQHUhlXgXCec9zCKVWc33UkHQds57ou4COsCFLOxFSFRj3LqMfDvqROhut8rV/ajAsFNRREqalgOD7GeCyNYtgUOlYtbcIOJTFM93ccCwsKgWJZ1Hg0Fhb73di5fTDNMJJJoVAT8XNat8k4SUjq2MLZ76YgflhRJlVNJWaYJGzJJBLb62NSVdB1R393FtR56PoOMmelNFVDMy00x+UcycW2iZjORhZBxLESKVkjJN0eHxd0HRXBQyUBOuKWu1snTxP0mpIr2ayrvDq8K2EYrqU4rutYmtNKqUIwN+xn2LaZl8lwQAou3lhAx/Add3aWb9y5321pCia8HiYdMJxxO+TYsiiwnG63B+PGGB3SHHCudZ1ar4dVZT73d94eNEhYJknLpiLo55xpk9U0Ms5/nTn+aYPM/wPyXtPfWwjJfAAAAABJRU5ErkJggg==",
+        "threshold": 0.9,
+        "pianyi_x": 0,
+        "pianyi_y": 0,
+        "down_time": 0.12,
+        "max_delay": null,
+        "start_count": 0,
+        "use_color_check": false,
+        "match_select": "best",
+        "use_human_offset": true
+      }
+    },
+    {
+      "id": 6,
+      "type": "flow/sleep",
+      "pos": {
+        "0": 2142,
+        "1": 546,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 122
+      },
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 14
+        },
+        {
+          "name": "秒数",
+          "type": "number",
+          "link": null
+        },
+        {
+          "name": "上限",
+          "type": "number",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        }
+      ],
+      "properties": {
+        "seconds": 0.5,
+        "upper_limit": 0,
+        "step": 0.05
+      }
+    },
+    {
+      "id": 7,
+      "type": "action/click_image",
+      "pos": {
+        "0": 2132,
+        "1": 741,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": [
+        360,
+        607.0975914931879
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 5
+        },
+        {
+          "name": "图片路径",
+          "type": "string",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": [
+            16
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "成功",
+          "type": -1,
+          "links": [],
+          "slot_index": 1
+        },
+        {
+          "name": "失败",
+          "type": -1,
+          "links": [],
+          "slot_index": 2
+        },
+        {
+          "name": "点击X",
+          "type": "number",
+          "links": null,
+          "slot_index": 3
+        },
+        {
+          "name": "点击Y",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "匹配度",
+          "type": "number",
+          "links": null
+        }
+      ],
+      "properties": {
+        "image": "data:image/png;base64,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",
+        "threshold": 0.9,
+        "pianyi_x": 0,
+        "pianyi_y": 0,
+        "down_time": 0.12,
+        "max_delay": null,
+        "start_count": 0,
+        "use_color_check": false,
+        "match_select": "best",
+        "use_human_offset": true
+      }
+    },
+    {
+      "id": 8,
+      "type": "flow/sleep",
+      "pos": {
+        "0": 2528,
+        "1": 740,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 122
+      },
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 16
+        },
+        {
+          "name": "秒数",
+          "type": "number",
+          "link": null
+        },
+        {
+          "name": "上限",
+          "type": "number",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": [
+            17
+          ]
+        }
+      ],
+      "properties": {
+        "seconds": 3,
+        "upper_limit": 0,
+        "step": 0.05
+      }
+    },
+    {
+      "id": 9,
+      "type": "flow/goto",
+      "pos": {
+        "0": 2768,
+        "1": 741,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 58
+      },
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 17,
+          "slot_index": 0
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "target": "循环1"
+      }
+    },
+    {
+      "id": 10,
+      "type": "flow/start",
+      "pos": {
+        "0": 3896,
+        "1": 110,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 140,
+        "1": 26
+      },
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "next",
+          "type": -1,
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "起点",
+      "properties": {}
+    },
+    {
+      "id": 11,
+      "type": "action/match_image",
+      "pos": {
+        "0": 5300,
+        "1": 492,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 480.65216064453125
+      },
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 6
+        },
+        {
+          "name": "图片路径",
+          "type": "string",
+          "link": null
+        },
+        {
+          "name": "阈值",
+          "type": "number",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "x",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "y",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "max_val",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "成功",
+          "type": -1,
+          "links": [
+            12
+          ]
+        },
+        {
+          "name": "失败",
+          "type": -1,
+          "links": [
+            7
+          ]
+        }
+      ],
+      "properties": {
+        "image": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABcAAAAZCAYAAADaILXQAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAVmSURBVEhLbZXbbpxJFYW/Ov1/t9t227EdO4dJmFgoTsIEZUCIgwSMhOZ1QJobbpDyFLwIb4CQuEDDCBFAmpAhcaSJk3a3+/Af67S5aBNlmGxpX9RprapVu1apz377ezGjD9nY2scai9IaRCEiiEBGkY1BFQ6FgA+olFAKFKCUAoScE33f0FWvsOGUO/sz1K9/9wfZ2DrAGocIpJzxPuNDIgTBi2PzYJut3SGraU23WEEMWA3OGcpC45xBaYVIJvQNXfUaF1+ifvP4j6JNQU6Z3kd6nwghExJk5dCjbW7fu8r22PLsyTnV+QWEDiUZoxXWKgqnKQcOZw1KCSl0NNUZuuthsWiZnFdMJhXTac180VN3IOWI68d7fHC8jWAJyWIGG2TlqOrIctVycdFwPq2ZTCpmFzVVHfDRIOYKej5vmU5rprOG+aKjbiI+WcrtHW7dPeT+oz02ho43ZwlTDNg9HKMHQ9ou07WetvVUVb8mOa+ZTiuWq54QDHo6q5hdNNR1T98nfDQUm2NunRzx4ON9tscFz591TF5HrlwdsXe0hbGOvs/0fXybXRdYrTpms4bprGa56tGrqqfvA95Hei/ocsT14wNOHu6wsWn4598anvy1YTDQfOd4yHjXkQW8T3gfv5Vt61kuOxaLDh1DIqVMSkLGMt7f4vjeGFc6/vFFy1/+tCDFyMlHWxxdLzAaQhBigpTkcu03M/hI0/Ro3oamGA7Y2d8kZc2TL2o+//OCcmD4ySd7nHxUog3UNYgaUAy3wAzhXYh3IqX8zRHnFG3j+fvnF/z7X0sOrhX8/NMd7n7P4ZzQdZmYLHe/f8QPfvlddq7dBLMJmHdh3sY74EJXt5y9uGB+3nDzVskPf7rJ9dsapTMxZdpG6L3i6OaAH39ywKOffcD24SHYIfKeE7ztEdY6Wue4fbzF3Ycj9o80QiKmTL0SZpOEtbA9NuxddTz4eId7jw4pR1so5VgbwnvAwVBujLhxvM/xgzG7B5qUIyFkcobZVDh7lSkKxWAIWTJXDhx3Tna5crSHKUrk/eAKlGPnYMyHJzvsHhiSRHxIAPhOMZusZflfhcSYETK7ByXXbu9QDAbfutzLlsYUQ64cjrl6o0RbwftESoIxiqaGrhXGO4q+F6oqk7LQ+0Q5VOxfLXFlAer/wZUGpRmMNhjvbVKUiiyXdZ9lPUvAWtjYVCgNKa9rPMSMNsJwZNHWgTIopS5tGLRSGqUtrnS4gQO19nJgbcFJcIWQBC6mQjlQlAMhXD6+nNfzlNbrv0BpuCTQWhuM0eQsxBDf+QBARGjagC0jj35k+MWnBfcfasqNtd8jELzQNAkkY4xGG4O6JNDGGqw1xBCpFh3eg1IardcEKa0JZvOW6axmvuzoukDOgrWaroPJG09OsgbXBqUNCoVW2qCtQytYzHq+fhlI3lAUFmM06lKmGNcPKSUBFNYYUjJMXvWcv6rIKWGNQRtzubGEVlpjnMM5Q9d4Tv9T8/JlpPeWclBQlBZt1tIZYyjKdX/Klhenkadf1vSNRxuNdg6tLYiQU48W8aBBWwMIy3nP8+cNT78KnL5RXDSOTkq8KumlZNE6vp4onn4VefZly3zao5SstdYaIZNTS/AzzLU7v3psbYl1JbYsMM4SRVF5WHXQBEUdNKtWsajhfJ45ex2YnPU08x6CR4InxUDyLaFb4tsJ+FPM0Y1Hj0UVaFugnEU7i3EabRQ5C02bWa4ii2VksQjUK09oArn35OCJvid2LbGr8e0M37xG+VOORi8x949vPG56IWYQlUBDVpdFngVSQkJEfET6gHSeWPfEuiPUNaFe0FczuuUbfPUKG15wtPGCB9ff8F869TVpxVnUHQAAAABJRU5ErkJggg==",
+        "threshold": 0.9,
+        "match_select": "best",
+        "use_color_check": false
+      }
+    },
+    {
+      "id": 12,
+      "type": "action/match_image",
+      "pos": {
+        "0": 4808,
+        "1": 291,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 480.0000305175781
+      },
+      "flags": {},
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 4
+        },
+        {
+          "name": "图片路径",
+          "type": "string",
+          "link": null
+        },
+        {
+          "name": "阈值",
+          "type": "number",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "x",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "y",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "max_val",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "成功",
+          "type": -1,
+          "links": [
+            11
+          ]
+        },
+        {
+          "name": "失败",
+          "type": -1,
+          "links": [
+            5
+          ],
+          "slot_index": 5
+        }
+      ],
+      "properties": {
+        "image": "data:image/png;base64,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",
+        "threshold": 0.9,
+        "match_select": "best",
+        "use_color_check": false
+      }
+    },
+    {
+      "id": 13,
+      "type": "flow/update_frame",
+      "pos": {
+        "0": 4058,
+        "1": 88,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 78
+      },
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "成功",
+          "type": "boolean",
+          "links": null
+        }
+      ],
+      "properties": {
+        "save_screenshot": false
+      }
+    },
+    {
+      "id": 15,
+      "type": "flow/variable",
+      "pos": {
+        "0": 4569,
+        "1": 7,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 126
+      },
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "当前值",
+          "type": "",
+          "links": null
+        }
+      ],
+      "properties": {
+        "name": "属性",
+        "type": "string",
+        "default": "暗"
+      }
+    },
+    {
+      "id": 16,
+      "type": "action/match_image",
+      "pos": {
+        "0": 4567,
+        "1": 187,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 480
+      },
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 3
+        },
+        {
+          "name": "图片路径",
+          "type": "string",
+          "link": null
+        },
+        {
+          "name": "阈值",
+          "type": "number",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "x",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "y",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "max_val",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "成功",
+          "type": -1,
+          "links": [
+            9
+          ],
+          "slot_index": 4
+        },
+        {
+          "name": "失败",
+          "type": -1,
+          "links": [
+            4
+          ],
+          "slot_index": 5
+        }
+      ],
+      "properties": {
+        "image": "data:image/png;base64,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",
+        "threshold": 0.9,
+        "match_select": "best",
+        "use_color_check": false
+      }
+    },
+    {
+      "id": 17,
+      "type": "action/match_image",
+      "pos": {
+        "0": 5046,
+        "1": 391,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 480.0000305175781
+      },
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 5
+        },
+        {
+          "name": "图片路径",
+          "type": "string",
+          "link": null
+        },
+        {
+          "name": "阈值",
+          "type": "number",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "x",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "y",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "max_val",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "成功",
+          "type": -1,
+          "links": [
+            10
+          ],
+          "slot_index": 4
+        },
+        {
+          "name": "失败",
+          "type": -1,
+          "links": [
+            6
+          ],
+          "slot_index": 5
+        }
+      ],
+      "properties": {
+        "image": "data:image/png;base64,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",
+        "threshold": 0.9,
+        "match_select": "best",
+        "use_color_check": false
+      }
+    },
+    {
+      "id": 18,
+      "type": "flow/variable",
+      "pos": {
+        "0": 5050,
+        "1": 218,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 126
+      },
+      "flags": {},
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 11,
+          "slot_index": 0
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "当前值",
+          "type": "",
+          "links": null
+        }
+      ],
+      "properties": {
+        "name": "属性",
+        "type": "string",
+        "default": "光"
+      }
+    },
+    {
+      "id": 19,
+      "type": "flow/variable",
+      "pos": {
+        "0": 4810,
+        "1": 117,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 126
+      },
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 9
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "当前值",
+          "type": "",
+          "links": null
+        }
+      ],
+      "properties": {
+        "name": "属性",
+        "type": "string",
+        "default": "火"
+      }
+    },
+    {
+      "id": 20,
+      "type": "flow/variable",
+      "pos": {
+        "0": 5303,
+        "1": 318,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 126
+      },
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 10,
+          "slot_index": 0
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "当前值",
+          "type": "",
+          "links": null
+        }
+      ],
+      "properties": {
+        "name": "属性",
+        "type": "string",
+        "default": "雷"
+      }
+    },
+    {
+      "id": 21,
+      "type": "flow/variable",
+      "pos": {
+        "0": 5545,
+        "1": 416,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 126
+      },
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 12,
+          "slot_index": 0
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "当前值",
+          "type": "",
+          "links": null
+        }
+      ],
+      "properties": {
+        "name": "属性",
+        "type": "string",
+        "default": "水"
+      }
+    },
+    {
+      "id": 22,
+      "type": "flow/variable",
+      "pos": {
+        "0": 5809,
+        "1": 496,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 126
+      },
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 13,
+          "slot_index": 0
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "当前值",
+          "type": "",
+          "links": null
+        }
+      ],
+      "properties": {
+        "name": "属性",
+        "type": "string",
+        "default": "风"
+      }
+    },
+    {
+      "id": 23,
+      "type": "action/match_image",
+      "pos": {
+        "0": 5549,
+        "1": 597,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 488.478271484375
+      },
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 7,
+          "slot_index": 0
+        },
+        {
+          "name": "图片路径",
+          "type": "string",
+          "link": null
+        },
+        {
+          "name": "阈值",
+          "type": "number",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "x",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "y",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "max_val",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "成功",
+          "type": -1,
+          "links": [
+            13
+          ],
+          "slot_index": 4
+        },
+        {
+          "name": "失败",
+          "type": -1,
+          "links": [
+            15
+          ],
+          "slot_index": 5
+        }
+      ],
+      "properties": {
+        "image": "data:image/png;base64,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",
+        "threshold": 0.9,
+        "match_select": "best",
+        "use_color_check": false
+      }
+    },
+    {
+      "id": 24,
+      "type": "flow/confirm",
+      "pos": {
+        "0": 5805,
+        "1": 699,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": [
+        280,
+        140
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 15
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "确认",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "取消",
+          "type": -1,
+          "links": null
+        }
+      ],
+      "properties": {
+        "title": "属性识别错误",
+        "message": "确定执行此操作？",
+        "content": "请手动输入属性"
+      }
+    },
+    {
+      "id": 14,
+      "type": "action/match_image",
+      "pos": {
+        "0": 4320,
+        "1": 141,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 465
+      },
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 2
+        },
+        {
+          "name": "图片路径",
+          "type": "string",
+          "link": null
+        },
+        {
+          "name": "阈值",
+          "type": "number",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": [
+            8
+          ],
+          "slot_index": 0
+        },
+        {
+          "name": "x",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "y",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "max_val",
+          "type": "number",
+          "links": null
+        },
+        {
+          "name": "成功",
+          "type": -1,
+          "links": null,
+          "slot_index": 4
+        },
+        {
+          "name": "失败",
+          "type": -1,
+          "links": [
+            3
+          ],
+          "slot_index": 5
+        }
+      ],
+      "properties": {
+        "image": "data:image/png;base64,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",
+        "threshold": 0.9,
+        "match_select": "best",
+        "use_color_check": false
+      }
+    },
+    {
+      "id": 2,
+      "type": "flow/relay",
+      "pos": {
+        "0": 1359,
+        "1": 661,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": [
+        210,
+        100
+      ],
+      "flags": {},
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "输入",
+          "type": -1,
+          "link": 9
+        },
+        {
+          "name": "输入 1",
+          "type": -1,
+          "link": 8
+        }
+      ],
+      "outputs": [
+        {
+          "name": "输出",
+          "type": -1,
+          "links": [
+            7
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "inputCount": 2,
+        "outputCount": 1,
+        "extra_inputs": [
+          "输入1"
+        ],
+        "extra_outputs": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "flow/label",
+      "pos": {
+        "0": 1034,
+        "1": 706,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": [
+        200,
+        80
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "标记",
+          "type": -1,
+          "links": [
+            8
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "label": "循环1"
+      }
+    },
+    {
+      "id": 4,
+      "type": "flow/start",
+      "pos": {
+        "0": 1103,
+        "1": 533,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 140,
+        "1": 26
+      },
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "next",
+          "type": -1,
+          "links": [
+            9
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "起点",
+      "properties": {}
+    }
+  ],
+  "links": [
+    [
+      1,
+      10,
+      0,
+      13,
+      0,
+      -1
+    ],
+    [
+      2,
+      13,
+      0,
+      14,
+      0,
+      -1
+    ],
+    [
+      3,
+      14,
+      5,
+      16,
+      0,
+      -1
+    ],
+    [
+      4,
+      16,
+      5,
+      12,
+      0,
+      -1
+    ],
+    [
+      5,
+      12,
+      5,
+      17,
+      0,
+      -1
+    ],
+    [
+      6,
+      17,
+      5,
+      11,
+      0,
+      -1
+    ],
+    [
+      7,
+      11,
+      5,
+      23,
+      0,
+      -1
+    ],
+    [
+      8,
+      14,
+      0,
+      15,
+      0,
+      -1
+    ],
+    [
+      9,
+      16,
+      4,
+      19,
+      0,
+      -1
+    ],
+    [
+      10,
+      17,
+      4,
+      20,
+      0,
+      -1
+    ],
+    [
+      11,
+      12,
+      4,
+      18,
+      0,
+      -1
+    ],
+    [
+      12,
+      11,
+      4,
+      21,
+      0,
+      -1
+    ],
+    [
+      13,
+      23,
+      4,
+      22,
+      0,
+      -1
+    ],
+    [
+      14,
+      5,
+      1,
+      6,
+      0,
+      -1
+    ],
+    [
+      15,
+      23,
+      5,
+      24,
+      0,
+      -1
+    ],
+    [
+      16,
+      7,
+      0,
+      8,
+      0,
+      -1
+    ],
+    [
+      17,
+      8,
+      0,
+      9,
+      0,
+      -1
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

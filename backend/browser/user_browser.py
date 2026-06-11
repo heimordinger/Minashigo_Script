@@ -98,12 +98,12 @@ class UserBrowser:
             down_time=down_time
         )
 
-    async def update_frame(self):
+    async def update_frame(self, save_screenshot=False):
         """
         获取浏览器视口帧，但是每次获取时会重置一遍轮询临时结果。目的是在脚本每次循环时重置一遍，避免轮询错误引用上一轮循环的结果
         """
         await self._task_ctrl.check()
-        await self._browser.update_frame()
+        await self._browser.update_frame(save_screenshot=save_screenshot)
         self.polling_temp_cache = {}
 
     async def match_image(
@@ -145,6 +145,7 @@ class UserBrowser:
             threshold: float = 0.9,
             use_color_check: bool = False,
             match_select: str = "best",
+            max_delay: float | None = None,
     ):
         import time
         _t0 = time.time()
@@ -311,6 +312,8 @@ class UserBrowser:
 
         while True:
             await self._task_ctrl.check()
+            await self._browser.update_frame()
+            
             if await self._browser.match_image(img_path=img_path):
                 return True
 

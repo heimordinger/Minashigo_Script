@@ -62,6 +62,10 @@ class SleepNode extends LiteGraph.LGraphNode {
     this.mode = LiteGraph.ALWAYS;
   }
 
+  getHelpText() {
+        return "等待指定时间(秒)<br>支持小数，如 0.5 表示 500ms";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
@@ -114,6 +118,7 @@ class SleepNode extends LiteGraph.LGraphNode {
     }
 
     window.taskflowLog?.("info", `[等待] 等待完成 (${(elapsed/1000).toFixed(2)}s)`);
+    await this.execOutput(0);
   }
 
   onExecute(param, options) {

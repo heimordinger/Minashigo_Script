@@ -48,10 +48,11 @@ function ensurePropertyDialog() {
   ].join(";");
 
   wrap.innerHTML = `
-    <div style="width:500px;max-width:92vw;background:#1f1f1f;color:#eee;border-radius:10px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,0.5);max-height:80vh;overflow-y:auto;">
+    <div style="width:520px;max-width:92vw;background:#1f1f1f;color:#eee;border-radius:10px;padding:16px;box-shadow:0 10px 30px rgba(0,0,0,0.5);max-height:80vh;overflow-y:auto;">
       <div id="tf-property-title" style="font-size:16px;font-weight:bold;margin-bottom:12px;border-bottom:1px solid #444;padding-bottom:8px;">节点属性</div>
       <div id="tf-property-list" style="display:flex;flex-direction:column;gap:10px;"></div>
-      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px;border-top:1px solid #444;padding-top:12px;">
+      <div id="tf-property-help" style="margin-top:12px;padding:10px 12px;background:rgba(255,200,50,0.08);border-left:3px solid #fc3;border-radius:4px;font-size:12px;color:#ccc;line-height:1.6;display:none;"></div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:12px;border-top:1px solid #444;padding-top:12px;">
         <button id="tf-property-cancel" style="height:32px;padding:0 16px;border:0;border-radius:6px;background:#444;color:#ddd;cursor:pointer;">取消</button>
         <button id="tf-property-ok" style="height:32px;padding:0 16px;border:0;border-radius:6px;background:#2d6cdf;color:#fff;cursor:pointer;">确定</button>
       </div>
@@ -199,6 +200,20 @@ export function openNodePropertyEditor(node) {
   // 设置标题
   titleEl.textContent = `${node.title || "节点"} 属性`;
 
+  // ─── 节点标题编辑 ───
+  const titleContainer = document.createElement("div");
+  titleContainer.style.cssText = "display:flex;flex-direction:column;gap:4px;margin-bottom:6px;";
+  const titleLabel = document.createElement("label");
+  titleLabel.textContent = "节点标题";
+  titleLabel.style.cssText = "font-size:12px;color:#aaa;";
+  titleContainer.appendChild(titleLabel);
+  const titleInput = document.createElement("input");
+  titleInput.type = "text";
+  titleInput.value = node.title || "";
+  titleInput.style.cssText = "width:100%;height:32px;border:1px solid #555;border-radius:4px;background:#111;color:#fff;padding:0 8px;outline:none;";
+  titleContainer.appendChild(titleInput);
+  listEl.appendChild(titleContainer);
+
   // 获取属性配置
   const propertiesInfo = node.properties_info || [];
   const properties = node.properties || {};
@@ -251,26 +266,91 @@ export function openNodePropertyEditor(node) {
     }
   }
 
-  // 如果没有 properties_info，从 properties 生成
+  // 如果没有 properties_info，从 widgets 自动推断控件类型
   if (propertiesInfo.length === 0 && Object.keys(properties).length > 0) {
+    // 构建 widget 名 → widget 映射
+    const widgetMap = {};
+    if (node.widgets) {
+      node.widgets.forEach(w => { if (w.name) widgetMap[w.name] = w; });
+    }
+
     Object.keys(properties).forEach(propName => {
-      // 跳过路径类型
       if (propName.toLowerCase().includes("path")) return;
 
-      const propValue = properties[propName];
-      const { container, input, type } = createPropertyInput(propName, propValue);
+      const widget = widgetMap[propName];
+      let autoConfig = {};
+
+      if (widget) {
+        // 从 widget 类型推断属性编辑器控件
+        switch (widget.type) {
+          case "combo":
+            autoConfig.type = "select";
+            autoConfig.values = (widget.options && widget.options.values) || [];
+            break;
+          case "toggle":
+            autoConfig.type = "boolean";
+            break;
+          case "number":
+            autoConfig.type = "number";
+            if (widget.options) {
+              if (widget.options.min !== undefined) autoConfig.min = widget.options.min;
+              if (widget.options.max !== undefined) autoConfig.max = widget.options.max;
+              if (widget.options.step !== undefined) autoConfig.step = widget.options.step;
+            }
+            break;
+          case "button":
+          case "preview_image":
+            return; // 跳过按钮和预览
+          default:
+            autoConfig.type = "text";
+        }
+      }
+
+      const propValue = widget ? widget.value ?? properties[propName] : properties[propName];
+      const { container, input, type } = createPropertyInput(propName, propValue, autoConfig);
       listEl.appendChild(container);
       propertyInputs.set(propName, { input, type });
     });
   } else {
-    // 使用 properties_info 生成
+    // 使用 properties_info 生成，但结合 widget 类型适配
     propertiesInfo.forEach(propConfig => {
       // 跳过路径类型
       if (propConfig.type === "path" || propConfig.name.toLowerCase().includes("path")) return;
 
       const propName = propConfig.name;
       const propValue = properties[propName];
-      const { container, input, type } = createPropertyInput(propName, propValue, propConfig);
+
+      // 查找匹配的 widget，确定最佳控件类型
+      let effectiveConfig = { ...propConfig };
+      const matchedWidget = propToWidgetMap.get(propName);
+      if (matchedWidget) {
+        // 用 widget 类型覆盖 properties_info 类型
+        switch (matchedWidget.type) {
+          case "combo":
+            effectiveConfig.type = "select";
+            effectiveConfig.values = (matchedWidget.options && matchedWidget.options.values) || propConfig.options || [];
+            break;
+          case "toggle":
+            effectiveConfig.type = "boolean";
+            break;
+          case "number":
+            effectiveConfig.type = "number";
+            if (matchedWidget.options) {
+              if (matchedWidget.options.min !== undefined) effectiveConfig.min = matchedWidget.options.min;
+              if (matchedWidget.options.max !== undefined) effectiveConfig.max = matchedWidget.options.max;
+              if (matchedWidget.options.step !== undefined) effectiveConfig.step = matchedWidget.options.step;
+            }
+            break;
+          case "button":
+          case "preview_image":
+            return; // 跳过按钮和预览
+          default:
+            // 保留 properties_info 中的 type
+            break;
+        }
+      }
+
+      const { container, input, type } = createPropertyInput(propName, propValue, effectiveConfig);
       listEl.appendChild(container);
       propertyInputs.set(propName, { input, type });
     });
@@ -284,6 +364,39 @@ export function openNodePropertyEditor(node) {
     listEl.appendChild(noProps);
   }
 
+  // ─── 动态说明 ───
+  const helpEl = el.querySelector("#tf-property-help");
+  function updateHelp() {
+    if (!helpEl) return;
+    if (typeof node.getHelpText === "function") {
+      // 构建临时 properties 快照
+      const snapshot = {};
+      propertyInputs.forEach(({ input, type }, propName) => {
+        switch (type) {
+          case "number": snapshot[propName] = parseFloat(input.value); break;
+          case "boolean": snapshot[propName] = input.checked; break;
+          default: snapshot[propName] = input.value;
+        }
+      });
+      // 合并原始属性（未在编辑器中显示的保留原值）
+      const merged = { ...node.properties, ...snapshot };
+      const text = node.getHelpText(merged);
+      if (text) {
+        helpEl.innerHTML = text;
+        helpEl.style.display = "block";
+        return;
+      }
+    }
+    helpEl.style.display = "none";
+  }
+
+  // 输入变化时刷新说明
+  propertyInputs.forEach(({ input }) => {
+    input.addEventListener("change", updateHelp);
+    input.addEventListener("input", updateHelp);
+  });
+  updateHelp();
+
   return new Promise(resolve => {
     let close = (save = false) => {
       el.style.display = "none";
@@ -292,6 +405,11 @@ export function openNodePropertyEditor(node) {
       el.onclick = null;
 
       if (save) {
+        // 保存节点标题
+        if (titleInput.value.trim()) {
+          node.title = titleInput.value.trim();
+        }
+
         // 保存属性值
         propertyInputs.forEach(({ input, type }, propName) => {
           let value;

@@ -8,7 +8,10 @@ class MouseActionsMixin:
     async def click(self, x, y, pianyi=(0, 0), down_time=0.12):
         cx = x + pianyi[0]
         cy = y + pianyi[1]
-        # 跳过 bring_to_front（慢，且点击不需要）
+        try:
+            await asyncio.wait_for(self.page.bring_to_front(), timeout=2)
+        except (asyncio.TimeoutError, Exception):
+            pass
         await self.page.mouse.move(cx, cy)
         await self.page.mouse.down()
         await asyncio.sleep(down_time)

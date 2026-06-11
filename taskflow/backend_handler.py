@@ -1,6 +1,8 @@
 # taskflow/backend_handler.py
 """TaskFlow 后端执行层 — 每个任务一个简单函数，直接调用 UserBrowser 方法"""
 
+from __future__ import annotations
+
 import asyncio
 import inspect
 import json
@@ -8,14 +10,50 @@ import sys
 
 import websockets
 
-from browser.user_browser import UserBrowser
+# ==============================================================
+# 跨事件循环代理（WS 线程 → Controller 线程）
+# ==============================================================
+_main_loop = None
+
+
+def set_main_loop(loop):
+    global _main_loop
+    _main_loop = loop
+
+
+def get_main_loop():
+    return _main_loop
+
+
+class MainLoopProxy:
+    """将目标对象的所有 async 方法调用投递到主事件循环执行"""
+
+    def __init__(self, obj):
+        self._obj = obj
+
+    def __getattr__(self, name):
+        attr = getattr(self._obj, name)
+        if not callable(attr):
+            return attr
+        if asyncio.iscoroutinefunction(attr):
+            loop = _main_loop
+            if loop is None or loop is asyncio.get_running_loop():
+                return attr
+            async def wrapper(*args, **kwargs):
+                future = asyncio.run_coroutine_threadsafe(
+                    attr(*args, **kwargs), loop
+                )
+                return await asyncio.wrap_future(future)
+            return wrapper
+        return attr
+
 
 # ==============================================================
 # 全局状态
 # ==============================================================
 connected_clients = set()
 current_account: dict = {}
-browsers: dict[str, UserBrowser] = {}
+browsers: dict[str, 'UserBrowser'] = {}  # type: ignore[name-defined]  # 避免顶层导入 browser 包（循环导入问题）
 
 
 # ==============================================================
@@ -99,25 +137,46 @@ def _get_browser(account=None):
     return browsers.get(email)
 
 
+async def _get_healthy_browser(account=None):
+    """获取浏览器实例并检测 Playwright 连接是否存活，断开则自动清理"""
+    browser = _get_browser(account)
+    if not browser:
+        return None
+    try:
+        alive = await browser.check_connection()
+        if not alive:
+            raise ConnectionError("connection dead")
+        return browser
+    except Exception as e:
+        email = ''
+        if isinstance(account, dict):
+            email = account.get('email', '')
+        if not email:
+            email = current_account.get('email', '')
+        if email:
+            print(f"[HEALTH] ❌ 浏览器连接已断开，移除实例: {email}")
+            browsers.pop(email, None)
+        return None
+
+
 # ==============================================================
 # 任务函数 — 每个都是独立函数，直接调 UserBrowser 方法
 # ==============================================================
 
-async def update_frame(account=None):
+async def update_frame(save_screenshot=False, account=None):
     """刷新帧"""
-    browser = _get_browser(account)
+    browser = await _get_healthy_browser(account)
     if not browser:
-        return {"success": False, "error": "浏览器未启动"}
-    if browser._frame is None:
-        await browser.update_frame()
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
+    await browser.update_frame(save_screenshot=save_screenshot)
     return {"success": True}
 
 
 async def click(x, y, account=None):
     """点击坐标"""
-    browser = _get_browser(account)
+    browser = await _get_healthy_browser(account)
     if not browser:
-        return {"success": False, "error": "浏览器未启动"}
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
     await browser.click(x=x, y=y)
     return {"success": True, "clicked": True, "x": x, "y": y}
 
@@ -125,9 +184,9 @@ async def click(x, y, account=None):
 async def match_image(image, threshold=0.9, use_color_check=False,
                       match_select="best", account=None):
     """匹配图片"""
-    browser = _get_browser(account)
+    browser = await _get_healthy_browser(account)
     if not browser:
-        return {"success": False, "error": "浏览器未启动"}
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
     result = await browser.match_image(
         image, threshold=threshold,
         use_color_check=use_color_check, match_select=match_select,
@@ -144,28 +203,38 @@ async def click_image(image, pianyi_x=0, pianyi_y=0, down_time=0.12,
                       threshold=0.9,
                       use_color_check=False, match_select="best", account=None):
     """点击图片"""
-    browser = _get_browser(account)
+    browser = await _get_healthy_browser(account)
     if not browser:
-        return {"success": False, "error": "浏览器未启动"}
-    
-    print("================== click_image 参数 =================")
-    for param_name, param_value in locals().items():
-        print(f"[click_image] {param_name}: {param_value}")
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
 
-    result = await browser.click_image(
-        image,
-        pianyi=(pianyi_x, pianyi_y),
-        down_time=down_time, threshold=threshold,
+    # 每次点击前刷新帧，确保匹配基于最新画面
+    # await browser.update_frame()
+
+    # 匹配获取坐标
+    match = await browser.match_image(
+        image, threshold=threshold,
         use_color_check=use_color_check, match_select=match_select,
     )
-    return {"success": bool(result), "clicked": bool(result), "match_value": 0}
+    if not match or match.x is None:
+        return {"success": False, "clicked": False,
+                "clicked_x": None, "clicked_y": None,
+                "match_value": match.max_val if match else 0}
+
+    # 再点击已匹配到的坐标
+    await browser.click(x=match.x, y=match.y,
+                        pianyi=(pianyi_x, pianyi_y),
+                        down_time=down_time)
+
+    return {"success": True, "clicked": True,
+            "clicked_x": match.x, "clicked_y": match.y,
+            "match_value": match.max_val}
 
 
 async def click_text(text, account=None):
     """点击文字"""
-    browser = _get_browser(account)
+    browser = await _get_healthy_browser(account)
     if not browser:
-        return {"success": False, "error": "浏览器未启动"}
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
     result = await browser.click_text(text=text)
     return {"success": True, "clicked": True, "text": text,
             "clicked_x": result.x if result else 0,
@@ -174,9 +243,9 @@ async def click_text(text, account=None):
 
 async def click_until_gone(image, timeout=10, account=None):
     """点击直到图片消失"""
-    browser = _get_browser(account)
+    browser = await _get_healthy_browser(account)
     if not browser:
-        return {"success": False, "error": "浏览器未启动"}
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
     result = await browser.click_until_gone(
         image, timeout=timeout,
     )
@@ -185,18 +254,18 @@ async def click_until_gone(image, timeout=10, account=None):
 
 async def wait_image(image, timeout=60000, account=None):
     """等待图片出现"""
-    browser = _get_browser(account)
+    browser = await _get_healthy_browser(account)
     if not browser:
-        return {"success": False, "error": "浏览器未启动"}
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
     result = await browser.wait_image(image, timeout=timeout)
     return {"success": True, "found": result}
 
 
 async def dmm_login(game_name, account=None):
     """DMM 登录"""
-    browser = _get_browser(account)
+    browser = await _get_healthy_browser(account)
     if not browser:
-        return {"success": False, "error": "浏览器未启动"}
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
     result = await browser.dmm_login(game_name=game_name)
     return {"success": True, "logged_in": True, "game_name": game_name, "result": result}
 
@@ -212,9 +281,9 @@ async def b_sleep(seconds, upper_limit=None):
 
 async def goto(url, account=None, websocket=None):
     """页面跳转，websocket 可选，用于推送中途 URL 变化"""
-    browser = _get_browser(account)
+    browser = await _get_healthy_browser(account)
     if not browser:
-        return {"success": False, "error": "浏览器未启动"}
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
     if not url:
         return {"success": False, "error": "URL不能为空"}
 
@@ -285,17 +354,17 @@ async def account_get_status(account, params):
             "browser_status": "running" if email in browsers else "stopped"}
 
 async def account_execute_script(account, params):
-    browser = _get_browser(account)
+    browser = await _get_healthy_browser(account)
     if not browser:
-        return {"success": False, "error": "浏览器未启动"}
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
     script = params.get('script')
     result = await browser.execute_script(script)
     return {"success": True, "script": script, "account": account.get('name', ''), "result": result}
 
 async def account_take_screenshot(account, params):
-    browser = _get_browser(account)
+    browser = await _get_healthy_browser(account)
     if not browser:
-        return {"success": False, "error": "浏览器未启动"}
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
     result = await browser.take_screenshot()
     return {"success": True, "account": account.get('name', ''), "result": result}
 
@@ -425,6 +494,20 @@ async def ws_handler(websocket):
 
             # node_event 纯日志，静默跳过
             if task_name == "node_event":
+                continue
+
+            # stop/pause/resume：控制后端正在执行的任务
+            if task_name in ("stop_task", "pause_task", "resume_task"):
+                account = props.get('account', {})
+                email = account.get('email', '') if isinstance(account, dict) else ''
+                targets = [browsers[email]] if email and email in browsers else list(browsers.values())
+                action_map = {"stop_task": "stop", "pause_task": "pause", "resume_task": "resume"}
+                method_name = action_map[task_name]
+                for b in targets:
+                    ctrl = getattr(b, '_task_ctrl', None)
+                    if ctrl:
+                        getattr(ctrl, method_name)()
+                await websocket.send(json.dumps({"success": True, "task_name": task_name, "data": {method_name + "ed": True}}, ensure_ascii=False))
                 continue
 
             if not task_name:

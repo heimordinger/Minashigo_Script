@@ -108,8 +108,12 @@ def start_http_server(port=get_free_port()):
                     self.handle_list_workflows()
                 elif self.path.startswith('/api/list_images') and self.command == 'GET':
                     self.handle_list_images()
+                elif self.path.startswith('/api/list_scripts') and self.command == 'GET':
+                    self.handle_list_scripts()
                 elif self.path.startswith('/api/get_image') and self.command == 'GET':
                     self.handle_get_image(data)
+                elif self.path.startswith('/api/delete_workflow') and self.command == 'POST':
+                    self.handle_delete_workflow(data)
                 elif self.path.startswith('/api/get_thumbnail') and self.command == 'GET':
                     self.handle_get_thumbnail(data)
                 else:
@@ -164,9 +168,9 @@ def start_http_server(port=get_free_port()):
             self.wfile.write(json.dumps(resp, ensure_ascii=False).encode())
 
         def handle_save_workflow(self, data):
-            """保存工作流到 script/ 目录"""
+            """保存工作流到 scripts/ 目录（支持子文件夹路径）"""
             try:
-                name = data.get("name", "").strip()
+                name = data.get("name", "").strip().replace("\\", "/")
                 content = data.get("content", "")
                 if not name:
                     self._send_json_response({"success": False, "error": "文件名不能为空"})
@@ -175,40 +179,86 @@ def start_http_server(port=get_free_port()):
                     name += ".json"
                 script_dir = PROJECT_ROOT / "scripts"
                 script_dir.mkdir(parents=True, exist_ok=True)
-                save_path = script_dir / name
+                save_path = (script_dir / name).resolve()
+                # 安全校验：防止路径逃逸
+                if not str(save_path).startswith(str(script_dir.resolve())):
+                    self._send_json_response({"success": False, "error": "路径非法"})
+                    return
+                save_path.parent.mkdir(parents=True, exist_ok=True)
                 save_path.write_text(content, encoding="utf-8")
                 print(f"[SaveWorkflow] 已保存: {save_path}")
                 self._send_json_response({"success": True, "path": str(save_path)})
             except Exception as e:
                 self._send_json_response({"success": False, "error": str(e)}, 500)
 
-        def handle_load_workflow(self, data):
-            """从 script/ 加载工作流"""
+        def handle_delete_workflow(self, data):
+            """删除 scripts/ 下的文件或目录"""
+            import shutil
             try:
-                name = data.get("name", "")
+                name = data.get("name", "").strip().replace("\\", "/")
+                is_dir = data.get("is_dir", False)
+                if not name:
+                    self._send_json_response({"success": False, "error": "名称不能为空"})
+                    return
+                script_dir = PROJECT_ROOT / "scripts"
+                if is_dir:
+                    del_path = (script_dir / name).resolve()
+                else:
+                    if not name.endswith(".json"):
+                        name += ".json"
+                    del_path = (script_dir / name).resolve()
+                # 安全校验：防止路径逃逸
+                if not str(del_path).startswith(str(script_dir.resolve())):
+                    self._send_json_response({"success": False, "error": "路径非法"})
+                    return
+                if not del_path.exists():
+                    self._send_json_response({"success": False, "error": f"不存在: {name}"})
+                    return
+                if del_path.is_dir():
+                    shutil.rmtree(del_path)
+                    print(f"[DeleteWorkflow] 已删除目录: {del_path}")
+                else:
+                    del_path.unlink()
+                    print(f"[DeleteWorkflow] 已删除文件: {del_path}")
+                self._send_json_response({"success": True})
+            except Exception as e:
+                self._send_json_response({"success": False, "error": str(e)}, 500)
+
+        def handle_load_workflow(self, data):
+            """从 scripts/ 加载工作流（支持子文件夹路径）"""
+            try:
+                name = data.get("name", "").strip().replace("\\", "/")
                 if not name:
                     self._send_json_response({"success": False, "error": "文件名不能为空"})
                     return
+                if not name.endswith(".json"):
+                    name += ".json"
                 script_dir = PROJECT_ROOT / "scripts"
-                load_path = script_dir / name
+                load_path = (script_dir / name).resolve()
+                if not str(load_path).startswith(str(script_dir.resolve())):
+                    self._send_json_response({"success": False, "error": "路径非法"})
+                    return
                 if not load_path.exists():
                     self._send_json_response({"success": False, "error": f"文件不存在: {name}"})
                     return
                 content = load_path.read_text(encoding="utf-8")
-                self._send_json_response({"success": True, "content": content, "name": name})
+                # 返回相对路径（不含 scripts/ 前缀）
+                rel = str(load_path.relative_to(script_dir)).replace("\\", "/")
+                self._send_json_response({"success": True, "content": content, "name": rel})
             except Exception as e:
                 self._send_json_response({"success": False, "error": str(e)}, 500)
 
         def handle_list_workflows(self):
-            """列出 script/ 目录下的所有 .json 文件"""
+            """递归列出 scripts/ 目录下的所有 .json 文件"""
             try:
                 script_dir = PROJECT_ROOT / "scripts"
                 if not script_dir.exists():
                     self._send_json_response({"success": True, "files": []})
                     return
                 files = sorted(
-                    [f.name for f in script_dir.iterdir() if f.suffix.lower() == ".json"],
-                    reverse=True
+                    str(f.relative_to(script_dir)).replace("\\", "/")
+                    for f in script_dir.rglob("*.json")
+                    if f.is_file()
                 )
                 self._send_json_response({"success": True, "files": files})
             except Exception as e:
@@ -226,6 +276,22 @@ def start_http_server(port=get_free_port()):
                     str(f.relative_to(img_dir))
                     for f in img_dir.rglob("*")
                     if f.is_file() and f.suffix.lower() in exts
+                )
+                self._send_json_response({"success": True, "files": files})
+            except Exception as e:
+                self._send_json_response({"success": False, "error": str(e)}, 500)
+
+        def handle_list_scripts(self):
+            """递归列出 scripts/ 目录下的 .json 脚本文件"""
+            try:
+                script_dir = PROJECT_ROOT / "scripts"
+                if not script_dir.exists():
+                    self._send_json_response({"success": True, "files": []})
+                    return
+                files = sorted(
+                    str(f.relative_to(script_dir)).replace("\\", "/")
+                    for f in script_dir.rglob("*.json")
+                    if f.is_file()
                 )
                 self._send_json_response({"success": True, "files": files})
             except Exception as e:

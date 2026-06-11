@@ -103,6 +103,10 @@ class ClickUntilGoneNode extends ActionNode {
     this._clickCount = 0;
   }
 
+  getHelpText() {
+        return "重复点击直到目标消失<br>用于关闭弹窗等场景";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
@@ -161,8 +165,8 @@ class ClickUntilGoneNode extends ActionNode {
     });
   }
 
-  onAction(action) {
-    this.run(action);
+  async onAction(action) {
+    await this.run(action);
   }
 
   _loadPreviewFromBase64(base64) {

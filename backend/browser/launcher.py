@@ -38,6 +38,9 @@ class BrowserLauncher:
             "--disable-background-timer-throttling",
             "--disable-renderer-backgrounding",
             "--disable-backgrounding-occluded-windows",
+            # 防止 Chrome 恢复上次关闭时的标签页，避免出现多余的标签页
+            "--disable-session-crashed-bubble",
+            "--disable-restore-session-state",
         ]
         if url:
             cmd.append(url)

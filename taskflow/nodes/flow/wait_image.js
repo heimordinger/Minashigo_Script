@@ -14,7 +14,7 @@ class WaitImage extends ActionNode {
         this.addInput("触发", LiteGraph.EVENT);
         this.addInput("图片路径", "string");
         this.addOutput("下一步", LiteGraph.EVENT);
-        this.addOutput("是否超时", "boolean");
+        this.addOutput("超时", LiteGraph.EVENT);
 
         this.properties = {
             image: "",
@@ -44,7 +44,7 @@ class WaitImage extends ActionNode {
         this.addWidget("preview_image", "", null, null);
 
         this.previewImage = null;
-        this.size = [360, 300];
+        this.size = [230, 240];
 
         // 禁用widget的键盘输入，强制使用属性编辑器
         if (this.widgets) {
@@ -96,6 +96,10 @@ class WaitImage extends ActionNode {
                 step: 100
             }
         ];
+    }
+
+    getHelpText() {
+        return "等待屏幕上出现指定图片<br>超时: 最大等待时间(秒)";
     }
 
     onDblClick() {
@@ -159,8 +163,32 @@ class WaitImage extends ActionNode {
         });
     }
 
-    onAction(action) {
-        this.run(action);
+    async onAction(action) {
+        if (action && action !== "trigger" && action !== "flow") return;
+        const ctrl = this._controller();
+        if (!ctrl || ctrl.state !== "running") return;
+
+        const image = this.getInputData(1) ?? this.properties.image;
+        if (!image) throw new Error("image 为空");
+        const name = image.startsWith("data:") ? "(内嵌图片)" : image.split("/").pop();
+        this.log(`等待图片: ${name} (超时=${this.properties.timeout}ms)`);
+
+        const response = await this.callBackend("wait_image", {
+            image,
+            threshold: this.properties.threshold,
+            match_select: this.properties.match_select,
+            use_color_check: this.properties.use_color_check,
+            timeout: this.properties.timeout,
+        }, this.properties.timeout);
+
+        const timedOut = !response?.success;
+        if (timedOut) {
+            this.log("等待超时，图片未出现", "warn");
+            await this.execOutput(1); // 超时
+        } else {
+            this.log("图片已出现", "info");
+            await this.execOutput(0); // 下一步
+        }
     }
 
     _loadPreviewFromBase64(base64) {
@@ -173,20 +201,7 @@ class WaitImage extends ActionNode {
     }
 
     async onRun() {
-        const image = this.getInputData(1) ?? this.properties.image;
-        if (!image) throw new Error("image 为空");
-        const name = image.startsWith("data:") ? "(内嵌图片)" : image.split("/").pop();
-        this.log(`等待图片: ${name} (超时=${this.properties.timeout}ms)`);
-        const response = await this.callBackend("wait_image", {
-            image,
-            threshold: this.properties.threshold,
-            match_select: this.properties.match_select,
-            use_color_check: this.properties.use_color_check,
-            timeout: this.properties.timeout,
-        }, this.properties.timeout);
-        const timedOut = !response?.success;
-        this.setOutputData(1, timedOut);
-        this.log(timedOut ? "等待超时，图片未出现" : "图片已出现", timedOut ? "warn" : "info");
+        // 不再使用父类 run() 路径
     }
 }
 

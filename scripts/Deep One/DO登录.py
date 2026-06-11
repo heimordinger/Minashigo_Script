@@ -123,46 +123,70 @@ async def do_work(browser: UserBrowser):
     MAX_NETWORK_RETRY = 5
     MAX_WAIT_COUNT = 30  # 最大等待次数（约15秒）
 
+    # ---------- 审核机制：连续无进展则重新检测状态 ----------
+    stall_count = 0
+    MAX_STALL = 10
+
     while state != DOLoginState.DONE:
         await browser.update_frame()
+
+        # ========== 审核机制（基于上一轮计数） ==========
+        if stall_count >= MAX_STALL:
+            stall_count = 0
+            browser.script_log(f"[审核] 连续{MAX_STALL}次无进展（当前状态={state.name}），重新检测界面")
+
+            await browser.update_frame()
+            if await browser.match_image(img_path / "rank"):
+                browser.script_log("[审核] → 检测到rank")
+                state = DOLoginState.DONE; continue
+            if await browser.match_image(img_path / "logo"):
+                browser.script_log("[审核] → 检测到logo")
+                state = DOLoginState.TAP_SCREEN; continue
+            if await browser.match_image(img_path / "start1"):
+                browser.script_log("[审核] → 检测到start1")
+                state = DOLoginState.START_DIALOG; continue
+            if await browser.match_image(img_path / "skip"):
+                browser.script_log("[审核] → 检测到skip")
+                state = DOLoginState.SKIP_ANIM; continue
+            if await browser.match_image(img_path / "关闭"):
+                browser.script_log("[审核] → 检测到关闭")
+                state = DOLoginState.CLOSE_POPUP; continue
+            if await browser.match_image(img_path / "err1") or await browser.match_image(img_path / "err3"):
+                browser.script_log("[审核] → 检测到网络异常")
+                state = DOLoginState.NETWORK_ERROR; continue
+
+            browser.script_log(f"[审核] 未检测到任何特征图，保持 state={state.name}")
+
+        stall_count += 1
 
         # ========== 【最高优先级】网络异常检测 ==========
         if state not in (DOLoginState.NETWORK_ERROR, DOLoginState.DONE):
             if await browser.match_image(img_path / "err1"):
                 browser.script_log("检测到网络异常弹窗")
-                state = DOLoginState.NETWORK_ERROR
-                continue
+                state = DOLoginState.NETWORK_ERROR; stall_count = 0; continue
             if await browser.match_image(img_path / "err3"):
                 browser.script_log("检测到网络异常弹窗")
-                state = DOLoginState.NETWORK_ERROR
-                continue
+                state = DOLoginState.NETWORK_ERROR; stall_count = 0; continue
 
         # ---------- WAIT_GAME_LOAD：等待游戏界面加载 ----------
         if state == DOLoginState.WAIT_GAME_LOAD:
             wait_count += 1
 
-            # 检查是否已经进入主界面（直接完成的情况）
             if await browser.match_image(img_path / "rank"):
                 browser.script_log("游戏已直接进入主界面")
-                state = DOLoginState.DONE
-                continue
+                state = DOLoginState.DONE; stall_count = 0; continue
 
-            # 检查是否出现logo（第二阶段界面）
             if await browser.match_image(img_path / "logo"):
                 browser.script_log("检测到游戏logo，开始登录流程")
-                state = DOLoginState.TAP_SCREEN
-                continue
+                state = DOLoginState.TAP_SCREEN; stall_count = 0; continue
 
-            # 检查是否出现start1（第一阶段登录提示）
             if await browser.match_image(img_path / "start1"):
                 browser.script_log("检测到初始登录提示")
-                state = DOLoginState.START_DIALOG
-                continue
+                state = DOLoginState.START_DIALOG; stall_count = 0; continue
 
-            # 超时处理
             if wait_count >= MAX_WAIT_COUNT:
                 browser.script_log("等待游戏加载超时，重新从START_DIALOG开始")
-                state = DOLoginState.START_DIALOG
+                state = DOLoginState.START_DIALOG; stall_count = 0
 
             await browser.b_sleep(0.5)
             continue
@@ -170,20 +194,15 @@ async def do_work(browser: UserBrowser):
         # ---------- INIT（保留作为备选）----------
         if state == DOLoginState.INIT:
             browser.script_log("DO登录：INIT")
-            # 直接进入等待加载状态
-            state = DOLoginState.WAIT_GAME_LOAD
-            continue
+            state = DOLoginState.WAIT_GAME_LOAD; stall_count = 0; continue
 
         # ---------- 第一次登录提示 ----------
         if state == DOLoginState.START_DIALOG:
             if await browser.match_image(img_path / "start1"):
-                await browser.click_image(img_path / "start2")
-                browser.script_log("点击了登录开始按钮")
-                state = DOLoginState.WAIT_GAME_LOAD  # 点击后继续等待
-            else:
-                # 如果找不到start1，可能已经进入后续阶段
-                browser.script_log("未检测到start1，尝试检测logo")
-                state = DOLoginState.WAIT_GAME_LOAD
+                clicked = await browser.click_image(img_path / "start2")
+                if clicked:
+                    browser.script_log("点击了登录开始按钮")
+                    state = DOLoginState.WAIT_GAME_LOAD; stall_count = 0
             await browser.b_sleep(0.5)
             continue
 
@@ -194,33 +213,25 @@ async def do_work(browser: UserBrowser):
                 img_path / "logo",
                 pianyi=(10, 0)
             )
-
-            if clicked:
-                #browser.script_log("已点击logo，等待游戏加载")
-                state = DOLoginState.SKIP_ANIM
-            else:
-                # 如果点不到logo，可能已经进入了后续阶段
-                #browser.script_log("未检测到logo，尝试检测skip")
-                state = DOLoginState.SKIP_ANIM
+            stall_count = 0
+            state = DOLoginState.SKIP_ANIM
             continue
 
         # ---------- 跳过签到 / 演出 ----------
         if state == DOLoginState.SKIP_ANIM:
             clicked = await browser.click_image(
                 img_path / "skip",
-                max_delay=1,  # 减少等待时间
+                max_delay=1,
                 pianyi=(skip_click_count % 3 - 1, 0)
             )
 
             if clicked:
                 skip_click_count += 1
                 browser.script_log(f"点击跳过第 {skip_click_count} 次")
-                if skip_click_count >= 3:  # 减少尝试次数
-                    state = DOLoginState.CLOSE_POPUP
+                if skip_click_count >= 3:
+                    state = DOLoginState.CLOSE_POPUP; stall_count = 0
             else:
-                # 找不到skip就直接进入下一步
-                #browser.script_log("未检测到skip按钮")
-                state = DOLoginState.CLOSE_POPUP
+                state = DOLoginState.CLOSE_POPUP; stall_count = 0
             continue
 
         # ---------- 关闭弹窗 ----------
@@ -231,7 +242,7 @@ async def do_work(browser: UserBrowser):
             )
             if clicked:
                 browser.script_log("关闭了弹窗")
-            state = DOLoginState.CHECK_DONE
+            state = DOLoginState.CHECK_DONE; stall_count = 0
             continue
 
         # ---------- 网络异常处理 ----------
@@ -247,16 +258,14 @@ async def do_work(browser: UserBrowser):
 
             clicked = await browser.click_image(img_path / "err2") or await browser.click_image(img_path / "err4")
 
-
             if clicked:
                 browser.script_log("已点击网络重连按钮")
                 await browser.b_sleep(2.0)
                 network_retry = 0
-                state = DOLoginState.WAIT_GAME_LOAD  # 重连后回到等待状态
+                state = DOLoginState.WAIT_GAME_LOAD; stall_count = 0
             else:
-                #browser.script_log("未找到重连按钮")
                 await browser.b_sleep(1.0)
-                state = DOLoginState.WAIT_GAME_LOAD
+                state = DOLoginState.WAIT_GAME_LOAD; stall_count = 0
 
             continue
 
@@ -264,9 +273,8 @@ async def do_work(browser: UserBrowser):
         if state == DOLoginState.CHECK_DONE:
             if await browser.match_image(img_path / "rank"):
                 browser.script_log("DO登录完成，已进入主界面")
-                state = DOLoginState.DONE
+                state = DOLoginState.DONE; stall_count = 0
             else:
-                #browser.script_log("未检测到主界面，继续跳过流程")
-                skip_click_count = 0  # 重置计数
-                state = DOLoginState.SKIP_ANIM
+                skip_click_count = 0
+                state = DOLoginState.SKIP_ANIM; stall_count = 0
             continue

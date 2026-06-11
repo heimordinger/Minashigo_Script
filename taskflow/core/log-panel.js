@@ -2,6 +2,7 @@
 
 const LEVEL_ORDER = { debug: 0, info: 1, warn: 2, error: 3 };
 const LEVEL_LABEL = { debug: "调试", info: "信息", warn: "警告", error: "错误" };
+const MAX_PER_LEVEL = 100;
 
 export class LogPanel {
   constructor() {
@@ -15,13 +16,13 @@ export class LogPanel {
       this._collapseBtn = existing.querySelector(".log-collapse-btn");
       this._clearBtn = existing.querySelector(".log-clear-btn");
       this._filterBtns = existing.querySelectorAll(".log-filter");
-      this._logs = window._logPanel?._logs || [];
+      this._logs = window._logPanel?._logs || { debug: [], info: [], warn: [], error: [] };
       this._filterLevel = "all";
       this._autoScroll = true;
       this._collapsed = false;
-      return; // 已有面板，不重复绑定事件
+      return;
     }
-    this._logs = [];
+    this._logs = { debug: [], info: [], warn: [], error: [] };
     this._filterLevel = "all";
     this._autoScroll = true;
     this._collapsed = false;
@@ -58,7 +59,6 @@ export class LogPanel {
     this._clearBtn = this.el.querySelector(".log-clear-btn");
     this._filterBtns = this.el.querySelectorAll(".log-filter");
 
-    // 默认位置：右下
     this.el.style.right = "60px";
     this.el.style.bottom = "0";
     this.el.style.width = "480px";
@@ -66,22 +66,19 @@ export class LogPanel {
   }
 
   _bindEvents() {
-    // 拖拽标题栏移动
     this._header.addEventListener("mousedown", e => {
       if (e.target.tagName === "BUTTON") return;
       this._startDrag(e);
     });
 
-    // 右下角缩放
     this._resizeHandle.addEventListener("mousedown", e => {
       this._startResize(e);
     });
 
-    // 折叠
     this._collapseBtn.addEventListener("click", () => this.toggleCollapse());
 
-    // 清空
-    this._clearBtn.addEventListener("click", () => this.clear());
+    // 清空 — 只清当前筛选级别的日志
+    this._clearBtn.addEventListener("click", () => this.clearCurrent());
 
     // 过滤
     this._filterBtns.forEach(btn => {
@@ -93,7 +90,6 @@ export class LogPanel {
       });
     });
 
-    // 自动滚检测：如果用户手动往上滚了，暂停自动滚
     this._body.addEventListener("scroll", () => {
       const { scrollTop, scrollHeight, clientHeight } = this._body;
       this._autoScroll = scrollHeight - scrollTop - clientHeight < 30;
@@ -139,11 +135,14 @@ export class LogPanel {
       this.el.style.height = `${h}px`;
     };
     const onUp = () => {
-      document.removeEventListener("mousemove", onMove);
-      document.removeEventListener("mouseup", onUp);
+      document.removeEventListener("pointermove", onMove);
+      document.removeEventListener("pointerup", onUp);
+      document.removeEventListener("mouseleave", onUp);
     };
-    document.addEventListener("mousemove", onMove);
-    document.addEventListener("mouseup", onUp);
+    // 用 pointer 事件替代 mouse，避免松开鼠标后粘滞
+    document.addEventListener("pointermove", onMove);
+    document.addEventListener("pointerup", onUp);
+    document.addEventListener("mouseleave", onUp);
   }
 
   // ====== 折叠 ======
@@ -156,11 +155,28 @@ export class LogPanel {
 
   // ====== 日志操作 ======
 
+  // 从 DOM 读取当前激活的筛选级别，避免 JS 实例状态不同步
+  _getActiveFilter() {
+    const active = this.el?.querySelector(".log-filter.active");
+    return active ? active.dataset.level : "all";
+  }
+
   addLog(level, message, timestamp) {
+    level = level || "info";
     const time = timestamp || new Date().toLocaleTimeString("zh-CN", { hour24: true });
-    this._logs.push({ level: level || "info", message, time });
-    if (this._filterLevel === "all" || this._filterLevel === level) {
-      this._appendEntry({ level: level || "info", message, time });
+    const entry = { level, message, time };
+
+    // 按级别存入独立队列，超出上限则丢弃最旧的
+    const queue = this._logs[level];
+    if (queue) {
+      queue.push(entry);
+      if (queue.length > MAX_PER_LEVEL) queue.shift();
+    }
+
+    // 仅当匹配当前筛选时才追加到 DOM
+    const currentFilter = this._getActiveFilter();
+    if (currentFilter === "all" || currentFilter === level) {
+      this._appendEntry(entry);
     }
   }
 
@@ -175,17 +191,41 @@ export class LogPanel {
     }
   }
 
-  clear() {
-    this._logs = [];
+  // 清空当前筛选级别的日志
+  clearCurrent() {
+    const currentFilter = this._getActiveFilter();
+    if (currentFilter === "all") {
+      // 全部 → 清空所有级别
+      for (const k of Object.keys(this._logs)) {
+        this._logs[k] = [];
+      }
+    } else if (this._logs[currentFilter]) {
+      // 仅清空当前级别
+      this._logs[currentFilter] = [];
+    }
     this._body.innerHTML = "";
   }
 
   _render() {
     this._body.innerHTML = "";
-    const filtered = this._filterLevel === "all"
-      ? this._logs
-      : this._logs.filter(l => l.level === this._filterLevel);
-    filtered.forEach(e => this._appendEntry(e));
+
+    const currentFilter = this._getActiveFilter();
+    let entries;
+    if (currentFilter === "all") {
+      // 按级别顺序合并：debug → info → warn → error
+      const order = ["debug", "info", "warn", "error"];
+      entries = [];
+      for (const lv of order) {
+        const arr = this._logs[lv];
+        if (arr) entries.push(...arr);
+      }
+    } else {
+      entries = this._logs[currentFilter] || [];
+    }
+
+    for (const e of entries) {
+      this._appendEntry(e);
+    }
     if (this._autoScroll) {
       this._body.scrollTop = this._body.scrollHeight;
     }

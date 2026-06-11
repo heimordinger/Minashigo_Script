@@ -1,5 +1,5 @@
 import { reportNodeEvent } from "../../core/node-reporter.js";
-import {openNodePropertyEditor} from "../../core/input-dialog.js";
+import { openNodePropertyEditor } from "../../core/input-dialog.js";
 
 class GotoNode extends LiteGraph.LGraphNode {
   static title = "跳转";
@@ -44,39 +44,23 @@ class GotoNode extends LiteGraph.LGraphNode {
 
   onConfigure(info) {
     // 同步widget值到properties
-    if (this._targetWidget) {
-      this._targetWidget.value = this.properties.target;
-    }
+    if (this._targetWidget) this._targetWidget.value = this.properties.target;
   }
 
-  onAction(action, param, options) {
-    window.taskflowLog?.("info", `[跳转] 目标标签: ${this.properties.target}`);
-    reportNodeEvent(this, "trigger", { action, target: this.properties.target });
-
-    const graph = this.graph;
+  async onAction(action, param, options) {
     const target = String(this.properties.target || "").trim();
-
-    if (!graph || !target) {
+    if (!target) {
       window.taskflowLog?.("warn", "[跳转] 目标标签为空");
+      window.workflowController?.stop();
       return;
     }
 
-    const nodes = graph._nodes || [];
-    const normalize = value => String(value ?? "").trim();
-    const knownLabelTypes = new Set(["flow/label", "label"]);
+    const graph = this.graph;
+    if (!graph) return;
 
-    const getNodeLabelCandidates = node => {
-      const candidates = [];
-      const props = node.properties || {};
-      candidates.push(props.label, props.target, props.name, props.id, props.tag);
-      candidates.push(node.title, node.constructor?.title);
-      if (Array.isArray(node.widgets)) {
-        for (const widget of node.widgets) {
-          candidates.push(widget?.value);
-        }
-      }
-      return candidates.map(normalize).filter(Boolean);
-    };
+    const nodes = graph._nodes || [];
+    const normalize = v => String(v ?? "").trim();
+    const knownLabelTypes = new Set(["flow/label", "label"]);
 
     console.log(`[GotoNode] 查找label节点, target=${target}, 总节点数=${nodes.length}`);
     console.log(`[GotoNode] 所有节点:`, nodes.map(n => ({id: n.id, type: n.type, title: n.title})));
@@ -85,29 +69,33 @@ class GotoNode extends LiteGraph.LGraphNode {
       const type = normalize(node.type).toLowerCase();
       const title = normalize(node.title);
       const isLabelLike = knownLabelTypes.has(type) || title === "Label" || title === "标签";
+      console.log(`[GotoNode] 节点: type="${type}" title="${title}" isLabel=${isLabelLike} props=${JSON.stringify(node.properties)}`);
       if (!isLabelLike) continue;
 
-      const candidates = getNodeLabelCandidates(node);
-      if (candidates.includes(target)) {
+      const candidates = [node.properties?.label, node.properties?.target, node.properties?.name,
+                          node.properties?.id, node.properties?.tag, node.title, node.constructor?.title];
+      if (node.widgets) {
+        for (const w of node.widgets) candidates.push(w?.value);
+      }
+      const vals = candidates.map(normalize).filter(Boolean);
+      console.log(`[GotoNode] 候选值: ${JSON.stringify(vals)} 目标="${target}"`);
+      if (vals.includes(target)) {
         window.taskflowLog?.("info", `[跳转] 找到标签节点: ${target}`);
-        reportNodeEvent(this, "goto_hit", { target, matched_node_id: node.id });
 
-        // 将label节点插入到执行序列中goto的下一位
-        const controller = window.workflowController;
-        if (controller) {
-          window.taskflowLog?.("info", `[跳转] 跳转到标签节点: ${target}`);
-          controller._insertNodeAfter(node, this);
+        // 通过 _runNode 执行标签（带延迟），然后驱动其下游
+        window.taskflowLog?.("info", `[跳转] 跳转到标签节点: ${target}`);
+        const ctrl = window.workflowController;
+        if (ctrl && typeof ctrl._runNode === "function") {
+          await ctrl._runNode(node, "flow");
         }
-
+        if (typeof node.execOutput === "function") {
+          await node.execOutput(0);
+        }
         return;
       }
     }
 
-    reportNodeEvent(this, "goto_miss", { target });
     window.taskflowLog?.("error", `[跳转] 未找到目标标签: ${target}`);
-
-    // 弹窗提醒并暂停流程
-    window.showToast?.(`未找到目标标签: ${target}`, "error");
     window.workflowController?.stop();
   }
 }

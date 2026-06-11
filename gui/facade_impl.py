@@ -71,6 +71,12 @@ class FacadeImpl:
     def reconnect_browser(self, account: dict):
         self.controller.reconnect_browser(account)
 
+    def register_window_target(self, account: dict):
+        self.controller.register_window_target(account)
+
+    def sync_taskflow_target(self, account: dict):
+        self.controller.sync_taskflow_target(account)
+
     def update_account(self, index: int, account: dict):
         self.state.accounts[index] = account
         self.save_accounts()
@@ -114,9 +120,9 @@ class FacadeImpl:
             return []
 
         return sorted([
-            p.stem
-            for p in process_dir.iterdir()
-            if p.is_file() and p.suffix == ".py"
+            str(p.relative_to(process_dir)).replace("\\", "/")
+            for p in process_dir.rglob("*.py")
+            if p.is_file()
         ])
 
     def get_status_snapshot(self):
@@ -193,6 +199,8 @@ class FacadeImpl:
 
         # 3. 清理 Controller 内部状态
         self.controller._browsers.pop(name, None)
+        self.controller._browser_instances.pop(name, None)
+        self.controller._window_instances.pop(name, None)
         self.controller._task_ctrls.pop(name, None)
         self.controller._tasks.pop(name, None)
         self.controller._running.pop(name, None)

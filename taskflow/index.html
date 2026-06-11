@@ -64,8 +64,10 @@
     <button id="btn-save">保存</button>
     <button id="btn-load">加载</button>
     <button id="btn-clear">清空</button>
+    <button id="btn-add-group">添加组</button>
+    <button id="btn-group-bubble" style="display:none">🔔 气泡</button>
 
-    <label class="panel-switch-row" for="toggle-node-order">
+    <label class="panel-switch-row">
       <span class="switch-text">
         <span class="switch-title">节点顺序</span>
       </span>
@@ -74,6 +76,15 @@
         <span class="switch-slider"></span>
       </span>
     </label>
+
+    <div class="panel-input-row">
+      <span class="input-label">连线样式</span>
+      <select id="select-link-style">
+        <option value="spline">曲线</option>
+        <option value="straight">直线</option>
+        <option value="linear">直角线</option>
+      </select>
+    </div>
 
     <div class="panel-input-row">
       <span class="input-label">节点延迟(ms)</span>
@@ -138,13 +149,12 @@
   </div>
 </div>
 
-<script src="./js/litegraph_dev.js?t=20260511_2410"></script>
-<script type="module" src="core/account-manager.js?t=20260511_2410"></script>
-<script type="module" src="core/account-api.js?t=20260511_2410"></script>
-<script type="module" src="js/state.js?t=20260511_2410"></script>
-<script type="module" src="js/main.js?t=20260511_2410"></script>
-<script type="module" src="js/tab.js?t=20260511_2410"></script>
-<script type="module" src="core/taskflow-backend.js?t=20260511_2410"></script>
-<script type="module" src="nodes/action/url.js?t=20260511_2410"></script>
+<script src="./js/litegraph_dev.js"></script>
+<script type="module" src="core/account-manager.js"></script>
+<script type="module" src="core/account-api.js"></script>
+<script type="module" src="js/state.js"></script>
+<script type="module" src="js/main.js"></script>
+<script type="module" src="js/tab.js"></script>
+<script type="module" src="core/taskflow-backend.js"></script>
 </body>
 </html>

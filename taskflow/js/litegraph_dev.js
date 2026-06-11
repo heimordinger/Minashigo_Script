@@ -14,111 +14,111 @@
      */
 
     var LiteGraph = (global.LiteGraph = {
-        // ===== LiteGraph 全局配置开始 =====
-        // 这里定义了 LiteGraph 编辑器与执行系统的大部分行为参数。
-        // LiteGraph 版本号
+        // ===== LiteGraph ȫ�����ÿ�ʼ =====
+        // ���ﶨ���� LiteGraph �༭����ִ��ϵͳ�Ĵ󲿷���Ϊ������
+        // LiteGraph �汾��
         VERSION: 0.4,
 
-        // 画布网格大小（拖动节点时用于对齐）
+        // ���������С���϶��ڵ�ʱ���ڶ��룩
         CANVAS_GRID_SIZE: 10,
 
-        // 节点标题栏高度（像 Start、Click 这种节点顶部条高度）
+        // �ڵ�������߶ȣ��� Start��Click ���ֽڵ㶥�����߶ȣ�
         NODE_TITLE_HEIGHT: 30,
-        // 标题文字在标题栏中的 Y 偏移
+        // ���������ڱ������е� Y ƫ��
         NODE_TITLE_TEXT_Y: 20,
-        // 每个输入/输出插槽之间的垂直间距
+        // ÿ������/������֮��Ĵ�ֱ���
         NODE_SLOT_HEIGHT: 20,
-        // 节点内部控件（按钮、输入框等）的高度
+        // �ڵ��ڲ��ؼ�����ť�������ȣ��ĸ߶�
         NODE_WIDGET_HEIGHT: 20,
-        // 节点默认宽度
+        // �ڵ�Ĭ�Ͽ���
         NODE_WIDTH: 140,
-        // 节点最小宽度
+        // �ڵ���С����
         NODE_MIN_WIDTH: 50,
-        // 节点折叠后的圆角半径
+        // �ڵ��۵����Բ�ǰ뾶
         NODE_COLLAPSED_RADIUS: 10,
-        // 节点折叠后的宽度
+        // �ڵ��۵���Ŀ���
         NODE_COLLAPSED_WIDTH: 80,
-        // 节点标题默认颜色
+        // �ڵ����Ĭ����ɫ
         NODE_TITLE_COLOR: "#999",
-        // 节点被选中时标题颜色
+        // �ڵ㱻ѡ��ʱ������ɫ
         NODE_SELECTED_TITLE_COLOR: "#FFF",
-        // 节点文本字体大小
+        // �ڵ��ı������С
         NODE_TEXT_SIZE: 14,
-        // 节点文本颜色
+        // �ڵ��ı���ɫ
         NODE_TEXT_COLOR: "#AAA",
-        // 节点副文本字体大小
+        // �ڵ㸱�ı������С
         NODE_SUBTEXT_SIZE: 12,
-        // 节点默认前景颜色
+        // �ڵ�Ĭ��ǰ����ɫ
         NODE_DEFAULT_COLOR: "#333",
-        // 节点默认背景颜色
+        // �ڵ�Ĭ�ϱ�����ɫ
         NODE_DEFAULT_BGCOLOR: "#353535",
-        // 节点左上角状态方块颜色
+        // �ڵ����Ͻ�״̬������ɫ
         NODE_DEFAULT_BOXCOLOR: "#666",
-        // 节点默认形状 (box/round/card)
+        // �ڵ�Ĭ����״ (box/round/card)
         NODE_DEFAULT_SHAPE: "box",
-        // 节点轮廓颜色
+        // �ڵ�������ɫ
         NODE_BOX_OUTLINE_COLOR: "#FFF",
-        // 节点阴影颜色
+        // �ڵ���Ӱ��ɫ
         DEFAULT_SHADOW_COLOR: "rgba(0,0,0,0.5)",
-        // 节点分组标题字体大小
+        // �ڵ������������С
         DEFAULT_GROUP_FONT: 24,
 
-        // 节点内部控件背景颜色
+        // �ڵ��ڲ��ؼ�������ɫ
         WIDGET_BGCOLOR: "#222",
-        // 控件边框颜色
+        // �ؼ��߿���ɫ
         WIDGET_OUTLINE_COLOR: "#666",
-        // 控件文字颜色
+        // �ؼ�������ɫ
         WIDGET_TEXT_COLOR: "#DDD",
-        // 控件次级文字颜色
+        // �ؼ��μ�������ɫ
         WIDGET_SECONDARY_TEXT_COLOR: "#999",
 
-        // 普通连接线颜色
+        // ��ͨ��������ɫ
         LINK_COLOR: "#9A9",
-        // 事件连接线颜色
+        // �¼���������ɫ
         EVENT_LINK_COLOR: "#A86",
-        // 拖拽连接时的临时线颜色
+        // ��ק����ʱ����ʱ����ɫ
         CONNECTING_LINK_COLOR: "#AFA",
 
-        // 图中允许的最大节点数量（防止死循环创建）
+        // ͼ�����������ڵ���������ֹ��ѭ��������
         MAX_NUMBER_OF_NODES: 1000, //avoid infinite loops
-        // 新建节点默认位置
+        // �½��ڵ�Ĭ��λ��
         DEFAULT_POSITION: [100, 100], //default node position
-        // 允许的节点形状列表
+        // �����Ľڵ���״�б�
         VALID_SHAPES: ["default", "box", "round", "card"], //,"circle"
 
         //shapes are used for nodes but also for slots
-        // 方形节点枚举值
+        // ���νڵ�ö��ֵ
         BOX_SHAPE: 1,
-        // 圆角节点枚举值
+        // Բ�ǽڵ�ö��ֵ
         ROUND_SHAPE: 2,
-        // 圆形节点枚举值
+        // Բ�νڵ�ö��ֵ
         CIRCLE_SHAPE: 3,
-        // 卡片样式节点枚举值
+        // ��Ƭ��ʽ�ڵ�ö��ֵ
         CARD_SHAPE: 4,
         ARROW_SHAPE: 5,
         GRID_SHAPE: 6, // intended for slot arrays
 
         //enums
-        // 输入端口枚举值
+        // ����˿�ö��ֵ
         INPUT: 1,
-        // 输出端口枚举值
+        // ����˿�ö��ֵ
         OUTPUT: 2,
 
-        // 事件输出类型
+        // �¼��������
         EVENT: -1, //for outputs
-        // 事件输入类型
+        // �¼���������
         ACTION: -1, //for inputs
 
-        // 节点运行模式列表
+        // �ڵ�����ģʽ�б�
         NODE_MODES: ["Always", "On Event", "Never", "On Trigger"], // helper, will add "On Request" and more in the future
         NODE_MODES_COLORS:["#666","#422","#333","#224","#626"], // use with node_box_coloured_by_mode
-        // 节点每帧执行
+        // �ڵ�ÿִ֡��
         ALWAYS: 0,
-        // 只有事件触发时执行
+        // ֻ���¼�����ʱִ��
         ON_EVENT: 1,
-        // 节点永不执行
+        // �ڵ�����ִ��
         NEVER: 2,
-        // 触发时执行一次
+        // ����ʱִ��һ��
         ON_TRIGGER: 3,
 
         UP: 1,
@@ -127,13 +127,13 @@
         RIGHT: 4,
         CENTER: 5,
 
-        // 连接线绘制模式（直线 / 折线 / 贝塞尔）
+        // �����߻���ģʽ��ֱ�� / ���� / ��������
         LINK_RENDER_MODES: ["Straight", "Linear", "Spline"], // helper
-        // 直线模式
+        // ֱ��ģʽ
         STRAIGHT_LINK: 0,
-        // 折线模式
+        // ����ģʽ
         LINEAR_LINK: 1,
-        // 贝塞尔曲线模式
+        // ����������ģʽ
         SPLINE_LINK: 2,
 
         NORMAL_TITLE: 0,
@@ -150,21 +150,21 @@
         throw_errors: true,
         allow_scripts: false, //if set to true some nodes like Formula would be allowed to evaluate code that comes from unsafe sources (like node configuration), which could lead to exploits
         use_deferred_actions: true, //executes actions during the graph execution flow
-        // 已注册节点类型表
+        // ��ע��ڵ����ͱ�
         registered_node_types: {}, //nodetypes by string
         node_types_by_file_extension: {}, //used for dropping files in the canvas
-        // 节点类缓存表
+        // �ڵ��໺���
         Nodes: {}, //node types by classname
-        // 全局变量存储区（图之间共享数据）
+        // ȫ�ֱ����洢����ͼ֮�乲�����ݣ�
 		Globals: {}, //used to store vars between graphs
 
         searchbox_extras: {}, //used to add extra features to the search box
-        // 是否自动排序节点类型菜单
+        // �Ƿ��Զ�����ڵ����Ͳ˵�
         auto_sort_node_types: false, // [true!] If set to true, will automatically sort node types / categories in the context menus
 		
-        // 节点执行时左上角指示灯高亮
+        // �ڵ�ִ��ʱ���Ͻ�ָʾ�Ƹ���
 		node_box_coloured_when_on: false, // [true!] this make the nodes box (top left circle) coloured when triggered (execute/action), visual feedback
-        // 根据节点模式给指示灯着色
+        // ���ݽڵ�ģʽ��ָʾ����ɫ
         node_box_coloured_by_mode: false, // [true!] nodebox based on node mode, visual feedback
         
         dialog_close_on_mouse_leave: true, // [false on mobile] better true if not touch device, TODO add an helper/listener to close if false
@@ -187,19 +187,19 @@
         slot_types_default_in: [], // specify for each IN slot type a(/many) default node(s), use single string, array, or object (with node, title, parameters, ..) like for search
 		slot_types_default_out: [], // specify for each OUT slot type a(/many) default node(s), use single string, array, or object (with node, title, parameters, ..) like for search
 		
-        // ALT+拖动节点时复制节点
+        // ALT+�϶��ڵ�ʱ���ƽڵ�
 		alt_drag_do_clone_nodes: false, // [true!] very handy, ALT click to clone and drag the new node
 
 		do_add_triggers_slots: false, // [true!] will create and connect event slots when using action/events connections, !WILL CHANGE node mode when using onTrigger (enable mode colors), onExecuted does not need this
 		
-        // 事件输出是否允许多个连接
+        // �¼�����Ƿ������������
 		allow_multi_output_for_events: true, // [false!] being events, it is strongly reccomended to use them sequentially, one by one
 
 		middle_click_slot_add_default_node: false, //[true!] allows to create and connect a ndoe clicking with the third button (wheel)
 		
 		release_link_on_empty_shows_menu: false, //[true!] dragging a link to empty space will open a menu, add from list, search or defaults
 		
-        // 输入事件模式：mouse 或 pointer
+        // �����¼�ģʽ��mouse �� pointer
         pointerevents_method: "mouse", // "mouse"|"pointer" use mouse for retrocompatibility issues? (none found @ now)
         // TODO implement pointercancel, gotpointercapture, lostpointercapture, (pointerover, pointerout if necessary)
 
@@ -207,7 +207,7 @@
 
         // if true, all newly created nodes/links will use string UUIDs for their id fields instead of integers.
         // use this if you must have node IDs that are unique across all graphs and subgraphs.
-        // 节点ID使用UUID而不是自增数字
+        // �ڵ�IDʹ��UUID��������������
         use_uuids: false,
 
         /**
@@ -275,7 +275,7 @@
                     },
                     enumerable: true,
                     configurable: true
-        // ===== LiteGraph 全局配置结束 =====
+        // ===== LiteGraph ȫ�����ý��� =====
                 });
                 
 
@@ -5406,56 +5406,62 @@ LGraphNode.prototype.executeAction = function(action)
         this.node_title_color = LiteGraph.NODE_TITLE_COLOR;
         this.default_link_color = LiteGraph.LINK_COLOR;
         /**
-         * 扩展的数据类型颜色配置
-         * 已连接节点接线柱颜色修改
+         * ��չ������������ɫ����
+         * �����ӽڵ��������ɫ�޸�
          */
         this.default_connection_color_byType = {
-            "-1": "#808080",   // 灰色 - Event
-            number: "#77F",    // 绿色 - 数字
-            string: "#7F7",    // 蓝色 - 字符串
-            boolean: "#F77",   // 红色 - 布尔值
-            array: "#F9A",     // 粉色 - 数组
-            object: "#AF7",    // 黄绿 - 对象
-            vec2: "#7AF",      // 亮蓝 - 二维向量
-            vec3: "#A7F",      // 紫色 - 三维向量
-            vec4: "#F7A",      // 粉色 - 四维向量
+            "-1": "#808080",   // ��ɫ - Event
+            number: "#77F",    // ��ɫ - ����
+            string: "#7F7",    // ��ɫ - �ַ���
+            boolean: "#F77",   // ��ɫ - ����ֵ
+            array: "#F9A",     // ��ɫ - ����
+            object: "#AF7",    // ���� - ����
+            vec2: "#7AF",      // ���� - ��ά����
+            vec3: "#A7F",      // ��ɫ - ��ά����
+            vec4: "#F7A",      // ��ɫ - ��ά����
 
-            // 图像/媒体类型
-            image: "#FFA07A",  // 浅橙 - 图像数据
-            video: "#FFB6C1",  // 浅粉 - 视频数据
-            audio: "#98FB98",  // 浅绿 - 音频数据
+            // ͼ��/ý������
+            image: "#FFA07A",  // ǳ�� - ͼ������
+            video: "#FFB6C1",  // ǳ�� - ��Ƶ����
+            audio: "#98FB98",  // ǳ�� - ��Ƶ����
 
-            // 文件类型
-            file: "#DDA0DD",   // 浅紫 - 文件路径或内容
-            json: "#F0E68C",   // 卡其 - JSON数据
-            xml: "#B0C4DE",    // 淡蓝 - XML数据
+            // �ļ�����
+            file: "#DDA0DD",   // ǳ�� - �ļ�·��������
+            json: "#F0E68C",   // ���� - JSON����
+            xml: "#B0C4DE",    // ���� - XML����
 
-            // 时间类型
-            date: "#CD5C5C",   // 印度红 - 日期
-            time: "#6495ED",   // 玉米蓝 - 时间
-            datetime: "#40E0D0", // 绿松石 - 日期时间
+            // ʱ������
+            date: "#CD5C5C",   // ӡ�Ⱥ� - ����
+            time: "#6495ED",   // ������ - ʱ��
+            datetime: "#40E0D0", // ����ʯ - ����ʱ��
 
-            // 数学/物理类型
-            matrix: "#B8860B", // 暗金 - 矩阵
-            quaternion: "#8A2BE2", // 蓝紫 - 四元数
-            color: "#FF69B4",  // 热粉 - 颜色值
-            point: "#32CD32",  // 酸橙绿 - 点坐标
+            // ��ѧ/��������
+            matrix: "#B8860B", // ���� - ����
+            quaternion: "#8A2BE2", // ���� - ��Ԫ��
+            color: "#FF69B4",  // �ȷ� - ��ɫֵ
+            point: "#32CD32",  // ����� - ������
 
-            // 特殊类型
-            error: "#FF4500",  // 橙红 - 错误信息
-            event: "#FF8C00",  // 暗橙 - 事件信号
-            command: "#4682B4", // 钢蓝 - 命令/指令
+            // ��������
+            error: "#FF4500",  // �Ⱥ� - ������Ϣ
+            event: "#FF8C00",  // ���� - �¼��ź�
+            command: "#4682B4", // ���� - ����/ָ��
 
-            // 业务相关类型
-            user: "#20B2AA",   // 浅海绿 - 用户数据
-            order: "#FFA500",  // 橙色 - 订单数据
-            product: "#9370DB", // 中紫 - 产品数据
+            // ҵ���������
+            user: "#20B2AA",   // ǳ���� - �û�����
+            order: "#FFA500",  // ��ɫ - ��������
+            product: "#9370DB", // ���� - ��Ʒ����
 
-            // 通配符/未知类型
-            any: "#A9A9A9",    // 暗灰 - 任意类型
-            unknown: "#808080" // 灰色 - 未知类型
+            // ͨ���/δ֪����
+            any: "#A9A9A9",    // ���� - ��������
+            unknown: "#808080" // ��ɫ - δ֪����
         };
 
+        this.default_connection_color = {
+            input_on: "#999",
+            input_off: "#666",
+            output_on: "#999",
+            output_off: "#666",
+        };
 
         this.default_connection_color_byTypeOff = this.default_connection_color_byType;
 
@@ -5549,7 +5555,7 @@ LGraphNode.prototype.executeAction = function(action)
 
 	LGraphCanvas.DEFAULT_BACKGROUND_IMAGE = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGQAAABkCAIAAAD/gAIDAAAAGXRFWHRTb2Z0d2FyZQBBZG9iZSBJbWFnZVJlYWR5ccllPAAAAQBJREFUeNrs1rEKwjAUhlETUkj3vP9rdmr1Ysammk2w5wdxuLgcMHyptfawuZX4pJSWZTnfnu/lnIe/jNNxHHGNn//HNbbv+4dr6V+11uF527arU7+u63qfa/bnmh8sWLBgwYJlqRf8MEptXPBXJXa37BSl3ixYsGDBMliwFLyCV/DeLIMFCxYsWLBMwSt4Be/NggXLYMGCBUvBK3iNruC9WbBgwYJlsGApeAWv4L1ZBgsWLFiwYJmCV/AK3psFC5bBggULloJX8BpdwXuzYMGCBctgwVLwCl7Be7MMFixYsGDBsu8FH1FaSmExVfAxBa/gvVmwYMGCZbBg/W4vAQYA5tRF9QYlv/QAAAAASUVORK5CYII=";
 
-    //连线颜色
+    //������ɫ
     LGraphCanvas.link_type_colors = {
         "-1": LiteGraph.EVENT_LINK_COLOR,
         number: "#AAA",
@@ -7254,15 +7260,15 @@ LGraphNode.prototype.executeAction = function(action)
 
         if (e.type == "keydown") {
 
-            // 支持 Ctrl+F 和 Ctrl+Shift+F
+            // ֧�� Ctrl+F �� Ctrl+Shift+F
             if ((e.keyCode == 70 && e.ctrlKey)) {
                 if (this.allow_searchbox && !this.read_only) {
                     var mockEvent = this.createMockEvent();
                     if (e.shiftKey) {
-                        // Ctrl+Shift+F 打开高级搜索
+                        // Ctrl+Shift+F �򿪸߼�����
                         this.showSearchBox(mockEvent, { advanced: true });
                     } else {
-                        // Ctrl+F 普通搜索
+                        // Ctrl+F ��ͨ����
                         this.showSearchBox(mockEvent);
                     }
                     block_default = true;
@@ -7486,7 +7492,7 @@ LGraphNode.prototype.executeAction = function(action)
      * @method processDrop
      **/
     LGraphCanvas.prototype.processDrop = function(e) {
-        console.log("[DROP] canvas收到拖拽");
+        console.log("[DROP] canvas�յ���ק");
         e.preventDefault();
         this.adjustMouseEvent(e);
 		var x = e.clientX;
@@ -7502,7 +7508,7 @@ LGraphNode.prototype.executeAction = function(action)
 
         var node = this.graph ? this.graph.getNodeOnPos(pos[0], pos[1]) : null;
 
-        console.log("[DROP] 命中节点:", node);
+        console.log("[DROP] ���нڵ�:", node);
 
         if (!node) {
             var r = null;
@@ -8686,11 +8692,11 @@ LGraphNode.prototype.executeAction = function(action)
         ctx.globalAlpha = editor_alpha;
 
         if (this.highlight_error_node_id === node.id) {
-            // 错误节点显示红色阴影
+            // ����ڵ���ʾ��ɫ��Ӱ
             ctx.shadowColor = "#ff0000";
             ctx.shadowBlur = 20;
         } else if (this.highlight_node_id === node.id) {
-            // 高亮节点始终显示阴影
+            // �����ڵ�ʼ����ʾ��Ӱ
             ctx.shadowColor = "#00ff00";
             ctx.shadowBlur = 20;
         } else if (this.render_shadows && !low_quality) {
@@ -9103,8 +9109,9 @@ LGraphNode.prototype.executeAction = function(action)
 		var pos = link._pos;
 		ctx.fillStyle = "black";
 		ctx.beginPath();
-		ctx.arc( pos[0], pos[1], 3, 0, Math.PI * 2 );
-		ctx.fill();
+		// dot disabled -- do not draw
+		/* ctx.arc( pos[0], pos[1], 3, 0, Math.PI * 2 );
+		ctx.fill(); */
 
 		if(link.data == null)
 			return;
@@ -9171,9 +9178,9 @@ LGraphNode.prototype.executeAction = function(action)
         ctx.strokeStyle = fgcolor;
         ctx.fillStyle = bgcolor;
 
-        // 高亮当前执行的节点
+        // ������ǰִ�еĽڵ�
         if (this.highlight_node_id === node.id) {
-            ctx.fillStyle = "#2a4a2a"; // 深绿色背景
+            ctx.fillStyle = "#2a4a2a"; // ����ɫ����
             ctx.shadowColor = "#00ff00";
             ctx.shadowBlur = 20;
             ctx.strokeStyle = "#00ff00";
@@ -9661,7 +9668,7 @@ LGraphNode.prototype.executeAction = function(action)
         if (link != null && this.highlighted_links[link.id]) {
             color = "#FFF";
         }
-        // 高亮当前执行的连接线
+        // ������ǰִ�е�������
         if (link != null && this.highlight_link_id === link.id) {
             color = "#00ff00";
         }
@@ -9887,10 +9894,10 @@ LGraphNode.prototype.executeAction = function(action)
                 ctx.restore();
             }
 
-            //circle
-            ctx.beginPath();
+            //circle �� disabled
+            /* ctx.beginPath();
             ctx.arc(pos[0], pos[1], 5, 0, Math.PI * 2);
-            ctx.fill();
+            ctx.fill(); */
         }
 
         //render flowing points
@@ -10229,40 +10236,40 @@ LGraphNode.prototype.executeAction = function(action)
 
                     var margin = 15;
 
-                    // 图片原始尺寸
+                    // ͼƬԭʼ�ߴ�
                     var iw = img.width;
                     var ih = img.height;
 
-                    // 节点当前宽度
+                    // �ڵ㵱ǰ����
                     var node_w = node.size[0];
 
-                    // 图片显示宽度 = 节点宽度 - margin*2
+                    // ͼƬ��ʾ���� = �ڵ���� - margin*2
                     var disp_w = node_w - 2 * margin;
 
-                    // 图片按原比例缩放高度
+                    // ͼƬ��ԭ�������Ÿ߶�
                     var scale = disp_w / iw;
                     var disp_h = ih * scale;
 
-                    // 节点高度自适应
+                    // �ڵ�߶�����Ӧ
                     var required_h = posY + disp_h + margin;
                     if (node.size[1] < required_h) {
                         node.size[1] = required_h;
                     }
 
-                    // 图片水平居中
+                    // ͼƬˮƽ����
                     var ix = margin;
 
-                    // 图片垂直居中（在当前 widget 区域内）
+                    // ͼƬ��ֱ���У��ڵ�ǰ widget �����ڣ�
                     var iy = posY + (disp_h < node.size[1] - posY ? (node.size[1] - posY - disp_h)/2 : 0);
 
-                    // 画边框
+                    // ���߿�
                     ctx.strokeStyle = "#666";
                     ctx.strokeRect(ix - 1, iy - 1, disp_w + 2, disp_h + 2);
 
-                    // 画图片
+                    // ��ͼƬ
                     ctx.drawImage(img, ix, iy, disp_w, disp_h);
 
-                    // 更新 widget 高度，保证下一 widget 不覆盖
+                    // ���� widget �߶ȣ���֤��һ widget ������
                     H = disp_h + margin;
                     break;
                 default:
@@ -10387,7 +10394,7 @@ LGraphNode.prototype.executeAction = function(action)
 								w.value = values[index];
 							else
 								w.value = index;
-						} else { //combo clicked 
+						} else if (!LiteGraph.disable_combo_menu) { //combo clicked
 							var text_values = values != values_list ? Object.values(values) : values;
 							var menu = new LiteGraph.ContextMenu(text_values, {
 									scale: Math.max(1, this.ds.scale),
@@ -10443,7 +10450,7 @@ LGraphNode.prototype.executeAction = function(action)
 					break;
 				case "string":
 				case "text":
-					if (event.type == LiteGraph.pointerevents_method+"down") {
+					if (event.type == LiteGraph.pointerevents_method+"down" && !LiteGraph.disable_inline_editor) {
 						this.prompt("Value",w.value,function(v) {
 								inner_value_change(this, v);
 							}.bind(w),
@@ -10454,7 +10461,7 @@ LGraphNode.prototype.executeAction = function(action)
 
                     var img = w.value;
 
-                    // 没有图片时画占位框
+                    // û��ͼƬʱ��ռλ��
                     var draw_w = widget_width - margin * 2;
                     var draw_h = H;
 
@@ -10474,7 +10481,7 @@ LGraphNode.prototype.executeAction = function(action)
                         break;
                     }
 
-                    // 图片缩放
+                    // ͼƬ����
                     var scale = Math.min(
                         draw_w / img.width,
                         draw_h / img.height,

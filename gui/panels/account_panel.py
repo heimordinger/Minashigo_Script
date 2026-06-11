@@ -1,10 +1,14 @@
-﻿from PySide6.QtCore import Signal, QSize, Qt, QTimer
+﻿import json
+from pathlib import Path
+from PySide6.QtCore import Signal, QSize, Qt, QTimer
 from PySide6.QtGui import QIcon, QFontMetrics
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QComboBox,
-    QScrollArea, QFrame,
+    QScrollArea, QFrame, QDialog, QTreeWidget, QTreeWidgetItem, QHeaderView,
 )
+
+from core.path import SCRIPTS_PATH
 
 from core.logging.events import LogLevel, LogEvent, LogSource
 from core.state.events import StateEvent, StateDomain
@@ -20,6 +24,67 @@ class _CardScrollArea(QScrollArea):
         return QSize(200, 100)
 
 
+class ScriptPickerDialog(QDialog):
+    """脚本选择对话框，带文件夹树折叠效果"""
+    def __init__(self, paths: list[str], parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("选择脚本")
+        self.setMinimumSize(420, 480)
+        self.selected_path: str | None = None
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+
+        self.tree = QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.setAnimated(True)
+        layout.addWidget(self.tree)
+
+        # 构建树
+        root = {"children": {}, "files": []}
+        for p in paths:
+            parts = p.split("/")
+            node = root
+            for i, part in enumerate(parts[:-1]):
+                if part not in node["children"]:
+                    node["children"][part] = {"children": {}, "files": []}
+                node = node["children"][part]
+            node["files"].append(p)
+
+        def add_items(parent_widget, node):
+            for name, sub in sorted(node["children"].items()):
+                item = QTreeWidgetItem(parent_widget)
+                item.setText(0, f"📁 {name}")
+                item.setExpanded(False)
+                add_items(item, sub)
+            for fp in sorted(node["files"]):
+                item = QTreeWidgetItem(parent_widget)
+                item.setText(0, f"📄 {fp.split('/')[-1]}")
+                item.setData(0, Qt.UserRole, fp)
+
+        add_items(self.tree.invisibleRootItem(), root)
+
+        btn_row = QHBoxLayout()
+        btn_ok = QPushButton("确定")
+        btn_ok.clicked.connect(self._accept)
+        btn_cancel = QPushButton("取消")
+        btn_cancel.clicked.connect(self.reject)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_ok)
+        btn_row.addWidget(btn_cancel)
+        layout.addLayout(btn_row)
+
+        self.tree.itemDoubleClicked.connect(self._accept)
+
+    def _accept(self):
+        item = self.tree.currentItem()
+        if item:
+            fp = item.data(0, Qt.UserRole)
+            if fp:
+                self.selected_path = fp
+                self.accept()
+
+
 class AccountPanel(QWidget):
     start_task = Signal(dict, str)
     stop_task = Signal(dict)
@@ -27,12 +92,14 @@ class AccountPanel(QWidget):
 
     reconnect = Signal(dict)
     start_browser = Signal(dict)
+    select_window = Signal(dict)
     close = Signal(dict)
 
     open_taskflow = Signal(dict)
 
     refresh_tasks = Signal(dict)
     request_screenshot = Signal(dict)
+    target_changed = Signal(dict)
 
     def __init__(self, account: dict, tasks: list[str]):
         super().__init__()
@@ -44,6 +111,7 @@ class AccountPanel(QWidget):
         self.running = False
         self.stopping = False
         self.browser_ready = False
+        self._browser_started = False   # 是否启动过浏览器（独立于连接状态）
         self._ball_counter = 0
         self._current_card: TaskBallCard | None = None
 
@@ -51,11 +119,15 @@ class AccountPanel(QWidget):
         self._full_title = ""
         title = QLabel(f"账号：{account['name']}")
         title.setObjectName("AccountTitle")
-        self.task_combo = QComboBox()
-        self.task_combo.addItems(tasks)
+        self.task_paths = tasks
+        self._script_btn = QPushButton(tasks[0] if tasks else "（无脚本）")
+        self._script_btn.setObjectName("ScriptSelectCombo")
+        self._script_btn.setMinimumHeight(28)
+        self._script_btn.clicked.connect(self._open_script_picker)
         if tasks:
             self.current_task = tasks[0]
-        self.task_combo.currentTextChanged.connect(self.on_task_changed)
+        else:
+            self.current_task = None
 
         self.browser_state = "待启动"
 
@@ -79,7 +151,6 @@ class AccountPanel(QWidget):
         script_label = QLabel("脚本：")
         script_label.setObjectName("ScriptSelectLabel")
 
-        self.task_combo.setObjectName("ScriptSelectCombo")
         self.refresh_btn = QPushButton()
         self.refresh_btn.setObjectName("ScriptRefreshBtn")
         self.refresh_btn.setIcon(QIcon.fromTheme("view-refresh"))
@@ -91,7 +162,7 @@ class AccountPanel(QWidget):
         )
 
         script_select_layout.addWidget(script_label)
-        script_select_layout.addWidget(self.task_combo)
+        script_select_layout.addWidget(self._script_btn)
         script_select_layout.addWidget(self.refresh_btn)
 
         top_row.addWidget(script_select)
@@ -108,9 +179,12 @@ class AccountPanel(QWidget):
         self.reconnect_btn = QPushButton("重新连接")
         self.reconnect_btn.setToolTip("中断当前连接并重新连接浏览器")
         self.start_browser_btn = QPushButton("启动浏览器")
+        self.select_window_btn = QPushButton("选择窗口")
+        self.select_window_btn.setToolTip("选择已启动的桌面窗口作为自动化目标")
         self.close_btn = QPushButton("关闭")
         self.reconnect_btn.setEnabled(True)
         self.start_browser_btn.setEnabled(True)
+        self.select_window_btn.setEnabled(True)
         self.close_btn.setEnabled(False)
 
         self.start_btn.clicked.connect(self.on_start_clicked)
@@ -118,6 +192,7 @@ class AccountPanel(QWidget):
 
         self.reconnect_btn.clicked.connect(self.on_reconnect_clicked)
         self.start_browser_btn.clicked.connect(self.on_start_browser)
+        self.select_window_btn.clicked.connect(self.on_select_window)
         self.close_btn.clicked.connect(self.on_close_clicked)
 
         divider = QFrame()
@@ -127,11 +202,25 @@ class AccountPanel(QWidget):
         op_row = QHBoxLayout()
         op_row.addWidget(self.start_btn)
         op_row.addWidget(self.stop_btn)
+        op_row.addSpacing(4)
+
+        # 脚本目标选择
+        target_label = QLabel("目标:")
+        target_label.setStyleSheet("color: #888;")
+        op_row.addWidget(target_label)
+        self._target_combo = QComboBox()
+        self._target_combo.setMinimumWidth(120)
+        self._target_combo.setToolTip("选择脚本执行时使用的控制目标")
+        self._target_combo.addItem("未就绪")
+        self._target_combo.currentIndexChanged.connect(self._on_target_changed)
+        op_row.addWidget(self._target_combo)
+
         op_row.addSpacing(8)
         op_row.addWidget(divider)
         op_row.addSpacing(8)
         op_row.addWidget(self.reconnect_btn)
         op_row.addWidget(self.start_browser_btn)
+        op_row.addWidget(self.select_window_btn)
         op_row.addWidget(self.close_btn)
 
         op_row.addSpacing(16)
@@ -154,9 +243,7 @@ class AccountPanel(QWidget):
 
         self.screenshot_btn = QPushButton("获取截图")
         self.screenshot_btn.setObjectName("ScreenshotBtn")
-        self.screenshot_btn.clicked.connect(
-            lambda: self.request_screenshot.emit(self.account)
-        )
+        self.screenshot_btn.clicked.connect(self._request_screenshot)
         self.screenshot_btn.setEnabled(False)
 
         debug_row.addWidget(self.mouse_pos_label)
@@ -381,8 +468,38 @@ QPushButton#TabCloseButton[accountTab="true"] {
             source=LogSource.SYSTEM,
         ))
 
+        self._browser_started = True
         self.start_browser.emit(self.account)
         self.start_browser_btn.setEnabled(False)
+        self._update_target_combo()
+        # 启动浏览器后默认使用浏览器目标
+        br_idx = self._target_combo.findData("browser")
+        if br_idx >= 0:
+            self._target_combo.setCurrentIndex(br_idx)
+
+    def on_select_window(self):
+        from gui.widgets.WindowPicker import WindowPickerDialog
+        target = WindowPickerDialog.pick(self)
+        if target:
+            self.account["window_hwnd"] = target.hwnd
+            self.account["window_title"] = target.title
+            self.select_window.emit(self.account)
+            self.select_window_btn.setText(f"窗口: {target.title[:20]}")
+            self.set_browser_state(f"已选窗口: {target.title[:30]}")
+            self._update_target_combo()
+            # 选中窗口后默认使用窗口目标，强制切到窗口项
+            win_idx = self._target_combo.findData("window")
+            if win_idx >= 0:
+                self._target_combo.setCurrentIndex(win_idx)
+            self._update_buttons()
+        elif self.account.get("window_hwnd"):
+            # 取消 → 清除之前的选择
+            self.account.pop("window_hwnd", None)
+            self.account.pop("window_title", None)
+            self.select_window_btn.setText("选择窗口")
+            self.set_browser_state("空闲")
+            self._update_target_combo()
+            self._update_buttons()
 
     def on_task_changed(self, task: str):
         self.current_task = task
@@ -417,6 +534,12 @@ QPushButton#TabCloseButton[accountTab="true"] {
                 item.widget().deleteLater()
         self._resize_content()
 
+        # 记录选中的脚本目标（browser / window），供 TaskController 使用
+        target_type = self._target_combo.currentData()
+        print(f"[AccountPanel] currentData={target_type!r}, 下拉框文本="
+              f"{self._target_combo.currentText()!r}")
+        self.account["_target"] = target_type or "browser"
+        print(f"[AccountPanel] _target={self.account['_target']!r}")
         self.start_task.emit(self.account, self.current_task)
 
     def on_reconnect_clicked(self):
@@ -470,11 +593,57 @@ QPushButton#TabCloseButton[accountTab="true"] {
             self.taskflow_btn.setToolTip("打开TaskFlow可视化工作流")
             self._tf_ready_timer.stop()
 
+    def _on_target_changed(self):
+        """下拉框切换时同步 _target 并通知外部。"""
+        target_type = self._target_combo.currentData()
+        self.account["_target"] = target_type or "browser"
+        self.target_changed.emit(self.account)
+
+    def _request_screenshot(self):
+        """获取截图前把目标选择写入 account，确保 controller 知道截哪个。"""
+        target_type = self._target_combo.currentData()
+        self.account["_target"] = target_type or "browser"
+        self.request_screenshot.emit(self.account)
+
+    def _update_target_combo(self):
+        """根据当前绑定的 browser/window 刷新目标选择下拉框。"""
+        # 清空前记住当前选中的 target，重填后恢复
+        prev_target = self._target_combo.currentData()
+
+        self._target_combo.blockSignals(True)
+        self._target_combo.clear()
+
+        has_browser = self._browser_started
+        has_window = self.account.get("window_hwnd") is not None
+
+        if has_browser:
+            self._target_combo.addItem("浏览器", "browser")
+        if has_window:
+            win_title = self.account.get("window_title", "窗口")
+            self._target_combo.addItem(f"窗口: {win_title[:20]}", "window")
+
+        if self._target_combo.count() == 0:
+            self._target_combo.addItem("未就绪", "")
+
+        # 恢复之前的选中项；如果已被移除（如取消窗口）则默认第一项
+        if prev_target:
+            idx = self._target_combo.findData(prev_target)
+            if idx >= 0:
+                self._target_combo.setCurrentIndex(idx)
+            else:
+                self._target_combo.setCurrentIndex(0)
+        else:
+            self._target_combo.setCurrentIndex(0)
+
+        self._target_combo.blockSignals(False)
+
     def _update_buttons(self):
         # 先统一将 taskflow 按钮设为不可用（后面单独覆盖）
         self.taskflow_btn.setEnabled(False)
 
-        if not self.browser_ready:
+        has_window = self.account.get("window_hwnd") is not None
+
+        if not self.browser_ready and not has_window:
             for w in self._all_buttons:
                 w.setEnabled(False)
 
@@ -483,6 +652,10 @@ QPushButton#TabCloseButton[accountTab="true"] {
         else:
             for w in self._all_buttons:
                 w.setEnabled(True)
+
+            # 窗口模式：没有浏览器可重连，但允许再启动浏览器
+            if has_window and not self.browser_ready:
+                self.reconnect_btn.setEnabled(False)
 
             if self.stopping:
                 self.start_btn.setEnabled(False)
@@ -639,22 +812,25 @@ QPushButton#TabCloseButton[accountTab="true"] {
             self.append_log(snapshot.message)
 
     def update_tasks(self, tasks: list[str]):
-        self.tasks = tasks
-
-        current = self.task_combo.currentText()
-
-        self.task_combo.blockSignals(True)
-        self.task_combo.clear()
-        self.task_combo.addItems(tasks)
-        self.task_combo.blockSignals(False)
-        if current in tasks:
-            self.task_combo.setCurrentText(current)
-            self.current_task = current
-        elif tasks:
-            self.task_combo.setCurrentIndex(0)
-            self.current_task = tasks[0]
-        else:
+        self.task_paths = tasks
+        if not tasks:
             self.current_task = None
+            self._script_btn.setText("（无脚本）")
+            return
+        if self.current_task and self.current_task in tasks:
+            self._script_btn.setText(self.current_task)
+        else:
+            self.current_task = tasks[0]
+            self._script_btn.setText(tasks[0])
+
+    def _open_script_picker(self):
+        if not self.task_paths:
+            return
+        dlg = ScriptPickerDialog(self.task_paths, self)
+        if dlg.exec() == QDialog.Accepted and dlg.selected_path:
+            self.current_task = dlg.selected_path
+            self._script_btn.setText(dlg.selected_path)
+            self.on_task_changed(dlg.selected_path)
 
     def show_screenshot(self, qimage):
         self.append_log("加载截图中... ...")
@@ -675,7 +851,7 @@ QPushButton#TabCloseButton[accountTab="true"] {
 
         self._screenshot_viewer = ScreenshotViewer(image=pixmap, account=self.account)
         self._screenshot_viewer.refresh_requested.connect(
-            lambda: self.request_screenshot.emit(self.account)
+            self._request_screenshot
         )
         self._screenshot_viewer.show()
         self.append_log("截图已显示")
