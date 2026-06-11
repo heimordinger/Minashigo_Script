@@ -17,38 +17,26 @@ class BrowserLauncher:
         browser_path: Path,
         user_data: Path,
         port: int,
-        url: str | None = None,
     ):
         self._validate_browser(browser_path)
         self._validate_user_data(user_data)
         user_data.mkdir(parents=True, exist_ok=True)
 
-        cmd = [
-            str(browser_path),
-            f"--remote-debugging-port={port}",
-            f"--user-data-dir={str(user_data)}",
-            "--no-first-run",
-            "--no-default-browser-check",
-            "--start-maximized",
-            # 隐藏自动化提示栏，避免视口变化
-            "--disable-infobars",
-            "--disable-extensions",
-            "--disable-sync",
-            # 允许最小化/后台时继续渲染，保证截图正常
-            "--disable-background-timer-throttling",
-            "--disable-renderer-backgrounding",
-            "--disable-backgrounding-occluded-windows",
-            # 防止 Chrome 恢复上次关闭时的标签页，避免出现多余的标签页
-            "--disable-session-crashed-bubble",
-            "--disable-restore-session-state",
-        ]
-        if url:
-            cmd.append(url)
-
         try:
-            print("launch cmd:", cmd)
+            print("launch cmd:", [
+                str(browser_path),
+                f"--remote-debugging-port={port}",
+                f"--user-data-dir={str(user_data)}",
+            ])
             self.proc = subprocess.Popen(
-                cmd,
+                [
+                    str(browser_path),
+                    f"--remote-debugging-port={port}",
+                    f"--user-data-dir={str(user_data)}",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--start-maximized",
+                ],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )

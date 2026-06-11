@@ -1,0 +1,34 @@
+import asyncio
+
+from backend.automation.user_window import UserWindow
+from backend.window.user_window import Userwindow
+from core.path import PROJECT_ROOT
+
+
+async def do_work(window: UserWindow|Userwindow):
+    from core.path import IMG_PATH
+    print("进入任务(窗口点击测试.py)")
+    my_path = IMG_PATH / '点击样例'
+    imgs = [
+            {
+                'ttk_path': 'Click_case2',
+                'threshold': 0.8,
+                'pianyi': (0, 0),
+            },
+            {
+                'ttk_path': 'Click_case',
+                'threshold': 0.8,
+                'pianyi': (0, 0),
+            }
+    ]
+    for _ in range(5):
+        await window.update_frame()
+        for img in imgs:
+            res =  await window.click_image(
+                img_path=my_path/img['ttk_path'],
+                threshold=img['threshold'],
+                pianyi=img['pianyi'])
+            window.script_log(msg=f"已点击: {res}  图片: {img['ttk_path']}")
+        await asyncio.sleep(0.25)
+
+    window.script_log(msg="已完成点击样例")

@@ -1,36 +1,77 @@
-import cv2
+﻿import cv2
 import numpy as np
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
                                QPushButton, QMessageBox, QComboBox, QSpinBox,
                                QDoubleSpinBox, QCheckBox, QLabel, QFileDialog)
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QIcon, QShortcut, QKeySequence
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Qt, Slot
 from core.coord.viewport_context import viewport_ctx
 import math
 from backend.matcher.matcher import matcher
 import os
 
-from core.path import ICON_PATH, IMG_PATH
+from core.path import ICON_PATH
 
 
-class _ImageCanvas(QWidget):
-    """截图显示画布，处理绘制和鼠标交互"""
+class ScreenshotViewer(QWidget):
     DRAG_THRESHOLD = 5
 
-    def __init__(self, viewer, image):
+    def __init__(self, *, image, account: dict):
         super().__init__()
-        self.viewer = viewer
-        self.setMouseTracking(True)
-        self.setMinimumSize(0, 0)
-        self.setSizePolicy(self.sizePolicy().Policy.Expanding, self.sizePolicy().Policy.Expanding)
+        self.account = account
+        self.setWindowTitle("截图预览")
+        self.setWindowIcon(QIcon(str(ICON_PATH)))
+        self.resize(800, 600)
+        self.setMinimumSize(400, 300)
+        self.refresh_shortcut = QShortcut(QKeySequence(Qt.Key_F5), self)
+        self.refresh_shortcut.activated.connect(self.on_refresh_button_click)
+        layout = QVBoxLayout(self)
+        self.setLayout(layout)
+        control_layout = QHBoxLayout()
+        self.match_type_combo = QComboBox(self)
+        self.match_type_combo.addItems(["图片匹配", "文字匹配"])
+        self.match_type_combo.setCurrentIndex(0)
+        self.match_type_combo.currentTextChanged.connect(self.on_match_type_changed)
+        control_layout.addWidget(QLabel("匹配类型:"))
+        control_layout.addWidget(self.match_type_combo)
+        control_layout.addWidget(QLabel("目标:"))
 
+        self.target_input = QLineEdit(self)
+        self.target_input.setPlaceholderText("输入或选择目标图片路径")
+        control_layout.addWidget(self.target_input)
+        self.select_img_btn = QPushButton("选择图片")
+        self.select_img_btn.clicked.connect(self.on_select_image)
+        control_layout.addWidget(self.select_img_btn)
+        self.clear_img_btn = QPushButton("清空")
+        self.clear_img_btn.clicked.connect(lambda: self.target_input.clear())
+        control_layout.addWidget(self.clear_img_btn)
+        self.threshold_input = QDoubleSpinBox(self)
+        self.threshold_input.setRange(0.0, 1.0)
+        self.threshold_input.setSingleStep(0.05)
+        self.threshold_input.setValue(0.9)
+        self.threshold_input.setToolTip("图片匹配:0~1, 文字匹配:0~100")
+        control_layout.addWidget(QLabel("最低匹配度:"))
+        control_layout.addWidget(self.threshold_input)
+        self.color_check = QCheckBox("颜色一致", self)
+        self.color_check.setChecked(False)
+        control_layout.addWidget(self.color_check)
+        self.region_check = QCheckBox("区域匹配", self)
+        self.region_check.setChecked(False)
+        control_layout.addWidget(self.region_check)
+        self.match_button = QPushButton("开始匹配", self)
+        self.refresh_button = QPushButton("清除", self)
+        control_layout.addWidget(self.match_button)
+        control_layout.addWidget(self.refresh_button)
+        control_layout.setAlignment(Qt.AlignTop)
+        layout.addLayout(control_layout)
+        self.match_button.clicked.connect(self.on_match_button_click)
+        self.refresh_button.clicked.connect(self.on_refresh_button_click)
         if isinstance(image, QImage):
             self.original_pixmap = QPixmap.fromImage(image)
         elif isinstance(image, QPixmap):
             self.original_pixmap = image
         else:
             raise TypeError("image must be QImage or QPixmap")
-
         self.mark_img_pos = None
         self.mark_css_pos = None
         self.rect_start_pos = None
@@ -38,34 +79,44 @@ class _ImageCanvas(QWidget):
         self.active_mode = None
         self.dragging = False
         self.dpr = None
-        self.press_img_pos = None
 
         self.img_w = self.original_pixmap.width()
         self.img_h = self.original_pixmap.height()
         self.scale = 1.0
         self.offset_x = 0
         self.offset_y = 0
-        self.match_rects = []
 
+        self.setMouseTracking(True)
         self._update_scale_offset()
+        self.match_rects = []
+        self.on_match_type_changed(self.match_type_combo.currentText())
 
-    def set_pixmap(self, pixmap):
-        self.original_pixmap = pixmap
-        self.img_w = pixmap.width()
-        self.img_h = pixmap.height()
-        self.match_rects.clear()
-        self.mark_img_pos = None
-        self.mark_css_pos = None
-        self.rect_start_pos = None
-        self.rect_end_pos = None
+    @Slot(str)
+    def on_match_type_changed(self, text):
+        if text == "图片匹配":
+            self.target_input.setPlaceholderText("输入目标图片路径")
+            self.threshold_input.setRange(0.0, 1.0)
+            self.threshold_input.setValue(0.9)
+            self.threshold_input.setToolTip("图片匹配相似度阈值 (0~1)")
+            self.color_check.setEnabled(True)
+            self.color_check.setVisible(True)
+        else:
+            self.target_input.setPlaceholderText("输入要匹配的文字")
+            self.threshold_input.setRange(0.0, 100.0)
+            self.threshold_input.setValue(60.0)
+            self.threshold_input.setToolTip("文字匹配置信度阈值 (0~100)")
+            self.color_check.setChecked(False)
+            self.color_check.setEnabled(False)
+            self.color_check.setVisible(True)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
         self._update_scale_offset()
         self.update()
 
     def _update_scale_offset(self):
         view_w, view_h = self.width(), self.height()
         img_w, img_h = self.img_w, self.img_h
-        if img_w == 0 or img_h == 0 or view_w == 0 or view_h == 0:
-            return
         self.scale = min(view_w / img_w, view_h / img_h)
         draw_w, draw_h = img_w * self.scale, img_h * self.scale
         self.offset_x = (view_w - draw_w) / 2
@@ -81,70 +132,91 @@ class _ImageCanvas(QWidget):
             return None
         return x / self.scale, y / self.scale
 
-    def _adjust_text_pos(self, x, y, text_width=100, text_height=20, padding=5):
-        pos_x = x + padding
-        pos_y = y - padding
+    def on_match_button_click(self):
+        match_type = self.match_type_combo.currentText()
+        target_text = self.target_input.text().strip()
+        threshold = self.threshold_input.value()
+        use_color = self.color_check.isChecked() and match_type == "图片匹配"
+        use_region = self.region_check.isChecked()
 
-        if pos_x + text_width > self.width():
-            pos_x = x - text_width - padding
-        if pos_x < 0:
-            pos_x = padding
-        if pos_y < 0:
-            pos_y = y + padding + text_height
-        if pos_y + text_height > self.height():
-            pos_y = self.height() - text_height - padding
+        if match_type == "图片匹配" and not target_text:
+            self.show_error_message("输入无效", "请输入目标图片路径")
+            return
+        qimg = self.original_pixmap.toImage()
+        buf = qimg.bits().tobytes()
+        full_img = np.frombuffer(buf, np.uint8).reshape(
+            qimg.height(), qimg.width(), 4
+        )[:, :, :3]
 
-        return pos_x, pos_y
+        roi_img = full_img
+        roi_offset_x = 0
+        roi_offset_y = 0
+        crop_top_left = None
+        crop_bottom_right = None
+        if use_region:
+            if not (self.rect_start_pos and self.rect_end_pos):
+                self.show_error_message("未绘制区域", "请先在截图上绘制矩形区域")
+                return
+            crop_top_left = (int(self.rect_start_pos[0]), int(self.rect_start_pos[1]))
+            crop_bottom_right = (int(self.rect_end_pos[0]), int(self.rect_end_pos[1]))
+        if not os.path.exists(target_text):
+            self.show_error_message("图片路径无效", "模板图片不存在")
+            return
 
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        def imread_unicode(path):
+            data = np.fromfile(path, dtype=np.uint8)
+            if data.size == 0:
+                return None
+            return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
-        draw_w, draw_h = int(self.img_w * self.scale), int(self.img_h * self.scale)
-        painter.drawPixmap(int(self.offset_x), int(self.offset_y), draw_w, draw_h, self.original_pixmap)
+        template_bgr = imread_unicode(target_text)
+        if template_bgr is None:
+            self.show_error_message("模板错误", "无法读取模板图片")
+            return
 
-        self.dpr = viewport_ctx.get_dpr(account=self.viewer.account)
-        for match in self.match_rects:
-            match_x, match_y, width, height, score = match
-            painter.setPen(QPen(QColor(30, 220, 30), 2))
-            painter.drawRect(match_x * self.scale + self.offset_x, match_y * self.scale + self.offset_y,
-                             width * self.scale, height * self.scale)
-            painter.setPen(QPen(QColor(30, 220, 30), 2))
-            painter.drawText(match_x * self.scale + self.offset_x + width * self.scale + 5,
-                             match_y * self.scale + self.offset_y, f"匹配度: {score:.2f}")
-        if self.rect_start_pos and self.rect_end_pos:
-            start_x, start_y = self.rect_start_pos
-            end_x, end_y = self.rect_end_pos
+        try:
+            results = matcher.match(
+                target=full_img,
+                template=template_bgr,
+                match_type="image_multi",
+                threshold=threshold,
+                use_color_check=use_color,
+                color_tol=30.0 if use_color else None,
+                crop_top_left=crop_top_left,
+                crop_bottom_right=crop_bottom_right
+            )
+        except Exception as e:
+            self.show_error_message("匹配出错", str(e))
+            return
 
-            rect_width = end_x - start_x
-            rect_height = end_y - start_y
+        self.match_rects.clear()
 
-            painter.setPen(QPen(QColor(220, 30, 30), 2))
-            painter.setBrush(Qt.NoBrush)
-            painter.drawRect(start_x * self.scale + self.offset_x,
-                             start_y * self.scale + self.offset_y,
-                             rect_width * self.scale,
-                             rect_height * self.scale)
-            painter.setPen(QPen(QColor(220, 30, 30), 2))
-            start_text = f"({int(start_x)}, {int(start_y)})"
-            end_text = f"({int(end_x)}, {int(end_y)})"
-            painter.drawText(start_x * self.scale + self.offset_x, start_y * self.scale + self.offset_y - 10,
-                             start_text)
-            painter.drawText(end_x * self.scale + self.offset_x, end_y * self.scale + self.offset_y + 10, end_text)
-        if self.active_mode == "point" and self.mark_img_pos:
-            img_x, img_y = self.mark_img_pos
-            view_x = img_x * self.scale + self.offset_x
-            view_y = img_y * self.scale + self.offset_y
-            pen = QPen(QColor(220, 30, 30))
-            pen.setWidth(2)
-            painter.setPen(pen)
-            painter.setBrush(QColor(220, 30, 30))
-            radius = 4
-            painter.drawEllipse(int(view_x - radius), int(view_y - radius), radius * 2, radius * 2)
-            css_x, css_y = self.mark_css_pos
-            text_x, text_y = self._adjust_text_pos(view_x + 6, view_y - 6)
-            painter.drawText(int(text_x), int(text_y), f"({int(css_x)},{int(css_y)})")
+        if not results:
+            self.show_error_message("无匹配结果", "未找到符合条件的目标")
+            return
+
+        h, w = template_bgr.shape[:2]
+
+        for r in results:
+            self.match_rects.append(
+                (
+                    int(r['x'] - w / 2 + roi_offset_x),
+                    int(r['y'] - h / 2 + roi_offset_y),
+                    w,
+                    h,
+                    r['score']
+                )
+            )
+
+        self.update()
+
+    def on_refresh_button_click(self):
+        self.match_rects = []
+        self.mark_img_pos = None
+        self.mark_css_pos = None
+        self.rect_start_pos = None
+        self.rect_end_pos = None
+        self.update()
 
     def mousePressEvent(self, event):
         if event.button() != Qt.MouseButton.LeftButton:
@@ -196,205 +268,70 @@ class _ImageCanvas(QWidget):
         self.dragging = False
         self.update()
 
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._update_scale_offset()
-        self.update()
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
+        draw_w, draw_h = self.img_w * self.scale, self.img_h * self.scale
+        painter.drawPixmap(int(self.offset_x), int(self.offset_y), int(draw_w), int(draw_h), self.original_pixmap)
 
-class ScreenshotViewer(QWidget):
-    DRAG_THRESHOLD = 5
-    refresh_requested = Signal()
+        self.dpr = viewport_ctx.get_dpr(account=self.account)
+        for match in self.match_rects:
+            match_x, match_y, width, height, score = match
+            painter.setPen(QPen(QColor(30, 220, 30), 2))
+            painter.drawRect(match_x * self.scale + self.offset_x, match_y * self.scale + self.offset_y,
+                             width * self.scale, height * self.scale)
+            painter.setPen(QPen(QColor(30, 220, 30), 2))
+            painter.drawText(match_x * self.scale + self.offset_x + width * self.scale + 5,
+                             match_y * self.scale + self.offset_y, f"匹配度: {score:.2f}")
+        if self.rect_start_pos and self.rect_end_pos:
+            start_x, start_y = self.rect_start_pos
+            end_x, end_y = self.rect_end_pos
 
-    def __init__(self, *, image, account: dict):
-        super().__init__()
-        self.account = account
-        self.setWindowTitle("截图预览")
-        self.setWindowIcon(QIcon(str(ICON_PATH)))
-        self.resize(1200, 600)
-        self.setMinimumSize(400, 300)
-        self.refresh_shortcut = QShortcut(QKeySequence(Qt.Key_F5), self)
-        self.refresh_shortcut.activated.connect(self._emit_refresh)
+            rect_width = end_x - start_x
+            rect_height = end_y - start_y
 
-        # 主布局：控制栏固定在上方，画布填充剩余空间
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
-        self.setLayout(layout)
+            painter.setPen(QPen(QColor(220, 30, 30), 2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(start_x * self.scale + self.offset_x,
+                             start_y * self.scale + self.offset_y,
+                             rect_width * self.scale,
+                             rect_height * self.scale)
+            painter.setPen(QPen(QColor(220, 30, 30), 2))
+            start_text = f"({int(start_x)}, {int(start_y)})"
+            end_text = f"({int(end_x)}, {int(end_y)})"
+            painter.drawText(start_x * self.scale + self.offset_x, start_y * self.scale + self.offset_y - 10,
+                             start_text)
+            painter.drawText(end_x * self.scale + self.offset_x, end_y * self.scale + self.offset_y + 10, end_text)
+        if self.active_mode == "point" and self.mark_img_pos:
+            img_x, img_y = self.mark_img_pos
+            view_x = img_x * self.scale + self.offset_x
+            view_y = img_y * self.scale + self.offset_y
+            pen = QPen(QColor(220, 30, 30))
+            pen.setWidth(2)
+            painter.setPen(pen)
+            painter.setBrush(QColor(220, 30, 30))
+            radius = 4
+            painter.drawEllipse(int(view_x - radius), int(view_y - radius), radius * 2, radius * 2)
+            css_x, css_y = self.mark_css_pos
+            text_x, text_y = self._adjust_text_pos(view_x + 6, view_y - 6)
+            painter.drawText(int(text_x), int(text_y), f"({int(css_x)},{int(css_y)})")
 
-        # ====== 控制栏 ======
-        control_widget = QWidget()
-        control_widget.setObjectName("ControlBar")
-        control_widget.setStyleSheet("#ControlBar { background: #f0f0f0; border-bottom: 1px solid #ccc; }")
-        control_layout = QHBoxLayout(control_widget)
-        control_layout.setContentsMargins(4, 4, 4, 4)
+    def _adjust_text_pos(self, x, y, text_width=100, text_height=20, padding=5):
+        pos_x = x + padding
+        pos_y = y - padding
 
-        self.match_type_combo = QComboBox(self)
-        self.match_type_combo.addItems(["图片匹配", "文字匹配"])
-        self.match_type_combo.setCurrentIndex(0)
-        self.match_type_combo.currentTextChanged.connect(self.on_match_type_changed)
-        control_layout.addWidget(QLabel("匹配类型:"))
-        control_layout.addWidget(self.match_type_combo)
-        control_layout.addWidget(QLabel("目标:"))
+        if pos_x + text_width > self.width():
+            pos_x = x - text_width - padding
+        if pos_x < 0:
+            pos_x = padding
+        if pos_y < 0:
+            pos_y = y + padding + text_height
+        if pos_y + text_height > self.height():
+            pos_y = self.height() - text_height - padding
 
-        self.target_input = QLineEdit(self)
-        self.target_input.setPlaceholderText("输入或选择目标图片路径")
-        control_layout.addWidget(self.target_input)
-        self.select_img_btn = QPushButton("选择图片")
-        self.select_img_btn.clicked.connect(self.on_select_image)
-        control_layout.addWidget(self.select_img_btn)
-        self.clear_img_btn = QPushButton("清空")
-        self.clear_img_btn.clicked.connect(lambda: self.target_input.clear())
-        control_layout.addWidget(self.clear_img_btn)
-        self.threshold_input = QDoubleSpinBox(self)
-        self.threshold_input.setRange(0.0, 1.0)
-        self.threshold_input.setSingleStep(0.05)
-        self.threshold_input.setValue(0.9)
-        self.threshold_input.setToolTip("图片匹配:0~1, 文字匹配:0~100")
-        control_layout.addWidget(QLabel("最低匹配度:"))
-        control_layout.addWidget(self.threshold_input)
-        self.color_check = QCheckBox("颜色一致", self)
-        self.color_check.setChecked(False)
-        control_layout.addWidget(self.color_check)
-        self.region_check = QCheckBox("区域匹配", self)
-        self.region_check.setChecked(False)
-        control_layout.addWidget(self.region_check)
-        self.match_button = QPushButton("开始匹配", self)
-        self.clear_button = QPushButton("清除", self)
-        self.screenshot_refresh_btn = QPushButton("重新获取", self)
-        control_layout.addWidget(self.match_button)
-        control_layout.addWidget(self.clear_button)
-        control_layout.addWidget(self.screenshot_refresh_btn)
-        layout.addWidget(control_widget)
-
-        self.match_button.clicked.connect(self.on_match_button_click)
-        self.clear_button.clicked.connect(self.on_clear_click)
-        self.screenshot_refresh_btn.clicked.connect(self._emit_refresh)
-
-        # ====== 截图画布 ======
-        self.canvas = _ImageCanvas(self, image)
-        layout.addWidget(self.canvas, stretch=1)
-
-        self.on_match_type_changed(self.match_type_combo.currentText())
-
-    def update_image(self, pixmap):
-        """外部更新截图内容"""
-        self.canvas.set_pixmap(pixmap)
-
-    @Slot(str)
-    def on_match_type_changed(self, text):
-        if text == "图片匹配":
-            self.target_input.setPlaceholderText("输入目标图片路径")
-            self.threshold_input.setRange(0.0, 1.0)
-            self.threshold_input.setValue(0.9)
-            self.threshold_input.setToolTip("图片匹配相似度阈值 (0~1)")
-            self.color_check.setEnabled(True)
-            self.color_check.setVisible(True)
-        else:
-            self.target_input.setPlaceholderText("输入要匹配的文字")
-            self.threshold_input.setRange(0.0, 100.0)
-            self.threshold_input.setValue(60.0)
-            self.threshold_input.setToolTip("文字匹配置信度阈值 (0~100)")
-            self.color_check.setChecked(False)
-            self.color_check.setEnabled(False)
-            self.color_check.setVisible(True)
-
-    def on_match_button_click(self):
-        match_type = self.match_type_combo.currentText()
-        target_text = self.target_input.text().strip()
-        threshold = self.threshold_input.value()
-        use_color = self.color_check.isChecked() and match_type == "图片匹配"
-        use_region = self.region_check.isChecked()
-
-        if match_type == "图片匹配" and not target_text:
-            self.show_error_message("输入无效", "请输入目标图片路径")
-            return
-        qimg = self.canvas.original_pixmap.toImage()
-        buf = qimg.bits().tobytes()
-        full_img = np.frombuffer(buf, np.uint8).reshape(
-            qimg.height(), qimg.width(), 4
-        )[:, :, :3]
-
-        roi_img = full_img
-        roi_offset_x = 0
-        roi_offset_y = 0
-        crop_top_left = None
-        crop_bottom_right = None
-        if use_region:
-            if not (self.canvas.rect_start_pos and self.canvas.rect_end_pos):
-                self.show_error_message("未绘制区域", "请先在截图上绘制矩形区域")
-                return
-            crop_top_left = (int(self.canvas.rect_start_pos[0]), int(self.canvas.rect_start_pos[1]))
-            crop_bottom_right = (int(self.canvas.rect_end_pos[0]), int(self.canvas.rect_end_pos[1]))
-        if not os.path.exists(target_text):
-            self.show_error_message("图片路径无效", "模板图片不存在")
-            return
-
-        def imread_unicode(path):
-            data = np.fromfile(path, dtype=np.uint8)
-            if data.size == 0:
-                return None
-            return cv2.imdecode(data, cv2.IMREAD_COLOR)
-
-        template_bgr = imread_unicode(target_text)
-        if template_bgr is None:
-            self.show_error_message("模板错误", "无法读取模板图片")
-            return
-
-        try:
-            results = matcher.match(
-                target=full_img,
-                template=template_bgr,
-                match_type="image_multi",
-                threshold=threshold,
-                use_color_check=use_color,
-                color_tol=30.0 if use_color else None,
-                crop_top_left=crop_top_left,
-                crop_bottom_right=crop_bottom_right
-            )
-        except Exception as e:
-            self.show_error_message("匹配出错", str(e))
-            return
-
-        self.canvas.match_rects.clear()
-
-        if not results:
-            self.show_error_message("无匹配结果", "未找到符合条件的目标")
-            return
-
-        h, w = template_bgr.shape[:2]
-
-        for r in results:
-            self.canvas.match_rects.append(
-                (
-                    int(r['x'] - w / 2 + roi_offset_x),
-                    int(r['y'] - h / 2 + roi_offset_y),
-                    w,
-                    h,
-                    r['score']
-                )
-            )
-
-        self.canvas.update()
-
-    def _emit_refresh(self):
-        self.refresh_requested.emit()
-
-    def on_clear_click(self):
-        self.canvas.match_rects = []
-        self.canvas.mark_img_pos = None
-        self.canvas.mark_css_pos = None
-        self.canvas.rect_start_pos = None
-        self.canvas.rect_end_pos = None
-        self.canvas.update()
-        self._update_title_size()
-
-    def _update_title_size(self):
-        self.setWindowTitle(f"截图预览 ({self.width()}×{self.height()})")
-
-    def resizeEvent(self, event):
-        super().resizeEvent(event)
-        self._update_title_size()
+        return pos_x, pos_y
 
     def show_error_message(self, title, message):
         """弹窗显示错误信息"""
@@ -408,7 +345,7 @@ class ScreenshotViewer(QWidget):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "选择模板图片",
-            str(IMG_PATH),
+            "",
             "Images (*.png *.jpg *.jpeg *.bmp)"
         )
 

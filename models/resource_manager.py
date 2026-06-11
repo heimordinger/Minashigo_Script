@@ -81,7 +81,7 @@ def ensure_all_models():
 
         _extract_zip(tmp_zip, model_path)
 
-    print("=== 模型资源准备完成 ===")
+    print("=== 所有资源准备完成 ===")
 
 
 if __name__ == "__main__":

@@ -5,11 +5,11 @@ from typing import Optional
 
 import numpy as np
 
-from .utils import get_port
+from backend.browser.utils import get_port
 from backend.matcher.matcher import matcher
 from core.path import PROJECT_ROOT
 
-from .mixins import (
+from backend.browser.mixins import (
     BaseMixin,
     LifecycleMixin,
     NavigationMixin,
@@ -46,13 +46,13 @@ class Browser(
     通过多重继承整合各个功能模块
     """
 
-    def __init__(self, *, account: dict, controller, port: int | None = None):
+    def __init__(self,*, account: dict, controller):
         self.account = account
         self.controller = controller
         self.title = None
         self.url = None
 
-        self.port = port if port is not None else get_port()
+        self.port = get_port()
 
         self.user_data_dir = (
                 PROJECT_ROOT /
@@ -84,15 +84,3 @@ class Browser(
         self._connect_task: asyncio.Task | None = None
 
         print(f"{self.account['name']}: 浏览器实例创建完成")
-
-    async def check_connection(self) -> bool:
-        """检测 Playwright 浏览器/页面连接是否存活"""
-        if self._closed:
-            return False
-        if self.page is None:
-            return False
-        try:
-            await self.page.evaluate("1 + 1")
-            return True
-        except Exception:
-            return False

@@ -1,14 +1,10 @@
 ﻿import json
-import os
-import subprocess
-import sys
-import threading
 from pathlib import Path
 
 from controller.ctrl import Controller
 from core.logging.events import LogLevel, LogSource
 from gui.state.UIState import UIState
-from core.path import json_path, SCRIPTS_PATH, PROJECT_ROOT
+from core.path import json_path, SCRIPTS_PATH
 
 
 class FacadeImpl:
@@ -17,21 +13,14 @@ class FacadeImpl:
         self.state = UIState()
         accounts = self._load_accounts()
         self.state.accounts = accounts
-        self.taskflow_processes: dict[str, subprocess.Popen] = {}
 
     def _load_accounts(self) -> list[dict]:
         path = Path(json_path, "accounts.json")
-
-        path.parent.mkdir(parents=True, exist_ok=True)
-
         if not path.exists():
-            path.write_text("{}", encoding="utf-8")
+            return []
 
-        try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            path.write_text("{}", encoding="utf-8")
-            raw = {}
+        with open(path, "r", encoding="utf-8") as f:
+            raw = json.load(f)
 
         accounts = []
         for name, info in raw.items():
@@ -71,12 +60,6 @@ class FacadeImpl:
     def reconnect_browser(self, account: dict):
         self.controller.reconnect_browser(account)
 
-    def register_window_target(self, account: dict):
-        self.controller.register_window_target(account)
-
-    def sync_taskflow_target(self, account: dict):
-        self.controller.sync_taskflow_target(account)
-
     def update_account(self, index: int, account: dict):
         self.state.accounts[index] = account
         self.save_accounts()
@@ -87,21 +70,15 @@ class FacadeImpl:
 
     def save_accounts(self):
         path = Path(json_path, "accounts.json")
+        data = {a["name"]: {"email": a["email"], "password": a["password"]}
+                for a in self.state.accounts}
+        path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        path.parent.mkdir(parents=True, exist_ok=True)
+    def list_targets(self):
+        return []
 
-        data = {
-            a["name"]: {
-                "email": a["email"],
-                "password": a["password"]
-            }
-            for a in self.state.accounts
-        }
-
-        path.write_text(
-            json.dumps(data, ensure_ascii=False, indent=2),
-            encoding="utf-8"
-        )
+    def list_tasks(self):
+        return []
 
     def start_task(self, target, task):
         print("start_task:", target, task)
@@ -120,28 +97,15 @@ class FacadeImpl:
             return []
 
         return sorted([
-            str(p.relative_to(process_dir)).replace("\\", "/")
-            for p in process_dir.rglob("*.py")
-            if p.is_file()
+            p.stem
+            for p in process_dir.iterdir()
+            if p.is_file() and p.suffix == ".py"
         ])
 
     def get_status_snapshot(self):
         return []
 
     def shutdown(self):
-        # 停止所有taskflow服务器
-        for account_name, process in self.taskflow_processes.items():
-            if process.poll() is None:
-                process.terminate()
-                try:
-                    process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                print(f"[Facade] Stopped taskflow server for {account_name} during shutdown")
-        
-        self.taskflow_processes.clear()
-        
-        # 关闭浏览器
         browsers = self.controller._browsers
         for browser in browsers.values():
             self.controller.submit(browser.close())
@@ -183,86 +147,6 @@ class FacadeImpl:
 
     def close_browser(self, account: dict):
         print(f"[Facade] 关闭浏览器: {account['name']}")
-        name = account['name']
-
-        # 1. 停止正在运行的任务
-        self.controller.stop_task(account)
-
-        # 2. 关闭 Playwright 浏览器（释放端口、杀 Chrome 进程）
-        browser = self.controller._browsers.get(name)
-        if browser:
-            future = self.controller.submit(browser.close())
-            try:
-                future.result(timeout=10)
-            except Exception as e:
-                print(f"[Facade] 关闭浏览器超时或异常: {e}")
-
-        # 3. 清理 Controller 内部状态
-        self.controller._browsers.pop(name, None)
-        self.controller._browser_instances.pop(name, None)
-        self.controller._window_instances.pop(name, None)
-        self.controller._task_ctrls.pop(name, None)
-        self.controller._tasks.pop(name, None)
-        self.controller._running.pop(name, None)
-
-        # 4. 清理 TaskFlow 的浏览器引用（run_taskflow.browsers）
-        try:
-            taskflow_path = Path(__file__).parent.parent / "taskflow"
-            if str(taskflow_path) not in sys.path:
-                sys.path.insert(0, str(taskflow_path))
-            from run_taskflow import browsers as tf_browsers
-            account_email = account.get('email', '')
-            tf_browsers.pop(account_email, None)
-            print(f"[Facade] 已清理TaskFlow浏览器引用: {account_email}")
-        except Exception as e:
-            print(f"[Facade] 清理TaskFlow浏览器引用失败: {e}")
-
-        # 5. 停止 taskflow 服务器子进程
-        self.stop_taskflow_server(account)
-
-        print(f"[Facade] 账号 {name} 已完全关闭")
-
-    def register_account_to_taskflow(self, account: dict):
-        """将账号注册到Taskflow管理器"""
-        from core.taskflow_manager import taskflow_manager
-        
-        account_name = account.get('name', 'default')
-        
-        # 注册账号到Taskflow管理器
-        taskflow_manager.register_account(account)
-        print(f"[Facade] 已将账号 {account_name} 注册到Taskflow管理器")
-
-    def open_taskflow_browser(self, account: dict):
-        """为指定账号打开taskflow网页"""
-        from core.taskflow_manager import taskflow_manager
-        
-        account_name = account.get('name', 'default')
-        
-        # 使用Taskflow管理器打开网页
-        success = taskflow_manager.open_taskflow_for_account(account_name)
-        
-        if success:
-            print(f"[Facade] 已为账号 {account_name} 打开Taskflow网页")
-        else:
-            print(f"[Facade] 为账号 {account_name} 打开Taskflow网页失败")
-
-    def get_taskflow_process(self, account: dict):
-        """获取taskflow进程"""
-        account_name = account.get('name')
-        return self.taskflow_processes.get(account_name)
-
-    def stop_taskflow_server(self, account: dict):
-        """停止taskflow服务器"""
-        account_name = account.get('name')
-        process = self.taskflow_processes.pop(account_name, None)
-        
-        if process and process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=5)
-            except subprocess.TimeoutExpired:
-                process.kill()
-            print(f"[Facade] Stopped taskflow server for {account_name}")
 
     def subscribe(self, fn):
         self.controller.subscribe(fn)

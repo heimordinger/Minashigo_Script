@@ -1,6 +1,5 @@
 # backend/browser/mixins/lifecycle.py
 import asyncio
-import json
 import socket
 import time
 from pathlib import Path
@@ -18,15 +17,10 @@ import requests
 
 
 def is_cdp_alive(port: int) -> bool:
-    """检查端口上是否真的有 Chrome CDP 在运行（不只是 HTTP 200）"""
     try:
-        r = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=2)
-        if r.status_code != 200:
-            return False
-        data = r.json()
-        # CDP 的 /json/version 一定包含 Browser 字段
-        return "Browser" in data and "webSocketDebuggerUrl" in data
-    except Exception:
+        r = requests.get(f"http://127.0.0.1:{port}/json/version", timeout=1)
+        return r.status_code == 200
+    except:
         return False
 
 
@@ -107,11 +101,9 @@ class LifecycleMixin:
 
     # ---------- 连接 Playwright ----------
     async def connect(self):
-        async def wait_for_playwright(timeout=120):
+        async def wait_for_playwright(timeout=10):
             start = asyncio.get_event_loop().time()
             while self.controller.get_playwright() is None:
-                if getattr(self.controller, '_pw_failed', False):
-                    raise RuntimeError("Playwright 初始化已失败，无法连接")
                 if asyncio.get_event_loop().time() - start > timeout:
                     raise TimeoutError("Playwright init timeout")
                 await asyncio.sleep(0.05)
@@ -141,7 +133,7 @@ class LifecycleMixin:
             self._log("[CONNECT-10] wait_for_cdp() start")
 
             cdp_ok = False
-            for i in range(12):  # 最多重试12次（12×5=60s=与 ensure_browser 超时一致）
+            for i in range(5):  # 最多重试5次
                 try:
                     await self.wait_for_cdp(timeout=5)
                     cdp_ok = True
@@ -170,19 +162,7 @@ class LifecycleMixin:
                     break
                 except Exception as e:
                     self._log(f"[CONNECT-20E] connect_over_cdp failed (try={i + 1}): {e}")
-                    # 如果不是最后一次失败，可能是 CDP 信息不准确，杀掉进程下次循环时重启
-                    if i < 2 and ("not valid JSON" in str(e) or "Connection closed" in str(e)):
-                        self._log(f"[CONNECT-20E] CDP 无效，清理端口 {self.port} 后重试")
-                        from backend.browser.utils import kill_by_port
-                        kill_by_port(self.port)
-                        await asyncio.sleep(2)
-                        # 重新启动浏览器进程
-                        self._closed = False
-                        if not is_cdp_alive(self.port):
-                            self._log(f"[CONNECT-20E] 重启浏览器 (port={self.port})")
-                            self.ensure_browser(config.browser_path)
-                    else:
-                        await asyncio.sleep(1)
+                    await asyncio.sleep(1)
             else:
                 raise RuntimeError("connect_over_cdp 多次失败")
 
@@ -195,30 +175,15 @@ class LifecycleMixin:
             if self.context.pages:
                 self._log(f"[CONNECT-40] reuse existing page (count={len(self.context.pages)})")
                 self.page = self.context.pages[0]
-                # 关闭多余的标签页，只保留第一个
-                for extra in self.context.pages[1:]:
-                    try:
-                        await extra.close()
-                        self._log("[CONNECT-40A] closed extra page")
-                    except Exception as e:
-                        self._log(f"[CONNECT-40E] close extra page failed: {e}")
             else:
                 self._log("[CONNECT-41] no page found, creating new page")
                 self.page = await self.context.new_page()
                 self._log("[CONNECT-42] new page created")
 
             # ====== 页面状态 ======
-            # 浏览器启动时已打开了控制表盘，直接等页面就绪即可
             self._log("[CONNECT-50] wait_for_load_state(domcontentloaded)")
             await self.page.wait_for_load_state("domcontentloaded")
             self._log("[CONNECT-51] domcontentloaded reached")
-
-            # ====== 固定窗口标题（防止被网页顶掉） ======
-            self._fixed_title = f"{self.account['name']}"
-            safe_title = json.dumps(self._fixed_title)
-            await self.context.add_init_script(f"document.title = {safe_title};")
-            await self.page.evaluate(f"document.title = {safe_title};")
-            self._log(f"[CONNECT-52] fixed window title = {self._fixed_title}")
 
             # ====== DPR ======
             self._log("[CONNECT-60] evaluate devicePixelRatio")
@@ -226,18 +191,6 @@ class LifecycleMixin:
             self._log(f"[CONNECT-61] devicePixelRatio = {self.device_pixel_ratio}")
             viewport_ctx.add_for_account(account=self.account,
                                          dpr=self.device_pixel_ratio)
-
-            # ====== 确保窗口最大化 ======
-            try:
-                cdp = await self._get_cdp()
-                win = await cdp.send("Browser.getWindowForTarget")
-                await cdp.send("Browser.setWindowBounds", {
-                    "windowId": win["windowId"],
-                    "bounds": {"windowState": "maximized"}
-                })
-                self._log(f"[CONNECT-62] window maximized (id={win['windowId']})")
-            except Exception as e:
-                self._log(f"[CONNECT-62E] maximize failed: {e}", level=LogLevel.WARNING)
 
             # ====== watcher ======
             self._log("[CONNECT-70] start page state watcher")
@@ -274,11 +227,9 @@ class LifecycleMixin:
             raise
 
     # ---------- 页面状态监控 ----------
-    async def _page_state_watcher(self, interval=15.0):
+    async def _page_state_watcher(self, interval=0.5):
         last_url = None
         last_title = None
-        fixed_title = getattr(self, '_fixed_title', f"{self.account['name']} - Minashigo")
-        _title_fix_skip = 0  # 跳过计数器，避免频繁 evaluate
 
         while not self._closed:
             try:
@@ -301,19 +252,6 @@ class LifecycleMixin:
                             message="page updated"
                         )
                     )
-
-                # 固定窗口标题（防止网页JS篡改），最多每5轮一次 + 5秒超时
-                if title != fixed_title and _title_fix_skip <= 0:
-                    _title_fix_skip = 5
-                    try:
-                        await asyncio.wait_for(
-                            self.page.evaluate(f"document.title = {json.dumps(fixed_title)};"),
-                            timeout=5
-                        )
-                    except (asyncio.TimeoutError, Exception):
-                        pass
-                else:
-                    _title_fix_skip -= 1
             except Exception:
                 pass
 
@@ -339,39 +277,15 @@ class LifecycleMixin:
 
             finally:
                 kill_by_port(self.port)
-                from core.port_manager import port_manager
-                port_manager.release_browser_port(self.port)
                 print(f"{self.account['name']}: 浏览器已关闭")
-
-    async def recover_from_crash(self):
-        """页面崩溃后恢复：reload 当前标签页"""
-        self._log("页面崩溃，执行恢复流程", level=LogLevel.WARNING)
-
-        if not self.page:
-            self._log("page 不可用，尝试从 context 获取", level=LogLevel.WARNING)
-            if self.context and self.context.pages:
-                self.page = self.context.pages[0]
-            else:
-                self._log("无可用标签页", level=LogLevel.ERROR)
-                raise RuntimeError("无可用标签页")
-
-        try:
-            await self.page.reload(timeout=30000)
-            await self.page.wait_for_load_state("domcontentloaded", timeout=15000)
-            self._log(f"页面已恢复，当前 URL: {self.page.url}")
-        except Exception as e:
-            self._log(f"页面恢复失败: {e}", level=LogLevel.ERROR)
-            raise
 
     def ensure_browser(self, browser_path: Path):
         from backend.browser.utils import is_port_in_use, kill_by_port
-        from core.port_manager import port_manager
         import time
 
         # ====== ① CDP存在,直接复用 ======
         if is_cdp_alive(self.port):
             self._log(f"[BROWSER] 复用已有CDP实例 (port={self.port})")
-            port_manager.release_browser_port(self.port)
             return
 
         # ====== 端口被占但没有CDP,强制清理 ======
@@ -388,45 +302,19 @@ class LifecycleMixin:
             else:
                 raise RuntimeError(f"端口 {self.port} 无法释放")
 
-        # ====== 释放临时端口占用，让 Chrome 绑定 ======
-        port_manager.release_browser_port(self.port)
-
         # ====== 启动新浏览器 ======
         self._log(f"[BROWSER] 启动新浏览器 (port={self.port})")
-
-        # 清理用户数据目录中的会话文件，防止 Chrome 还原旧标签页
-        for session_file in ["Current Session", "Current Tabs", "Last Session", "Last Tabs", "Last Active Tabs"]:
-            fpath = self.user_data_dir / "Default" / session_file
-            if fpath.exists():
-                try:
-                    fpath.unlink()
-                    self._log(f"[BROWSER] 已清除会话文件: {session_file}")
-                except Exception as e:
-                    self._log(f"[BROWSER] 清除会话文件失败: {session_file} ({e})")
-
-        # 构建控制表盘 URL 作为默认页
-        try:
-            from core.taskflow_manager import taskflow_manager
-            from urllib.parse import quote
-            api_port = taskflow_manager.api_port
-            name = self.account.get('name', '')
-            email = self.account.get('email', '')
-            dash_url = (f"http://127.0.0.1:{api_port}/dashboard"
-                        f"?name={quote(name)}&email={quote(email)}&port={self.port}")
-        except Exception:
-            dash_url = None
 
         launcher = BrowserLauncher()
         launcher.start(
             browser_path=browser_path,
             user_data=self.user_data_dir,
-            port=self.port,
-            url=dash_url,
+            port=self.port
         )
 
         # ====== 等待CDP ======
         start = time.time()
-        while time.time() - start < 60:
+        while time.time() - start < 20:
             if is_cdp_alive(self.port):
                 self._log(f"[BROWSER] CDP已就绪 (port={self.port})")
                 return
