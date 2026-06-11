@@ -38,6 +38,10 @@ class UpdateFrameNode extends ActionNode {
     ];
   }
 
+  getHelpText() {
+        return "刷新当前页面帧";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
@@ -53,8 +57,8 @@ class UpdateFrameNode extends ActionNode {
     }
   }
 
-  onAction(action) {
-    this.run(action);
+  async onAction(action) {
+    await this.run(action);
   }
 
   async onRun() {

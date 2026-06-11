@@ -1,11 +1,11 @@
-import { ActionNode } from "../../core/action-node.js";
 import { openNodePropertyEditor } from "../../core/input-dialog.js";
 import { pickFromAssets } from "../../js/utils/filePicker.js";
 
-class MatchImage extends ActionNode {
+class MatchImage extends LiteGraph.LGraphNode {
   static title = "匹配图片";
   constructor() {
-    super("匹配图片");
+    super();
+    this.title = "匹配图片";
     this.category = "Action";
     this.addInput("触发", LiteGraph.EVENT);
 
@@ -17,6 +17,8 @@ class MatchImage extends ActionNode {
     this.addOutput("x","number");
     this.addOutput("y","number");
     this.addOutput("max_val","number");
+    this.addOutput("成功", LiteGraph.EVENT);
+    this.addOutput("失败", LiteGraph.EVENT);
 
 
     /* ========= Properties ========= */
@@ -126,6 +128,10 @@ class MatchImage extends ActionNode {
     // this.size = [360, 380];
   }
 
+  getHelpText() {
+        return "在屏幕上匹配图片位置<br>阈值: 匹配灵敏度(0-1)";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
@@ -205,48 +211,56 @@ class MatchImage extends ActionNode {
 
   /* ========= Execution ========= */
 
-  onAction(action) {
-    this.run(action);
-  }
+  /* ===== compare.js 风格：onAction 内自己控制所有输出 ===== */
 
-  async onRun() {
-    const {
-      image,
-      threshold,
-      match_select,
-      use_color_check
-    } = this.properties;
+  async onAction(action) {
+    if (action && action !== "trigger" && action !== "flow") return;
+    const ctrl = window.workflowController;
+    if (!ctrl || ctrl.state !== "running") return;
 
-    if (!image) {
-      console.warn("MatchImageNode: image empty");
-      return;
-    }
+    const { image, threshold, match_select, use_color_check } = this.properties;
+    if (!image) { console.warn("MatchImage: image empty"); return; }
 
     const name = image.startsWith("data:") ? "(内嵌图片)" : image.split("/").pop();
     this.log(`匹配图片: ${name} (阈值=${threshold})`);
 
     try {
-      const response = await this.callBackend("match_image", {
-        image,
-        threshold,
-        match_select,
-        use_color_check
-      });
+      const response = await this._callBackend("match_image", { image, threshold, match_select, use_color_check });
       const result = response?.data || {};
       this.setOutputData(1, result.x ?? null);
       this.setOutputData(2, result.y ?? null);
       this.setOutputData(3, result.max_val ?? 0);
 
       if (result.x != null) {
-        this.log(`匹配成功: (${result.x}, ${result.y}), 匹配度=${result.max_val?.toFixed(3)}`);
+        this.log(`匹配成功: (${result.x}, ${result.y})`);
+        await this.execOutput(4); // 成功
       } else {
-        this.log(`匹配失败: 未找到 (匹配度=${result.max_val?.toFixed(3)})`, "warn");
+        this.log(`匹配失败: ${result.max_val?.toFixed(3) ?? "0"}`, "warn");
+        await this.execOutput(5); // 失败
       }
+      await this.execOutput(0); // 下一步
     } catch (e) {
       this.log(`匹配异常: ${e.message}`, "error");
-      console.error("MatchImageNode failed:", e);
-      throw e;
+      console.error("MatchImage failed:", e);
+      window.workflowController?.stop();
     }
+  }
+
+  async _callBackend(taskName, properties) {
+    const backend = window.taskflow?.backend;
+    if (!backend) throw new Error("Backend not ready");
+    const acct = window.accountManager?.getCurrentAccount();
+    if (acct) properties.account = acct;
+    const r = await backend.invoke(taskName, properties);
+    if (r?.data?.error) {
+      if (r.data.error.includes("连接已断开") || r.data.error.includes("Target closed")) throw new Error(r.data.error);
+    }
+    return r;
+  }
+
+  log(message, level) {
+    const title = this.title || "匹配图片";
+    window.taskflowLog?.(level || "info", `[${title}] ${message}`);
   }
 }
 

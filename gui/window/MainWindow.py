@@ -40,11 +40,15 @@ class MainWindow(QWidget):
         self.facade.controller.screenshot_ready.connect(
             self.on_screenshot_ready
         )
-        self.setup_tabs()
+        # 只同步创建首屏 "开始" tab，其余 tab 延迟加载
+        self._setup_start_tab()
         self.setup_status_bar()
         self.setup_layout()
         self.setup_signals()
         self.setup_shortcuts()
+        # 事件循环启动后用空闲时间创建其余 tab
+        from PySide6.QtCore import QTimer
+        QTimer.singleShot(0, self._lazy_init_tabs)
 
     def setup_window(self):
         font = QFont()
@@ -212,20 +216,21 @@ QToolTip {
 """)
         print("样式表加载完成（内联）")
 
-    def setup_tabs(self):
+    def _setup_start_tab(self):
+        """只创建首屏必要的「开始」tab"""
         self.tabs = QTabWidget()
         self.tabs.setMovable(False)
         self.tabs.setTabsClosable(False)
         self.tabs.setObjectName("MainTabs")
-
         self.start_tab = StartTab(self.facade)
+        self.tabs.addTab(self.start_tab, "开始")
+
+    def _lazy_init_tabs(self):
+        """事件循环启动后懒加载其余 tab"""
         self.account_manager_tab = AccountManagerTab(self.facade)
         self.settings_tab = SettingsPanel()
-
-        self.tabs.addTab(self.start_tab, "开始")
         self.tabs.addTab(self.account_manager_tab, "账号管理")
         self.tabs.addTab(self.settings_tab, "设置")
-
         self.account_manager_tab.accounts_changed.connect(self.start_tab.render)
 
     def setup_status_bar(self):
@@ -313,10 +318,12 @@ QToolTip {
         panel.start_task.connect(self.facade.start_task)
         panel.stop_task.connect(self.facade.stop_task)
         panel.start_browser.connect(self.facade.start_browser)
+        panel.select_window.connect(self.on_select_window)
         panel.close.connect(self._close_account_tab)
         panel.browser_ready_notify.connect(self.on_browser_ready)
         panel.refresh_tasks.connect(self.on_refresh_tasks)
         panel.request_screenshot.connect(self.on_request_screenshot)
+        panel.target_changed.connect(self.on_target_changed)
         panel.reconnect.connect(self.on_reconnect)
         panel.open_taskflow.connect(self.on_open_taskflow)
         insert_index = self.tabs.count() - 2
@@ -330,6 +337,14 @@ QToolTip {
         name = account["name"]
         print(f"请求重连: {name}")
         self.facade.reconnect_browser(account)
+
+    def on_select_window(self, account: dict):
+        name = account["name"]
+        hwnd = account.get("window_hwnd")
+        title = account.get("window_title", "?")
+        print(f"选择窗口: {name} hwnd={hwnd} title={title}")
+        self.status_label.setText(f"已选窗口: {title[:40]}")
+        self.facade.register_window_target(account)
 
     def on_open_taskflow(self, account: dict):
         name = account["name"]
@@ -386,7 +401,10 @@ QToolTip {
             panel.update_tasks(tasks)
 
     def on_request_screenshot(self, account: dict):
-        self.facade.controller.capture_screenshot(account["name"])
+        self.facade.controller.capture_screenshot(account)
+
+    def on_target_changed(self, account: dict):
+        self.facade.controller.sync_taskflow_target(account)
 
     def on_screenshot_ready(self, account_name: str, frame):
         panel = self.account_panels.get(account_name)
@@ -421,7 +439,8 @@ QToolTip {
         self.style().polish(self)
         self.update()
 
-        self.settings_tab.reload_all()
+        if hasattr(self, "settings_tab"):
+            self.settings_tab.reload_all()
 
         print("样式表重载完成")
 

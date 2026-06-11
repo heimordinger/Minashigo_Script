@@ -33,6 +33,9 @@ export function pickFromAssets(onSelect) {
         });
 }
 
+// 记忆上次在图片库中打开的位置
+let _lastPickerPath = [];
+
 function showAssetPicker(files, onSelect) {
     // 移除已有面板
     const old = document.getElementById("asset-picker");
@@ -47,88 +50,163 @@ function showAssetPicker(files, onSelect) {
     const panel = document.createElement("div");
     panel.style.cssText =
         "background:#2a2a2a;border:1px solid #555;border-radius:8px;padding:16px;" +
-        "min-width:500px;max-width:620px;max-height:85vh;overflow-y:auto;" +
+        "min-width:520px;max-width:660px;max-height:85vh;display:flex;flex-direction:column;" +
         "box-shadow:0 4px 20px rgba(0,0,0,0.5);";
 
-    panel.innerHTML = `<h3 style="margin:0 0 12px;color:#eee;font-size:16px;">选择图片 (assets/images/)</h3>`;
+    // ─── 构建目录树 ───
+    // Windows 路径用 \，其他用 /，统一按 [/\] 切分
+    const tree = { $files: [] };
+    for (const f of files) {
+        const parts = f.split(/[/\\]/);
+        let node = tree;
+        for (let i = 0; i < parts.length - 1; i++) {
+            if (!node[parts[i]]) node[parts[i]] = { $files: [] };
+            node = node[parts[i]];
+        }
+        node.$files.push({ full: f, name: parts[parts.length - 1] });
+    }
 
-    // 按目录分组
-    const groups = {};
-    files.forEach(f => {
-        const idx = f.lastIndexOf("/");
-        const dir = idx > 0 ? f.slice(0, idx) : ".";
-        const name = idx > 0 ? f.slice(idx + 1) : f;
-        if (!groups[dir]) groups[dir] = [];
-        groups[dir].push({ full: f, name });
-    });
+    // 扁平化叶子节点（只有一张图的单层目录不折叠）
+    function flattenSingles(node, path) {
+        const keys = Object.keys(node).filter(k => k !== "$files");
+        if (keys.length === 1 && node.$files.length === 0 && node[keys[0]]) {
+            const sub = node[keys[0]];
+            const merged = { $files: sub.$files };
+            const subKeys = Object.keys(sub).filter(k => k !== "$files");
+            for (const sk of subKeys) merged[path ? `${keys[0]}/${sk}` : sk] = sub[sk];
+            return merged;
+        }
+        return node;
+    }
+    // 只对根层做一次展开
+    const flatTree = flattenSingles(tree, "");
 
-    // 缩略图懒加载：每个 Item 创建后自动加载
+    // ─── 缩略图 ───
+    const loaders = [];
     function loadThumb(imgEl, fullPath) {
         const ctrl = new AbortController();
         imgEl._abort = ctrl;
         fetch(`/api/get_thumbnail?name=${encodeURIComponent(fullPath)}&size=100`, { signal: ctrl.signal })
             .then(r => r.json())
-            .then(result => {
-                if (result.success) {
-                    imgEl.src = result.data_url;
-                    imgEl.style.display = "block";
-                }
-            })
+            .then(result => { if (result.success) { imgEl.src = result.data_url; imgEl.style.display = "block"; } })
             .catch(() => {});
         return ctrl;
     }
 
-    const list = document.createElement("div");
-    list.style.cssText = "display:flex;flex-direction:column;gap:3px;";
+    // ─── 导航状态（从记忆恢复，并验证路径仍有效） ───
+    let currentPath = [];
+    if (_lastPickerPath.length > 0) {
+        let node = flatTree;
+        let valid = true;
+        for (const seg of _lastPickerPath) {
+            if (node[seg] && typeof node[seg] === "object") {
+                node = node[seg];
+                currentPath.push(seg);
+            } else {
+                valid = false;
+                break;
+            }
+        }
+        if (!valid) currentPath = [];
+    }
+    const body = document.createElement("div");
+    body.style.cssText = "flex:1;overflow-y:auto;min-height:200px;";
 
-    const allLoaders = [];
+    function getNode(path) {
+        let node = flatTree;
+        for (const seg of path) node = node[seg] || {};
+        return node;
+    }
 
-    for (const [dir, entries] of Object.entries(groups)) {
-        if (dir !== ".") {
-            const dirLabel = document.createElement("div");
-            dirLabel.style.cssText =
-                "font-size:11px;color:#888;padding:4px 4px 2px 0;font-weight:500;margin-top:4px;";
-            dirLabel.textContent = dir + "/";
-            list.appendChild(dirLabel);
+    function getPathLabel(path) {
+        return path.length ? path.join(" / ") : "assets/images/";
+    }
+
+    // ─── 渲染当前目录 ───
+    function render() {
+        body.innerHTML = "";
+        const node = getNode(currentPath);
+        const dirs = Object.keys(node).filter(k => k !== "$files").sort((a, b) => a.localeCompare(b));
+        const files = (node.$files || []);
+
+        // 面包屑
+        const bread = document.createElement("div");
+        bread.style.cssText = "font-size:12px;color:#888;padding:6px 4px 10px;border-bottom:1px solid #444;margin-bottom:8px;display:flex;flex-wrap:wrap;gap:4px;align-items:center;";
+        const rootLink = document.createElement("a");
+        rootLink.textContent = "📁 图片库";
+        rootLink.style.cssText = "color:#aaa;cursor:pointer;text-decoration:none;";
+        rootLink.onclick = () => { currentPath = []; render(); };
+        bread.appendChild(rootLink);
+
+        for (let i = 0; i < currentPath.length; i++) {
+            const sep = document.createElement("span");
+            sep.textContent = " / ";
+            sep.style.cssText = "color:#666;";
+            bread.appendChild(sep);
+            const crumb = document.createElement("a");
+            crumb.textContent = currentPath[i];
+            crumb.style.cssText = "color:#aaa;cursor:pointer;text-decoration:none;";
+            const idx = i;
+            crumb.onclick = () => { currentPath = currentPath.slice(0, idx + 1); render(); };
+            bread.appendChild(crumb);
         }
 
-        entries.forEach(({ full, name }) => {
+        const countSpan = document.createElement("span");
+        countSpan.style.cssText = "color:#666;margin-left:auto;font-size:11px;";
+        countSpan.textContent = `${dirs.length}个文件夹 · ${files.length}张图`;
+        bread.appendChild(countSpan);
+        body.appendChild(bread);
+
+        // 返回上级
+        if (currentPath.length > 0) {
+            const up = document.createElement("div");
+            up.style.cssText = "padding:6px 8px;border-radius:4px;cursor:pointer;color:#999;font-size:13px;display:flex;align-items:center;gap:6px;transition:background .12s;";
+            up.innerHTML = "<span style='font-size:14px;'>📂</span> ..";
+            up.onmouseenter = () => up.style.background = "#3a3a3a";
+            up.onmouseleave = () => up.style.background = "transparent";
+            up.onclick = () => { currentPath.pop(); render(); };
+            body.appendChild(up);
+        }
+
+        // 文件夹列表
+        for (const dir of dirs) {
+            const subNode = node[dir];
+            const subDirs = Object.keys(subNode).filter(k => k !== "$files").length;
+            const subFiles = (subNode.$files || []).length;
+
             const item = document.createElement("div");
-            item.style.cssText =
-                "padding:4px 8px;background:#3a3a3a;border-radius:4px;cursor:pointer;color:#ddd;" +
-                "display:flex;align-items:center;gap:10px;transition:background .12s;";
+            item.style.cssText = "padding:8px 10px;border-radius:4px;cursor:pointer;color:#ccc;font-size:13px;display:flex;align-items:center;gap:8px;transition:background .12s;margin:2px 0;";
+            item.innerHTML = `<span style="font-size:16px;">📁</span> <span style="flex:1;">${dir}</span> <span style="font-size:11px;color:#666;">${subFiles}张</span>`;
+            item.onmouseenter = () => item.style.background = "#3a3a3a";
+            item.onmouseleave = () => item.style.background = "transparent";
+            item.onclick = () => { currentPath.push(dir); render(); };
+            body.appendChild(item);
+        }
 
-            // 缩略图容器
+        // 文件列表
+        for (const { full, name } of files) {
+            const item = document.createElement("div");
+            item.style.cssText = "padding:5px 8px;background:#3a3a3a;border-radius:4px;cursor:pointer;color:#ddd;display:flex;align-items:center;gap:10px;transition:background .12s;margin:2px 0;";
+
             const thumbBox = document.createElement("div");
-            thumbBox.style.cssText =
-                "width:50px;height:50px;flex-shrink:0;border-radius:3px;overflow:hidden;" +
-                "background:#555;display:flex;align-items:center;justify-content:center;";
-
+            thumbBox.style.cssText = "width:44px;height:44px;flex-shrink:0;border-radius:3px;overflow:hidden;background:#555;display:flex;align-items:center;justify-content:center;";
             const img = document.createElement("img");
             img.style.cssText = "width:100%;height:100%;object-fit:cover;display:none;";
-
-            // 加载中占位
             const spinner = document.createElement("div");
             spinner.textContent = "...";
             spinner.style.cssText = "color:#888;font-size:10px;";
-
             thumbBox.appendChild(spinner);
             thumbBox.appendChild(img);
             item.appendChild(thumbBox);
 
-            // 文件名
             const label = document.createElement("span");
-            label.style.cssText = "font-size:13px;word-break:break-all;";
+            label.style.cssText = "font-size:13px;word-break:break-all;flex:1;";
             label.textContent = name;
             item.appendChild(label);
 
-            // 鼠标悬停
-            item.onmouseenter = () => { item.style.background = "#4a4a4a"; };
-            item.onmouseleave = () => { item.style.background = "#3a3a3a"; };
-
-            // 点击选中
+            item.onmouseenter = () => item.style.background = "#4a4a4a";
+            item.onmouseleave = () => item.style.background = "#3a3a3a";
             item.onclick = async () => {
-                // 取消正在进行的缩略图请求（如果有）
                 if (img._abort) img._abort.abort();
                 try {
                     const resp = await fetch(`/api/get_image?name=${encodeURIComponent(full)}`);
@@ -144,34 +222,44 @@ function showAssetPicker(files, onSelect) {
                 overlay.remove();
             };
 
-            list.appendChild(item);
-
-            // 延迟加载缩略图（IntersectionObserver 懒加载）
             const loader = loadThumb(img, full);
-            allLoaders.push(loader);
-        });
+            loaders.push(loader);
+            body.appendChild(item);
+        }
+
+        if (dirs.length === 0 && files.length === 0) {
+            const empty = document.createElement("div");
+            empty.style.cssText = "color:#666;text-align:center;padding:40px 0;font-size:13px;";
+            empty.textContent = "此文件夹为空";
+            body.appendChild(empty);
+        }
+
+        _lastPickerPath = [...currentPath]; // 记忆当前位置
     }
-    panel.appendChild(list);
+
+    // ─── 标题 ───
+    const header = document.createElement("div");
+    header.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;";
+    const title = document.createElement("h3");
+    title.style.cssText = "margin:0;color:#eee;font-size:15px;";
+    title.textContent = "选择图片";
+    header.appendChild(title);
+    panel.appendChild(header);
+
+    panel.appendChild(body);
 
     const closeBtn = document.createElement("button");
     closeBtn.textContent = "取消";
-    closeBtn.style.cssText =
-        "margin-top:12px;padding:6px 16px;background:#555;color:#eee;" +
-        "border:none;border-radius:4px;cursor:pointer;";
-    closeBtn.onclick = () => {
-        allLoaders.forEach(c => c.abort());
-        overlay.remove();
-    };
+    closeBtn.style.cssText = "margin-top:10px;padding:6px 16px;background:#555;color:#eee;border:none;border-radius:4px;cursor:pointer;align-self:flex-end;";
+    closeBtn.onclick = () => { loaders.forEach(c => c.abort()); overlay.remove(); };
     panel.appendChild(closeBtn);
 
     overlay.appendChild(panel);
     document.body.appendChild(overlay);
 
-    // 点击遮罩关闭
     overlay.addEventListener("click", e => {
-        if (e.target === overlay) {
-            allLoaders.forEach(c => c.abort());
-            overlay.remove();
-        }
+        if (e.target === overlay) { loaders.forEach(c => c.abort()); overlay.remove(); }
     });
+
+    render();
 }

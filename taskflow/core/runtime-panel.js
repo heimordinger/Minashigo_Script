@@ -99,8 +99,8 @@ export function initRuntimePanel() {
     return window.workflowController;
   }
 
-  btnStart.onclick = () => {
-    getController()?.start();
+  btnStart.onclick = async () => {
+    await getController()?.start();
     // 状态由workflow-controller管理，通过updateRuntimeState更新
   };
   btnPause.onclick = () => {

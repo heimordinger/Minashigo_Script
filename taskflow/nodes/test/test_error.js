@@ -201,7 +201,7 @@ class TestErrorNode extends LiteGraph.LGraphNode {
           }
         };
       default:
-        return Error;
+        return "Error";
     }
   }
 }

@@ -2,6 +2,9 @@
 .idea/
 .vscode/
 
+# ========== VS Code Local History (大量备份) ==========
+.history/
+
 # ========== Claude Memory ==========
 .claude/
 

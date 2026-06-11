@@ -40,13 +40,17 @@ class urlGoto extends ActionNode {
     ];
   }
 
+  getHelpText() {
+        return "导航到指定 URL<br>等待加载: 是否等待页面完全加载";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
   }
 
-  onAction(action) {
-    this.run(action);
+  async onAction(action) {
+    await this.run(action);
   }
 
   async onRun() {

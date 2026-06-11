@@ -1,7 +1,7 @@
 # core/app_info.py
 
 APP_NAME = "Minashigo Script"
-VERSION = "v1.0"
+VERSION = "v1.1.0"
 AUTHOR = "Heimordinger"
 
 ABOUT = (

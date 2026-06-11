@@ -1,3 +1,4 @@
+import { openNodePropertyEditor } from "../../core/input-dialog.js";
 // taskflow/nodes/flow/screenshot.js
 import { reportNodeEvent } from "../../core/node-reporter.js";
 
@@ -11,10 +12,19 @@ class Screenshot extends LiteGraph.LGraphNode{
     this.addOutput("下一步",LiteGraph.EVENT)
   }
 
-  onAction() {
+  getHelpText() {
+        return "截取当前屏幕";
+    }
+
+  onDblClick() {
+    openNodePropertyEditor(this);
+    return true;
+  }
+
+  async onAction() {
     window.taskflowLog?.("info", "[截图] 执行截图");
     reportNodeEvent(this, "trigger");
-    this.triggerSlot(0);
+    await this.execOutput(0);
   }
 }
 

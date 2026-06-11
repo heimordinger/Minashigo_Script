@@ -1,0 +1,413 @@
+{
+  "last_node_id": 9,
+  "last_link_id": 7,
+  "nodes": [
+    {
+      "id": 1,
+      "type": "flow/start",
+      "pos": {
+        "0": 207,
+        "1": 278,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 140,
+        "1": 26
+      },
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "next",
+          "type": -1,
+          "links": [
+            1
+          ],
+          "slot_index": 0
+        }
+      ],
+      "title": "起点",
+      "properties": {}
+    },
+    {
+      "id": 2,
+      "type": "flow/counter",
+      "pos": {
+        "0": 633,
+        "1": 265,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": [
+        220,
+        250
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "增加",
+          "type": -1,
+          "link": 3
+        },
+        {
+          "name": "减少",
+          "type": -1,
+          "link": null
+        },
+        {
+          "name": "重置",
+          "type": -1,
+          "link": 2
+        }
+      ],
+      "outputs": [
+        {
+          "name": "≥目标",
+          "type": -1,
+          "links": [
+            5
+          ]
+        },
+        {
+          "name": "<目标",
+          "type": -1,
+          "links": [
+            4
+          ],
+          "slot_index": 1
+        }
+      ],
+      "properties": {
+        "target": 5,
+        "step": 1,
+        "count": 0
+      }
+    },
+    {
+      "id": 4,
+      "type": "flow/label",
+      "pos": {
+        "0": 388,
+        "1": 168,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": [
+        200,
+        80
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "标记",
+          "type": -1,
+          "links": [
+            3
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "label": "label_1"
+      }
+    },
+    {
+      "id": 3,
+      "type": "flow/relay",
+      "pos": {
+        "0": 377,
+        "1": 345,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": [
+        210,
+        100
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "输入",
+          "type": -1,
+          "link": 1
+        },
+        {
+          "name": "输入 1",
+          "type": -1,
+          "link": 6,
+          "slot_index": 1
+        }
+      ],
+      "outputs": [
+        {
+          "name": "输出",
+          "type": -1,
+          "links": [
+            2
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "inputCount": 2,
+        "outputCount": 1
+      }
+    },
+    {
+      "id": 8,
+      "type": "flow/label",
+      "pos": {
+        "0": 149,
+        "1": 474,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": [
+        200,
+        80
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "标记",
+          "type": -1,
+          "links": [
+            6
+          ],
+          "slot_index": 0
+        }
+      ],
+      "properties": {
+        "label": "label_2"
+      }
+    },
+    {
+      "id": 6,
+      "type": "flow/goto",
+      "pos": {
+        "0": 984,
+        "1": 376,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 58
+      },
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 4
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "target": "label_1"
+      }
+    },
+    {
+      "id": 7,
+      "type": "flow/confirm",
+      "pos": {
+        "0": 972,
+        "1": 186,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": [
+        200,
+        110
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 5,
+          "slot_index": 0
+        }
+      ],
+      "outputs": [
+        {
+          "name": "下一步",
+          "type": -1,
+          "links": null
+        },
+        {
+          "name": "确认",
+          "type": -1,
+          "links": [
+            7
+          ],
+          "slot_index": 1
+        },
+        {
+          "name": "取消",
+          "type": -1,
+          "links": null
+        }
+      ],
+      "properties": {
+        "title": "确认",
+        "message": "确定执行此操作？"
+      }
+    },
+    {
+      "id": 9,
+      "type": "flow/goto",
+      "pos": {
+        "0": 1200,
+        "1": 198,
+        "2": 0,
+        "3": 0,
+        "4": 0,
+        "5": 0,
+        "6": 0,
+        "7": 0,
+        "8": 0,
+        "9": 0
+      },
+      "size": {
+        "0": 210,
+        "1": 58
+      },
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "触发",
+          "type": -1,
+          "link": 7
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "target": "label_2"
+      }
+    }
+  ],
+  "links": [
+    [
+      1,
+      1,
+      0,
+      3,
+      0,
+      -1
+    ],
+    [
+      2,
+      3,
+      0,
+      2,
+      2,
+      -1
+    ],
+    [
+      3,
+      4,
+      0,
+      2,
+      0,
+      -1
+    ],
+    [
+      4,
+      2,
+      1,
+      6,
+      0,
+      -1
+    ],
+    [
+      5,
+      2,
+      0,
+      7,
+      0,
+      -1
+    ],
+    [
+      6,
+      8,
+      0,
+      3,
+      1,
+      -1
+    ],
+    [
+      7,
+      7,
+      1,
+      9,
+      0,
+      -1
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {},
+  "version": 0.4
+}

@@ -1,5 +1,5 @@
-import { ActionNode } from "../../core/action-node.js";
 import { openNodePropertyEditor } from "../../core/input-dialog.js";
+import { ActionNode } from "../../core/action-node.js";
 import { pickFromAssets } from "../../js/utils/filePicker.js";
 
 class ClickImageNode extends ActionNode {
@@ -11,7 +11,8 @@ class ClickImageNode extends ActionNode {
     this.addInput("触发", LiteGraph.EVENT);
     this.addInput("图片路径", "string");
     this.addOutput("下一步", LiteGraph.EVENT);
-    this.addOutput("成功", "boolean");
+    this.addOutput("成功", LiteGraph.EVENT);
+    this.addOutput("失败", LiteGraph.EVENT);
     this.addOutput("点击X", "number");
     this.addOutput("点击Y", "number");
     this.addOutput("匹配度", "number");
@@ -34,7 +35,7 @@ class ClickImageNode extends ActionNode {
     this.addWidget("button", "从库选择", null, () => this._selectFromAssets());
     this.addWidget("number", "阈值", this.properties.threshold, v => (this.properties.threshold = v));
     this.addWidget("number", "按下时长", this.properties.down_time, v => (this.properties.down_time = v));
-    this.addWidget("preview_image", "", null, null);
+    this.addWidget("preview_image", "", null, () => {});
 
     this.previewImage = null;
     this.size = [360, 300];
@@ -122,6 +123,10 @@ class ClickImageNode extends ActionNode {
     ];
   }
 
+  getHelpText() {
+        return "在屏幕上找到图片并点击<br>阈值: 匹配灵敏度(0-1)<br>偏移: 点击位置的偏移像素";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
@@ -189,8 +194,8 @@ class ClickImageNode extends ActionNode {
     img.src = base64;
   }
 
-  onAction(action) {
-    this.run(action);
+  async onAction(action) {
+    await this.run(action);
   }
 
   async onRun() {
@@ -202,15 +207,16 @@ class ClickImageNode extends ActionNode {
 
     const response = await this.callBackend("click_image", { ...this.properties, image });
     const data = response?.data || {};
-    this.setOutputData(1, !!response?.success);
-    this.setOutputData(2, data.clicked_x ?? null);
-    this.setOutputData(3, data.clicked_y ?? null);
-    this.setOutputData(4, data.match_value ?? null);
+    this.setOutputData(3, data.clicked_x ?? null);
+    this.setOutputData(4, data.clicked_y ?? null);
+    this.setOutputData(5, data.match_value ?? null);
 
     if (data.clicked_x != null) {
       this.log(`点击完成: (${data.clicked_x}, ${data.clicked_y})`);
+      await this.execOutput(1); // 成功
     } else {
       this.log(`点击失败: 未找到图片`, "warn");
+      await this.execOutput(2); // 失败
     }
   }
 }

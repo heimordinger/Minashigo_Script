@@ -36,6 +36,10 @@ class DelayNode extends LiteGraph.LGraphNode {
     ];
   }
 
+  getHelpText() {
+        return "延迟指定毫秒数后继续执行";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
@@ -57,7 +61,7 @@ class DelayNode extends LiteGraph.LGraphNode {
     reportNodeEvent(this, "trigger", { ms: this.properties.ms });
     const ms = Math.max(0, Number(this.properties.ms) || 0);
     await new Promise(resolve => setTimeout(resolve, ms));
-    this.triggerSlot(0);
+    await this.execOutput(0);
   }
 }
 

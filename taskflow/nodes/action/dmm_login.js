@@ -62,13 +62,17 @@ class DMMLoginNode extends ActionNode {
     ];
   }
 
+  getHelpText() {
+        return "DMM 自动登录<br>需提前在浏览器中登录过 DMM";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
   }
 
-  onAction(action) {
-    this.run(action);
+  async onAction(action) {
+    await this.run(action);
   }
 
   async onRun() {

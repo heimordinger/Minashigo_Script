@@ -113,13 +113,17 @@ class ClickTextNode extends ActionNode {
     this._executed = false;
   }
 
+  getHelpText() {
+        return "点击屏幕上指定文本的位置";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
   }
 
-  onAction(action) {
-    this.run(action);
+  async onAction(action) {
+    await this.run(action);
   }
 
   async onRun() {

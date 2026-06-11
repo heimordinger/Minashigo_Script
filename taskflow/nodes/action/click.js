@@ -90,13 +90,17 @@ class ClickNode extends ActionNode {
     this._executed = false;
   }
 
+  getHelpText() {
+        return "点击指定坐标位置<br>x/y: 点击坐标<br>按下时长: 鼠标按下的时间(秒)";
+    }
+
   onDblClick() {
     openNodePropertyEditor(this);
     return true;
   }
 
-  onAction(action) {
-    this.run(action);
+  async onAction(action) {
+    await this.run(action);
   }
 
   async onRun() {

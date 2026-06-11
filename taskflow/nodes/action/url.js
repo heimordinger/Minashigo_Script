@@ -66,7 +66,7 @@ class URLNode extends ActionNode {
                 this.log(`跳转成功: ${url}`);
                 this.setOutputData(1, true);
                 this.setOutputData(2, url);
-                this.triggerSlot(0);
+                await this.execOutput(0);
             } else {
                 this.log(`跳转失败: ${result?.error || '未知错误'}`, "error");
                 throw new Error(result?.error || "跳转失败");
@@ -143,7 +143,7 @@ class URLNode extends ActionNode {
             // 最后回退到默认账号
             console.log(`[URLNode] ❌ 使用默认账号`);
             return { name: 'default', email: 'default@example.com' };
-            
+
         } catch (error) {
             console.error(`[URLNode] 获取当前tab账号失败:`, error);
             return { name: 'default', email: 'default@example.com' };

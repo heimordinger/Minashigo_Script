@@ -40,7 +40,9 @@ class Controller(QObject):
         self._log_buffer: dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
 
         # ---------- runtime objects ----------
-        self._browsers: dict = {}  # name -> Browser
+        self._browsers: dict = {}  # name -> Browser (Playwright)
+        self._browser_instances: dict = {}  # name -> UserBrowser（浏览器模式脚本调用对象）
+        self._window_instances: dict = {}  # name -> UserWindow（窗口模式脚本调用对象）
         self._tasks = {}  # name -> mutable dict
         self._task_ctrls: dict = {}  # name -> TaskController
         self._running = {}  # name -> asyncio.Future
@@ -57,6 +59,8 @@ class Controller(QObject):
 
         # ---------- asyncio loop ----------
         self._loop = asyncio.new_event_loop(); _ts("new_event_loop")
+        from taskflow.backend_handler import set_main_loop
+        set_main_loop(self._loop); _ts("set_main_loop")
         self._thread = threading.Thread(
             target=self._run_loop,
             daemon=True
@@ -154,6 +158,7 @@ class Controller(QObject):
                 sys.path.insert(0, str(taskflow_path))
 
             from run_taskflow import browsers
+            from taskflow.backend_handler import MainLoopProxy
             from backend.browser.user_browser import UserBrowser
 
             class TempTaskCtrl:
@@ -164,11 +169,13 @@ class Controller(QObject):
 
             temp_task_ctrl = TempTaskCtrl()
             user_browser = UserBrowser(browser=browser, task_ctrl=temp_task_ctrl)
+            wrapped = MainLoopProxy(user_browser)
 
             account_email = account.get('email', '')
             if account_email:
-                browsers[account_email] = user_browser
-                print(f"[Controller] 已存储UserBrowser到browsers字典: {account_email}")
+                browsers[account_email] = wrapped
+                self._browser_instances[account['name']] = wrapped
+                print(f"[Controller] 已存储UserBrowser到_browser_instances和run_taskflow.browsers: {account_email}")
             else:
                 print(f"[Controller] 账号缺少邮箱信息: {account}")
 
@@ -197,6 +204,78 @@ class Controller(QObject):
             controller=self,
         )
         self._task_ctrls[account['name']] = task_ctrl
+
+    def register_window_target(self, account: dict):
+        """窗口模式：注册账号并创建 UserWindow，存储到 _window_instances。"""
+        name = account["name"]
+        if name not in self._tasks:
+            self._tasks[name] = {
+                "script": None,
+                "status": "idle",
+                "step": "",
+                "message": ""
+            }
+        if name not in self._task_ctrls:
+            from controller.task_controller import TaskController
+            self._task_ctrls[name] = TaskController(
+                account=account,
+                task_name="",
+                controller=self,
+            )
+
+        # 创建并存储 UserWindow，与 _browser_instances 分开
+        hwnd = account.get("window_hwnd")
+        if hwnd:
+            from backend.automation.user_window import UserWindow
+            from backend.automation.win32_target import Win32Target
+            target = Win32Target.from_hwnd(hwnd)
+            user_window = UserWindow(target=target, task_ctrl=self._task_ctrls[name])
+            user_window.account = account
+            self._window_instances[name] = user_window
+
+            # 注册到 TaskFlow 的全局 browsers 池，让 WebSocket 命令也能找到窗口目标
+            # 注册到 TaskFlow 全局池
+            try:
+                import sys
+                from pathlib import Path
+                tf_path = Path(__file__).parent.parent / "taskflow"
+                if str(tf_path) not in sys.path:
+                    sys.path.insert(0, str(tf_path))
+                from run_taskflow import browsers as tf_browsers
+                email = account.get('email', '')
+                if email:
+                    tf_browsers[email] = user_window
+                    print(f"[Controller] 已注册 UserWindow 到 TaskFlow browsers: {email}")
+            except Exception as e:
+                print(f"[Controller] 注册 UserWindow 到 TaskFlow 失败: {e}")
+
+            print(f"[Controller] 已创建 UserWindow (hwnd={hwnd})")
+        else:
+            self._window_instances.pop(name, None)
+
+        print(f"[Controller] 窗口目标已注册: {name}")
+
+    def sync_taskflow_target(self, account: dict):
+        """当下拉框目标切换时，同步 TaskFlow 的 browsers 池。"""
+        name = account["name"]
+        want_window = account.get("_target") == "window"
+        instance = self._window_instances.get(name) if want_window else self._browser_instances.get(name)
+        if instance is None:
+            return
+
+        try:
+            import sys
+            from pathlib import Path
+            tf_path = Path(__file__).parent.parent / "taskflow"
+            if str(tf_path) not in sys.path:
+                sys.path.insert(0, str(tf_path))
+            from run_taskflow import browsers as tf_browsers
+            email = account.get('email', '')
+            if email:
+                tf_browsers[email] = instance
+                print(f"[Controller] 同步 TaskFlow 目标: {'窗口' if want_window else '浏览器'}")
+        except Exception as e:
+            print(f"[Controller] 同步 TaskFlow 目标失败: {e}")
 
     def cancel_connect(self, account: dict):
         fut = self._connect_futures.get(account['name'])
@@ -310,9 +389,6 @@ class Controller(QObject):
         name = account["name"]
 
         self._tasks[name]["script"] = task_name
-        browser = self._browsers.get(name)
-        if not browser:
-            raise RuntimeError("Browser 未初始化")
 
         self.emit_task_state(
             name,
@@ -455,12 +531,21 @@ class Controller(QObject):
             )
         )
 
-    def capture_screenshot(self, account_name: str):
-        browser = self._browsers.get(account_name)
-        if not browser:
-            return
+    def capture_screenshot(self, account: dict):
+        """按 account['_target'] 选择截图来源。"""
+        account_name = account["name"]
 
-        future = self.submit(browser.update_frame())
+        if account.get("_target") == "window":
+            win = self._window_instances.get(account_name)
+            if not win:
+                return
+            future = self.submit(win.update_frame())
+        else:
+            browser = self._browsers.get(account_name)
+            if not browser:
+                return
+            future = self.submit(browser.update_frame())
+
         future.add_done_callback(lambda f: self._on_screenshot_done(account_name, f))
 
     def _on_screenshot_done(self, account_name: str, future):
