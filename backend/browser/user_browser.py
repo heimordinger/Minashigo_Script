@@ -44,18 +44,8 @@ class UserBrowser:
         self.use_polling_temp_cache = False
         self.polling_temp_cache = {}
 
-        # 游戏属性
-        self.minashigo_info = {
-            "属性": None,
-        }
-        self.minashigo_attrs = {
-            "光": "light",
-            "暗": "dark",
-            "水": "water",
-            "火": "fire",
-            "雷": "lightning",
-            "风": "wind",
-        }
+        self._watchdog_idle: float = 300.0   # 5 分钟无操作视为卡死
+        self._last_successful_click: float = __import__('time').time()
 
     def script_log(self, msg: str):
         self._browser.script_log(msg)
@@ -82,6 +72,13 @@ class UserBrowser:
             seconds = random.uniform(seconds, upper_limit)
         if seconds <= 0:
             return
+        # 看门狗：超过 watchdog_idle 秒无有效点击 → 视为卡死
+        idle = __import__('time').time() - self._last_successful_click
+        if idle > self._watchdog_idle:
+            raise RuntimeError(
+                f"看门狗触发：{idle:.0f}秒内无有效操作，"
+                f"超过上限 {self._watchdog_idle:.0f}s，脚本可能已卡死"
+            )
         elapsed = 0.0
         while elapsed < seconds:
             await self._task_ctrl.check()
@@ -164,6 +161,8 @@ class UserBrowser:
                 match_select=match_select,
             )
             print(f"[UserBrowser.click_image] _browser.click_image done t={time.time()-_t0:.3f}s result={result}", flush=True)
+            if result:
+                self._last_successful_click = __import__('time').time()
             return result
 
         key = (
@@ -194,6 +193,7 @@ class UserBrowser:
             await self.draw_click_point(x, y, color="red")
 
         await self.click(x=x, y=y, down_time=down_time)
+        self._last_successful_click = __import__('time').time()
 
         print(
             f"{self.account['name']}: 点击图片:{img_path}({x},{y}), "
@@ -246,8 +246,13 @@ class UserBrowser:
                 break
             await self.b_sleep(0.2)
 
-        await email_input.fill(self.account['email'])
-        self._log(f"填写邮箱：{self.account['email']}")
+        # 填写邮箱（检查当前值，避免重复填入触发自动提交）
+        current_email = await email_input.input_value()
+        if current_email != self.account['email']:
+            await email_input.fill(self.account['email'])
+            self._log(f"填写邮箱：{self.account['email']}")
+        else:
+            self._log(f"邮箱已填写：{self.account['email']}")
 
         # 等待密码输入框
         while True:
@@ -258,8 +263,13 @@ class UserBrowser:
                 break
             await self.b_sleep(0.2)
 
-        await password_input.fill(self.account['password'])
-        self._log("填写密码")
+        # 填写密码（同上）
+        current_pw = await password_input.input_value()
+        if current_pw != self.account['password']:
+            await password_input.fill(self.account['password'])
+            self._log("填写密码")
+        else:
+            self._log("密码已填写")
 
         # 预取 reCAPTCHA token（如有），避免点击后因 token 未就绪导致提交被拒
         try:
@@ -340,5 +350,17 @@ class UserBrowser:
     @property
     async def get_title(self):
         return self.title
+
+    async def clear_session(self):
+        """清除浏览器登录态（Cookie + Storage），用于切换平台账号。"""
+        await self._browser.context.clear_cookies()
+        try:
+            await self._browser.page.evaluate("localStorage.clear()")
+        except Exception:
+            pass
+        try:
+            await self._browser.page.evaluate("sessionStorage.clear()")
+        except Exception:
+            pass
 
 

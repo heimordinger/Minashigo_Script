@@ -96,6 +96,10 @@ class TaskController:
                 type_name = f"MainLoopProxy({type(user_browser._obj).__name__})"
             print(f"[TaskController] 使用 {type_name} 执行脚本 {self.task_name}")
 
+            # 重置看门狗：脚本启动时开始计时，而非浏览器创建时
+            _target = getattr(user_browser, '_obj', user_browser)
+            if hasattr(_target, '_last_successful_click'):
+                _target._last_successful_click = __import__('time').time()
             await script.do_work(user_browser)
 
             self.controller.on_task_finished(name)

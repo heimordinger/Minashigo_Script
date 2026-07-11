@@ -40,7 +40,10 @@ async def login(browser: UserBrowser, url: str):
     # 初始跳转
     cur_url = await browser.get_url
     if FINAL_GAME_PATH not in cur_url and LOGIN_KW not in cur_url:
-        await browser.goto(ENTRY_URL)
+        try:
+            await browser.goto(ENTRY_URL)
+        except Exception as e:
+            browser.script_log(f"初始跳转失败: {e}，进入循环重试")
 
     while True:
         await browser.b_sleep(0.5)
@@ -58,7 +61,10 @@ async def login(browser: UserBrowser, url: str):
             if region_retry >= MAX_REGION_RETRY:
                 raise RuntimeError("VPN 不稳定，地区限制持续存在")
 
-            await browser.goto(ENTRY_URL)
+            try:
+                await browser.goto(ENTRY_URL)
+            except Exception as e:
+                browser.script_log(f"跳转失败: {e}，等待重试")
             continue
 
         # ---------- 登录页 ----------

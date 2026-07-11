@@ -1,5 +1,6 @@
 # backend/browser/mixins/mouse_actions.JS&PyMessage
 import asyncio
+import ctypes
 
 
 class MouseActionsMixin:
@@ -8,14 +9,41 @@ class MouseActionsMixin:
     async def click(self, x, y, pianyi=(0, 0), down_time=0.12):
         cx = x + pianyi[0]
         cy = y + pianyi[1]
-        try:
-            await asyncio.wait_for(self.page.bring_to_front(), timeout=2)
-        except (asyncio.TimeoutError, Exception):
-            pass
+
+        # 首次点击需要激活浏览器窗口
+        need_focus = not getattr(self, '_window_focused', False)
+        prev_hwnd = None
+
+        if need_focus:
+            try:
+                prev_hwnd = ctypes.windll.user32.GetForegroundWindow()
+            except Exception:
+                pass
+            try:
+                await self.page.bring_to_front()
+                cdp = await self._get_cdp()
+                win = await cdp.send("Browser.getWindowForTarget")
+                await cdp.send("Browser.setWindowBounds", {
+                    "windowId": win["windowId"],
+                    "bounds": {"windowState": "normal"}
+                })
+                await asyncio.sleep(0.15)
+                self._window_focused = True
+            except Exception:
+                pass
+
         await self.page.mouse.move(cx, cy)
         await self.page.mouse.down()
         await asyncio.sleep(down_time)
         await self.page.mouse.up()
+
+        # 释放鼠标后恢复之前的前台窗口
+        if need_focus and prev_hwnd:
+            try:
+                ctypes.windll.user32.SetForegroundWindow(prev_hwnd)
+            except Exception:
+                pass
+
         print(f"{self.account['name']}: 点击 ({cx}, {cy})")
 
     async def double_click(

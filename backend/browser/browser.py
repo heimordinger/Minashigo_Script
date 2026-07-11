@@ -82,6 +82,7 @@ class Browser(
         self._page_watch_task = None
 
         self._connect_task: asyncio.Task | None = None
+        self._window_focused: bool = False  # 是否已聚焦过一次
 
         print(f"{self.account['name']}: 浏览器实例创建完成")
 

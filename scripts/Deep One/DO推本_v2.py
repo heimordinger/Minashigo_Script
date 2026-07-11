@@ -33,6 +33,7 @@ class Config:
     img_dir: Path = IMG_PATH / 'DeepOne' / 'DO推本'
 
     # 超时（秒）
+    total_timeout: float = 600.0      # 脚本总超时，防止意外卡死
     state_timeout: float = 30.0       # 单个状态最长停留
     match_timeout: float = 5.0        # 单次 match 保护超时
     wait_appear: float = 3.0          # 等待图像出现
@@ -40,7 +41,7 @@ class Config:
 
     # 重试 & 退出
     max_retries_per_state: int = 5    # 每个状态内操作重试上限
-    max_tab_switches: int = 6         # 任务栏切换上限（3栏×2轮）
+    max_tab_switches: int = 3        # 任务栏切换上限，超过则结束脚本
     switch_page_count: int = 0        # 当前已切换次数
 
     # 匹配参数
@@ -60,6 +61,7 @@ CFG = Config()
 # ═══════════════════════════════════════════════════════════════
 
 GUARDS = []   # (img_path, pianyi, 描述)
+_guard_ts: dict[str, float] = {}
 
 
 def register_guard(img_path: Path, pianyi=(0, 0), desc=""):
@@ -68,13 +70,15 @@ def register_guard(img_path: Path, pianyi=(0, 0), desc=""):
 
 
 async def check_guards(browser: UserBrowser) -> bool:
-    """
-    遍历守卫，如果命中并处理了，返回 True。
-    True 表示当前帧已被污染，调用方应重新 update_frame。
-    """
+    """遍历守卫，命中则点击处理（同一守卫 5 秒内不重复）"""
+    now = __import__('time').time()
     for img_path, pianyi, desc in GUARDS:
+        key = str(img_path)
+        if now - _guard_ts.get(key, 0) < 5.0:
+            continue
         if await browser.click_image(img_path, pianyi=pianyi, threshold=CFG.threshold):
             browser.script_log(f"[守卫] {desc or img_path.name}")
+            _guard_ts[key] = now
             await browser.b_sleep(0.3, 0.8)
             return True
     return False
@@ -98,7 +102,7 @@ StateName = Optional[str]  # None=保持, "xxx"=转移, "__exit__"=结束
 
 
 async def unknown_state(browser: UserBrowser) -> StateName:
-    """未知态：并发识别当前场景"""
+    """未知态：并发识别当前场景。连续认不出则延长等待（战斗中）。"""
     candidates = {
         "选关":         CFG.img_dir / '1_select',
         "跳过剧情":      CFG.img_dir / '3_skip',
@@ -113,6 +117,8 @@ async def unknown_state(browser: UserBrowser) -> StateName:
     for name, result in zip(candidates.keys(), results):
         if result:
             return name
+    # 战斗中无可识别场景 — 延长等待避免空转
+    await browser.b_sleep(1.5, 2.5)
     return None
 
 
@@ -122,10 +128,19 @@ async def select_stage_state(browser: UserBrowser) -> StateName:
     if await browser.click_image(CFG.img_dir / '1_new', threshold=CFG.threshold):
         await browser.b_sleep(0.8, 1.5)
         CFG.switch_page_count = 0     # 进入关卡，重置计数器
+        select_stage_state._no_tab_count = 0
         return "备战"
 
-    # ② 当前页没有 new → 切换任务栏
-    if await browser.click_image(CFG.img_dir / '1_c', pianyi=(20, 0), threshold=0.75):
+    # ② 当前页没有 new → 切换任务栏（尝试多种标签样式）
+    TAB_VARIANTS = ['1_c','1_c_1']  # 不同关卡栏样式：1_c, 1_c_1. . .
+    tab_clicked = False
+    for tab in TAB_VARIANTS:
+        if await browser.click_image(CFG.img_dir / tab, pianyi=(20, 0), threshold=0.93):
+            tab_clicked = True
+            break
+
+    if tab_clicked:
+        select_stage_state._no_tab_count = 0
         CFG.switch_page_count += 1
         browser.script_log(f"  切换关卡栏 第{CFG.switch_page_count}次")
         await browser.b_sleep(0.8, 1.5)
@@ -135,7 +150,14 @@ async def select_stage_state(browser: UserBrowser) -> StateName:
             return "__exit__"
         return None   # 保持选关态，下一轮重新检查
 
-    # ③ 既没 new 也无法切换 → 检查是否还在选关页面
+    # ③ 既没有 new 也点不到标签页 → 连续 N 次无进展则结束
+    if getattr(select_stage_state, '_no_tab_count', 0) >= 3:
+        browser.script_log("✅ 连续 3 次切不到关卡栏，视为全部通关")
+        return "__exit__"
+    select_stage_state._no_tab_count = getattr(select_stage_state, '_no_tab_count', 0) + 1
+    browser.script_log(f"  无法切换关卡栏 第{select_stage_state._no_tab_count}次")
+
+    # ④ 检查是否还在选关页面
     if not await browser.match_image(CFG.img_dir / '1_select', threshold=CFG.threshold):
         return "未知"
     return None
@@ -269,11 +291,17 @@ async def do_work(browser: UserBrowser):
     if state_name is None:
         state_name = "未知"
 
-    state_enter_time = asyncio.get_event_loop().time()
+    total_start = asyncio.get_event_loop().time()
+    state_enter_time = total_start
     browser.script_log(f"[DO推本v2] 初始场景: {state_name}")
 
     while True:
-        # 0. 刷新帧
+        # 0. 总超时
+        if asyncio.get_event_loop().time() - total_start > CFG.total_timeout:
+            browser.script_log(f"[DO推本v2] 总超时 {CFG.total_timeout}s，强制结束")
+            break
+
+        # 1. 刷新帧
         await browser.update_frame()
 
         # 1. 守卫优先（处理弹窗）
@@ -310,5 +338,5 @@ async def do_work(browser: UserBrowser):
             state_name = next_state
             state_enter_time = now
 
-        # 5. 短等待，避免忙等
-        await browser.b_sleep(0.2, 0.4)
+        # 5. 仅防忙等，不做实质性延时（操作后的等待由状态内部处理）
+        await browser.b_sleep(0.03, 0.08)

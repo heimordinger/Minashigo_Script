@@ -165,27 +165,39 @@ class Matcher:
                 continue
 
             res = cv2.matchTemplate(frame_gray, resized, cv2.TM_CCOEFF_NORMED)
-            _, max_val, _, max_loc = cv2.minMaxLoc(res)
-            print(f"[_template_multi_scale_match] scale={s}: max_val={max_val:.4f} (阈值={threshold}), at={max_loc}")
 
-            if max_val < threshold:
-                continue
+            # 贪婪匹配：在同一尺度下找到所有高于阈值的匹配
+            match_mask = np.ones_like(res, dtype=bool)
+            h_t, w_t = resized.shape
+            while True:
+                # 用 mask 屏蔽已找到的位置，找下一个最佳
+                masked_res = res.copy()
+                masked_res[~match_mask] = 0
+                _, max_val, _, max_loc = cv2.minMaxLoc(masked_res)
 
-            if use_color_check:
-                if not self._color_check(frame_color, templ_color, max_loc, resized.shape, color_tol):
-                    print(f"[_template_multi_scale_match] scale={s}: 颜色校验失败")
-                    continue
+                if max_val < threshold:
+                    break
 
-            # 转回原始frame坐标
-            x = max_loc[0] + resized.shape[1] // 2 + offset[0]
-            y = max_loc[1] + resized.shape[0] // 2 + offset[1]
+                if use_color_check:
+                    if not self._color_check(frame_color, templ_color, max_loc, resized.shape, color_tol):
+                        # 标记为已处理再试下一个
+                        y0, x0 = max(max_loc[1] - h_t // 2, 0), max(max_loc[0] - w_t // 2, 0)
+                        y1, x1 = min(max_loc[1] + h_t // 2, res.shape[0]), min(max_loc[0] + w_t // 2, res.shape[1])
+                        match_mask[y0:y1, x0:x1] = False
+                        continue
 
-            # 高置信度直接返回（跳过剩余尺度）
-            if max_val > 0.97:
-                print(f"[_template_multi_scale_match] scale={s}: 高置信度({max_val:.4f})直接返回 ({x},{y})")
-                return [MatchResult(x, y, float(max_val), True)]
+                # 转回原始frame坐标
+                x = max_loc[0] + w_t // 2 + offset[0]
+                y = max_loc[1] + h_t // 2 + offset[1]
+                results.append(MatchResult(x, y, float(max_val), True))
+                print(f"[_template_multi_scale_match] scale={s}: 匹配 ({x},{y}) score={max_val:.4f}")
 
-            results.append(MatchResult(x, y, float(max_val), True))
+                # 屏蔽已匹配区域，继续找下一个
+                y0 = max(max_loc[1] - h_t // 2, 0)
+                x0 = max(max_loc[0] - w_t // 2, 0)
+                y1 = min(max_loc[1] + h_t // 2, res.shape[0])
+                x1 = min(max_loc[0] + w_t // 2, res.shape[1])
+                match_mask[y0:y1, x0:x1] = False
 
         print(f"[_template_multi_scale_match] 总共找到 {len(results)} 个候选结果")
         return results

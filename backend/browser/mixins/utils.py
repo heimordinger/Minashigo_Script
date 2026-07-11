@@ -31,10 +31,13 @@ class UtilsMixin:
         await elem.fill(value)
 
     def device_to_css(self, x: int, y: int):
+        if getattr(self, '_screenshot_css', False):
+            return int(x), int(y)   # 已为 CSS 像素，无需缩放
         dpr = self.device_pixel_ratio or 1.0
         return int(x / dpr), int(y / dpr)
 
     async def update_frame(self, save_screenshot=False) -> np.ndarray:
+        self._screenshot_css = False   # 帧含设备像素比，需 device_to_css 转换
         png_bytes = await self.page.screenshot(timeout=5 * 60000)
 
         frame = cv2.imdecode(

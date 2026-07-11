@@ -194,24 +194,47 @@ class LifecycleMixin:
             # ====== page ======
             if self.context.pages:
                 self._log(f"[CONNECT-40] reuse existing page (count={len(self.context.pages)})")
-                self.page = self.context.pages[0]
-                # 关闭多余的标签页，只保留第一个
-                for extra in self.context.pages[1:]:
+                # 优先选非空白页（仪表盘），避免取到空白页
+                best = self.context.pages[0]
+                for p in self.context.pages:
                     try:
-                        await extra.close()
-                        self._log("[CONNECT-40A] closed extra page")
-                    except Exception as e:
-                        self._log(f"[CONNECT-40E] close extra page failed: {e}")
+                        u = p.url
+                        if u and "dashboard" in u:
+                            best = p
+                            break
+                        if u and u not in ("about:blank", "chrome://newtab/", ""):
+                            best = p
+                    except Exception:
+                        pass
+                self.page = best
+                # 关闭其他标签页
+                for p in self.context.pages:
+                    if p != self.page:
+                        try:
+                            await p.close()
+                            self._log("[CONNECT-40A] closed extra page")
+                        except Exception:
+                            pass
             else:
                 self._log("[CONNECT-41] no page found, creating new page")
                 self.page = await self.context.new_page()
                 self._log("[CONNECT-42] new page created")
 
             # ====== 页面状态 ======
-            # 浏览器启动时已打开了控制表盘，直接等页面就绪即可
             self._log("[CONNECT-50] wait_for_load_state(domcontentloaded)")
             await self.page.wait_for_load_state("domcontentloaded")
             self._log("[CONNECT-51] domcontentloaded reached")
+
+            # 导航到仪表盘（如果当前不是仪表盘的话）
+            dash_url = getattr(self, '_dash_url', None)
+            if dash_url:
+                cur = self.page.url
+                if "dashboard" not in cur:
+                    self._log(f"[CONNECT-52] navigating to dashboard")
+                    await self.page.goto(dash_url, wait_until="domcontentloaded")
+                    self._log("[CONNECT-53] dashboard loaded")
+                else:
+                    self._log("[CONNECT-53] already on dashboard")
 
             # ====== 固定窗口标题（防止被网页顶掉） ======
             self._fixed_title = f"{self.account['name']}"
@@ -404,24 +427,24 @@ class LifecycleMixin:
                 except Exception as e:
                     self._log(f"[BROWSER] 清除会话文件失败: {session_file} ({e})")
 
-        # 构建控制表盘 URL 作为默认页
+        # 保存仪表盘 URL，connect() 中导航用
         try:
             from core.taskflow_manager import taskflow_manager
             from urllib.parse import quote
             api_port = taskflow_manager.api_port
             name = self.account.get('name', '')
             email = self.account.get('email', '')
-            dash_url = (f"http://127.0.0.1:{api_port}/dashboard"
-                        f"?name={quote(name)}&email={quote(email)}&port={self.port}")
+            self._dash_url = (f"http://127.0.0.1:{api_port}/dashboard"
+                              f"?name={quote(name)}&email={quote(email)}&port={self.port}")
         except Exception:
-            dash_url = None
+            self._dash_url = None
 
         launcher = BrowserLauncher()
         launcher.start(
             browser_path=browser_path,
             user_data=self.user_data_dir,
             port=self.port,
-            url=dash_url,
+            url="about:blank",
         )
 
         # ====== 等待CDP ======

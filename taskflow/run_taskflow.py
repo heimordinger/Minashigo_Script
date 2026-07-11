@@ -12,7 +12,10 @@ from pathlib import Path
 import websockets
 
 # 设置项目根目录路径
-TEMP_ROOT = Path(__file__).resolve().parents[1]
+if getattr(sys, 'frozen', False):
+    TEMP_ROOT = Path(sys._MEIPASS)
+else:
+    TEMP_ROOT = Path(__file__).resolve().parents[1]
 if str(TEMP_ROOT) not in sys.path:
     sys.path.insert(0, str(TEMP_ROOT))
 
@@ -49,6 +52,9 @@ def get_free_port(start=8010):
 
 def start_http_server(port=get_free_port()):
     class CustomHTTPRequestHandler(http.server.SimpleHTTPRequestHandler):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, directory=str(TEMP_ROOT), **kwargs)
+
         def end_headers(self):
             """重写：所有响应添加反缓存头"""
             self.send_header('Cache-Control', 'no-store, must-revalidate')

@@ -1,22 +1,9 @@
-"""
-Win32Target 测试用例
-====================
-
-运行方式:
-    pytest tests/test_win32_target.py -v          # 仅基础测试
-    pytest tests/test_win32_target.py -v --run-integration  # 包含截图/点击等集成测试
-"""
-
 from __future__ import annotations
 
 import pytest
 import numpy as np
 from pathlib import Path
 
-
-# ========================================================================
-# 辅助函数
-# ========================================================================
 
 def _find_test_window():
     """找一个可用于测试的窗口（优先文件管理器，回退到任意可见窗口）。"""

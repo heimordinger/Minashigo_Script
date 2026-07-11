@@ -262,14 +262,17 @@ class ScreenshotViewer(QWidget):
         self.match_button = QPushButton("开始匹配", self)
         self.clear_button = QPushButton("清除", self)
         self.screenshot_refresh_btn = QPushButton("重新获取", self)
+        self.save_btn = QPushButton("保存截图", self)
         control_layout.addWidget(self.match_button)
         control_layout.addWidget(self.clear_button)
         control_layout.addWidget(self.screenshot_refresh_btn)
+        control_layout.addWidget(self.save_btn)
         layout.addWidget(control_widget)
 
         self.match_button.clicked.connect(self.on_match_button_click)
         self.clear_button.clicked.connect(self.on_clear_click)
         self.screenshot_refresh_btn.clicked.connect(self._emit_refresh)
+        self.save_btn.clicked.connect(self.on_save_click)
 
         # ====== 截图画布 ======
         self.canvas = _ImageCanvas(self, image)
@@ -379,6 +382,20 @@ class ScreenshotViewer(QWidget):
 
     def _emit_refresh(self):
         self.refresh_requested.emit()
+
+    def on_save_click(self):
+        from core.path import PROJECT_ROOT
+        name = self.account.get('name', 'unknown')
+        save_dir = PROJECT_ROOT / "screenshots" / name
+        save_dir.mkdir(parents=True, exist_ok=True)
+        file_path = save_dir / f"screenshot_{int(__import__('time').time())}.png"
+        self.canvas.original_pixmap.save(str(file_path))
+
+        msg = QMessageBox(self)
+        msg.setIcon(QMessageBox.Information)
+        msg.setWindowTitle("保存成功")
+        msg.setText(f"截图已保存\n{file_path}")
+        msg.exec()
 
     def on_clear_click(self):
         self.canvas.match_rects = []

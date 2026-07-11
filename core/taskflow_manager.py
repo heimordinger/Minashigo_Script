@@ -63,9 +63,10 @@ class TaskflowManager:
         
         print(f"[TaskflowManager] 混合通信架构 - HTTP: {self.http_port}, API: {self.api_port}, Realtime: {self.realtime_port}")
         
-        # 导入taskflow模块
+        # 导入taskflow模块（数据在 _BUNDLE 即 _MEIPASS 中）
         import sys
-        taskflow_path = PROJECT_ROOT / "taskflow"
+        from core.path import _BUNDLE
+        taskflow_path = _BUNDLE / "taskflow"
         if str(taskflow_path) not in sys.path:
             sys.path.insert(0, str(taskflow_path))
         
@@ -133,26 +134,53 @@ class TaskflowManager:
         await self._maintain_servers()
     
     async def _start_http_api_server(self):
-        """启动HTTP API服务器"""
-        try:
-            from core.http_api_server import HTTPAPIServer
-            self.http_api_server = HTTPAPIServer(self)
-            await self.http_api_server.start(self.api_port)
-            print(f"[TaskflowManager] HTTP API服务器已启动，端口: {self.api_port}")
-        except Exception as e:
-            print(f"[TaskflowManager] HTTP API服务器启动失败: {e}")
-            raise
+        """启动HTTP API服务器（带端口回退）"""
+        from core.http_api_server import HTTPAPIServer
+        self.http_api_server = HTTPAPIServer(self)
+
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            try:
+                await self.http_api_server.start(self.api_port)
+                print(f"[TaskflowManager] HTTP API服务器已启动，端口: {self.api_port}")
+                return
+            except (OSError, PermissionError) as e:
+                if attempt < max_attempts - 1:
+                    old_port = self.api_port
+                    self.api_port += 1
+                    print(f"[TaskflowManager] 端口 {old_port} 被占用，尝试端口 {self.api_port}")
+                else:
+                    print(f"[TaskflowManager] HTTP API服务器启动失败（已尝试{max_attempts}个端口）: {e}")
+                    self.http_api_server = None
+                    raise
+            except Exception as e:
+                print(f"[TaskflowManager] HTTP API服务器启动失败: {e}")
+                self.http_api_server = None
+                raise
     
     async def _start_realtime_websocket(self):
-        """启动实时WebSocket服务器"""
-        try:
-            from core.realtime_websocket import RealtimeWebSocketServer
-            self.realtime_websocket = RealtimeWebSocketServer(self)
-            await self.realtime_websocket.start(self.realtime_port)
-            print(f"[TaskflowManager] 实时WebSocket服务器已启动，端口: {self.realtime_port}")
-        except Exception as e:
-            print(f"[TaskflowManager] 实时WebSocket服务器启动失败: {e}")
-            raise
+        """启动实时WebSocket服务器（带端口回退）"""
+        from core.realtime_websocket import RealtimeWebSocketServer
+        self.realtime_websocket = RealtimeWebSocketServer(self)
+
+        max_attempts = 10
+        for attempt in range(max_attempts):
+            try:
+                await self.realtime_websocket.start(self.realtime_port)
+                print(f"[TaskflowManager] 实时WebSocket服务器已启动，端口: {self.realtime_port}")
+                return
+            except (OSError, PermissionError) as e:
+                if attempt < max_attempts - 1:
+                    old_port = self.realtime_port
+                    self.realtime_port += 1
+                    print(f"[TaskflowManager] 端口 {old_port} 被占用，尝试端口 {self.realtime_port}")
+                else:
+                    print(f"[TaskflowManager] 实时WebSocket服务器启动失败（已尝试{max_attempts}个端口）: {e}")
+                    self.realtime_websocket = None
+            except Exception as e:
+                print(f"[TaskflowManager] 实时WebSocket服务器启动失败: {e}")
+                self.realtime_websocket = None
+                return
     
     def _update_port_files(self):
         """更新端口配置文件"""

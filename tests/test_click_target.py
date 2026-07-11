@@ -4,10 +4,8 @@
 窗口上有一个随机移动的按钮，点击后按钮换位置。
 显示当前按钮位置，方便与图像匹配结果对比。
 
-用法:
-    python tests/test_click_target.py
 
-然后在 WindowPicker 中选择 "后台点击测试" 窗口进行测试。
+WindowPicker 中选择 "后台点击测试" 窗口进行测试。
 """
 
 import sys

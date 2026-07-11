@@ -7,6 +7,17 @@ from core.path import IMG_PATH
 
 img_path = IMG_PATH / "minashigo" / "孤儿推本"
 
+# 属性映射（原位于 UserBrowser，已迁至本地）
+MINASHIGO_ATTRS = {
+    "光": "light",
+    "暗": "dark",
+    "水": "water",
+    "火": "fire",
+    "雷": "lightning",
+    "风": "wind",
+}
+_team_attr: str | None = None  # 队伍属性缓存
+
 
 async def ap_recovery(browser: UserBrowser, timeout=90, verification_time=10):
     ap_path = IMG_PATH / "minashigo" / "孤儿推本" / "AP恢复"
@@ -55,13 +66,14 @@ async def mnsg_info(browser: UserBrowser):
     p_path = ttk_path / "属性"
     counts = {}
 
-    for name, folder in browser.minashigo_attrs.items():
+    global _team_attr
+    for name, folder in MINASHIGO_ATTRS.items():
         counts[name] = len(await browser.match_image_multi(p_path / f"2_{folder}"))
     if not any(counts.values()):
         return False
 
-    browser.minashigo_info["属性"] = max(counts, key=counts.get)
-    browser.script_log(f"确定属性:{browser.minashigo_info['属性']}")
+    _team_attr = max(counts, key=counts.get)
+    browser.script_log(f"确定属性:{_team_attr}")
 
 
 async def select_summon(browser: UserBrowser):
@@ -70,9 +82,12 @@ async def select_summon(browser: UserBrowser):
     因为存在官方设置的UI点击特效，如果在特效生效时间内检测的话会导致两个图片都匹配不到，因此只有匹配到了_2图片再确定已选择完
     """
     ttk_path = IMG_PATH / "minashigo" / "孤儿推本" / "进入战斗"
-    if await browser.match_image(ttk_path / "属性" / f"1_{browser.minashigo_attrs[browser.minashigo_info['属性']]}_2"):
+    if _team_attr is None:
+        return False
+    attr_en = MINASHIGO_ATTRS[_team_attr]
+    if await browser.match_image(ttk_path / "属性" / f"1_{attr_en}_2"):
         return True
-    await browser.click_image(ttk_path / "属性" / f"1_{browser.minashigo_attrs[browser.minashigo_info['属性']]}_1")
+    await browser.click_image(ttk_path / "属性" / f"1_{attr_en}_1")
     return False
 
 
@@ -119,7 +134,7 @@ async def mnsg_ttk(browser: UserBrowser, timeout=120, verification_time=10):
 
         if now_Scene == "选好友战神":
             need_select_summon = (
-                    browser.minashigo_info['属性'] is not None
+                    _team_attr is not None
                     and not selected_summon
             )
 
@@ -130,7 +145,7 @@ async def mnsg_ttk(browser: UserBrowser, timeout=120, verification_time=10):
                 await browser.click_image(ttk_path / "1_决定")
 
         elif now_Scene == "出击队伍":
-            if browser.minashigo_info['属性'] is None:
+            if _team_attr is None:
                 await mnsg_info(browser)
             elif selected_summon:
                 await browser.click_until_gone(ttk_path / "2_出击")

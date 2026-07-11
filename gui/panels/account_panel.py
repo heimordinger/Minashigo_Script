@@ -230,6 +230,11 @@ class AccountPanel(QWidget):
         self.taskflow_btn.clicked.connect(self.on_taskflow_clicked)
         op_row.addWidget(self.taskflow_btn)
 
+        self.quick_script_btn = QPushButton("快速脚本")
+        self.quick_script_btn.setToolTip("启动快速脚本录制悬浮窗")
+        self.quick_script_btn.clicked.connect(self.on_quick_script)
+        op_row.addWidget(self.quick_script_btn)
+
         op_row.addStretch()
 
         info_row = QVBoxLayout()
@@ -441,8 +446,6 @@ QPushButton#TabCloseButton[accountTab="true"] {
 """)
 
         self.append_log(f"{account['name']} 已添加")
-
-    def _scroll_to_top(self):
         self._card_scroll.verticalScrollBar().setValue(0)
 
     def _mark_pending_cards_stopped(self):
@@ -586,6 +589,17 @@ QPushButton#TabCloseButton[accountTab="true"] {
         self.append_log("正在打开TaskFlow可视化工作流...")
         self.open_taskflow.emit(self.account)
 
+    _quick_script_instance = None
+
+    def on_quick_script(self):
+        from gui.widgets.QuickScriptOverlay import QuickScriptOverlay
+        if AccountPanel._quick_script_instance is None:
+            AccountPanel._quick_script_instance = QuickScriptOverlay()
+        AccountPanel._quick_script_instance.show()
+        AccountPanel._quick_script_instance.raise_()
+        AccountPanel._quick_script_instance.activateWindow()
+        self.append_log("快速脚本悬浮窗已打开")
+
     def _check_taskflow_ready(self):
         """定时检查 TaskFlow 服务器是否已就绪"""
         if taskflow_manager.server_running:
@@ -700,6 +714,9 @@ QPushButton#TabCloseButton[accountTab="true"] {
         card.cardResized.connect(self._resize_content)
         self._scroll_to_top()
         self._resize_content()
+
+    def _scroll_to_top(self):
+        self._card_scroll.verticalScrollBar().setValue(0)
 
     def append_log(self, text: str):
         """便捷方法：文本→LogEvent→发送到当前卡片"""
@@ -826,7 +843,8 @@ QPushButton#TabCloseButton[accountTab="true"] {
     def _open_script_picker(self):
         if not self.task_paths:
             return
-        dlg = ScriptPickerDialog(self.task_paths, self)
+        from gui.widgets.ResourcePicker import ResourcePickerDialog
+        dlg = ResourcePickerDialog(self, mode="files", paths=self.task_paths)
         if dlg.exec() == QDialog.Accepted and dlg.selected_path:
             self.current_task = dlg.selected_path
             self._script_btn.setText(dlg.selected_path)

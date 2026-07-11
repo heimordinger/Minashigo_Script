@@ -1,4 +1,4 @@
-﻿from PySide6.QtCore import Qt
+﻿from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTabWidget,
     QLabel, QStatusBar, QPushButton, QTabBar, QSystemTrayIcon
@@ -14,7 +14,9 @@ from gui.facade_impl import FacadeImpl
 from gui.panels.settings_panel import SettingsPanel
 from gui.tabs.StartTab import StartTab
 from gui.tabs.AccountManagerTab import AccountManagerTab
+from gui.widgets.ScriptGenerator import ScriptGenerator
 from gui.panels.account_panel import AccountPanel
+from core.error_handler import safe_call
 from core.path import ICON_PATH
 
 
@@ -24,6 +26,7 @@ class MainWindow(QWidget):
         super().__init__()
         self.account_panels: dict[str, AccountPanel] = {}
         self.pending_logs: dict[str, list[str]] = {}
+        self._prev_task_status: dict[str, str] = {}   # 跟踪任务状态变化，用于触发通知
         self.loop = loop
         self.setup_window()
         self.load_stylesheet()
@@ -55,7 +58,7 @@ class MainWindow(QWidget):
         font.setPointSize(13)
         self.setFont(font)
 
-        self.setWindowTitle(f"Minashigo_Script-{config.project_version or APP_VERSION}")
+        self.setWindowTitle(f"Minashigo_Script-{APP_VERSION}")
         self.setWindowIcon(QIcon(str(ICON_PATH)))
         self.resize(900, 600)
         self.setObjectName("MainWindow")
@@ -227,11 +230,20 @@ QToolTip {
 
     def _lazy_init_tabs(self):
         """事件循环启动后懒加载其余 tab"""
-        self.account_manager_tab = AccountManagerTab(self.facade)
-        self.settings_tab = SettingsPanel()
-        self.tabs.addTab(self.account_manager_tab, "账号管理")
-        self.tabs.addTab(self.settings_tab, "设置")
-        self.account_manager_tab.accounts_changed.connect(self.start_tab.render)
+        self.account_manager_tab = safe_call(self, "AccountManagerTab", AccountManagerTab, self.facade)
+        if self.account_manager_tab is not None:
+            self.tabs.addTab(self.account_manager_tab, "账号管理")
+
+        self.settings_tab = safe_call(self, "SettingsPanel", SettingsPanel)
+        if self.settings_tab is not None:
+            self.tabs.addTab(self.settings_tab, "设置")
+
+        self.script_gen_tab = safe_call(self, "ScriptGenerator", ScriptGenerator)
+        if self.script_gen_tab is not None:
+            self.tabs.addTab(self.script_gen_tab, "脚本生成")
+
+        if self.account_manager_tab is not None:
+            self.account_manager_tab.accounts_changed.connect(self.start_tab.render)
 
     def setup_status_bar(self):
         """底部状态栏"""
@@ -298,6 +310,29 @@ QToolTip {
             self.status_label.setText(snapshot.message)
 
         panel.apply_task_snapshot(snapshot)
+
+        # ── 检测任务结束 → 托盘通知 + 提示音 ──
+        terminal = ("finished", "error", "stopped")
+        prev = self._prev_task_status.get(snapshot.browser)
+        status_val = snapshot.status.value if hasattr(snapshot.status, 'value') else snapshot.status
+        if status_val in terminal and prev != status_val:
+            icons = {
+                "finished": QSystemTrayIcon.MessageIcon.Information,
+                "error":    QSystemTrayIcon.MessageIcon.Critical,
+                "stopped":  QSystemTrayIcon.MessageIcon.Information,
+            }
+            msgs = {
+                "finished": "执行完成",
+                "error":    "执行异常",
+                "stopped":  "已停止",
+            }
+            title = f"「{snapshot.browser}」{msgs.get(status_val, status_val)}"
+            body = snapshot.message or snapshot.script or ""
+            icon = icons.get(status_val, QSystemTrayIcon.MessageIcon.Information)
+
+            QTimer.singleShot(500, lambda t=title, b=body, i=icon: self.tray.showMessage(t, b, i, 8000))
+
+        self._prev_task_status[snapshot.browser] = status_val
 
     def _handle_runtime_event(self, payload: StateEvent):
         if payload.domain != StateDomain.BROWSER:
