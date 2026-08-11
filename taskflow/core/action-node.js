@@ -48,6 +48,16 @@ export class ActionNode extends LiteGraph.LGraphNode {
     } catch (error) {
       await reportNodeEvent(this, "error", { message: error.message || String(error) });
       console.error(`[${this.title}]`, error);
+      // 先查是否有"错误"输出插槽且被连线
+      const errorSlot = this.outputs?.findIndex(
+        o => o.name === "错误" || o.name === "error"
+      );
+      if (errorSlot !== undefined && errorSlot >= 0 && this.outputs?.[errorSlot]?.links?.length) {
+        window.showToast?.(`${this.title} 执行出错, 走错误分支: ${error.message}`, "warn");
+        await this.execOutput(errorSlot);
+        this._controller()?.onNodeFinish?.(this);
+        return;
+      }
       window.showToast?.(`${this.title} 执行失败: ${error.message}`, "error");
       this._controller()?.stop();
     } finally {

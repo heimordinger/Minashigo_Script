@@ -62,6 +62,11 @@ backup_iframe_approach/
 click2.html
 game_minashigo.html
 accounts.html
+screenshots/
+assets/images/12121.txt
+
+# ========== Personal / local notes ==========
+项目介绍_简历用.md
 
 # ========== Models ==========
 models/*
@@ -69,3 +74,10 @@ models/*
 !models/.gitkeep
 !models/resource_config.py
 !models/resource_manager.py
+*.onnx
+backend/quick_script/models/*
+!backend/quick_script/models/.gitkeep
+
+# ========== Gacha frame experiment intermediates ==========
+assets/images/DeepOne/卡池外框模板/gold_*.png
+assets/images/DeepOne/卡池外框模板/silver_*.png

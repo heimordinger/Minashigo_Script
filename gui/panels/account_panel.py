@@ -403,6 +403,25 @@ QLabel#CardStatus {
     font-size: 11px;
 }
 
+QLabel#CardTarget {
+    font-size: 10px;
+    font-weight: bold;
+    padding: 1px 6px;
+    border-radius: 8px;
+    color: #ddd;
+    background-color: #3a3a3a;
+}
+
+QLabel#CardTarget[target="browser"] {
+    color: #d6ecff;
+    background-color: #1e4a72;
+}
+
+QLabel#CardTarget[target="window"] {
+    color: #ffe8d0;
+    background-color: #6b3e12;
+}
+
 QLabel#CardArrow {
     color: #666666;
     font-size: 11px;
@@ -457,10 +476,22 @@ QPushButton#TabCloseButton[accountTab="true"] {
                 if isinstance(w, TaskBallCard) and w.status == "运行中":
                     w.status = "已停止"
 
+    def _selected_target(self) -> str:
+        """当前下拉框选中的控制目标：browser / window / ''。"""
+        return self._target_combo.currentData() or ""
+
+    @staticmethod
+    def _target_label(target_type: str | None) -> str:
+        if target_type == "window":
+            return "窗口"
+        if target_type == "browser":
+            return "浏览器"
+        return "未指定"
+
     def on_start_browser(self):
         # 创建浏览器启动任务卡，捕获启动过程日志
         self._ball_counter += 1
-        card = TaskBallCard("启动浏览器", index=self._ball_counter)
+        card = TaskBallCard("启动浏览器", index=self._ball_counter, target_type="browser")
         self._card_for_layout(card)
         self._current_card = card
 
@@ -494,6 +525,22 @@ QPushButton#TabCloseButton[accountTab="true"] {
             win_idx = self._target_combo.findData("window")
             if win_idx >= 0:
                 self._target_combo.setCurrentIndex(win_idx)
+
+            self._ball_counter += 1
+            card = TaskBallCard(
+                f"绑定窗口: {target.title[:24]}",
+                index=self._ball_counter,
+                target_type="window",
+            )
+            self._card_for_layout(card)
+            self._current_card = card
+            card.add_event(LogEvent(
+                account=self.account['name'],
+                level=LogLevel.INFO,
+                message=f"已选择控制窗口：{target.title}",
+                source=LogSource.SYSTEM,
+            ))
+            card.status = "已完成"
             self._update_buttons()
         elif self.account.get("window_hwnd"):
             # 取消 → 清除之前的选择
@@ -511,13 +558,25 @@ QPushButton#TabCloseButton[accountTab="true"] {
         if not self.current_task or self.running:
             return
 
+        # 记录选中的脚本目标（browser / window），供 TaskController 使用
+        target_type = self._selected_target() or "browser"
+        print(f"[AccountPanel] currentData={target_type!r}, 下拉框文本="
+              f"{self._target_combo.currentText()!r}")
+        self.account["_target"] = target_type
+        print(f"[AccountPanel] _target={self.account['_target']!r}")
+
         self.running = True
         self._update_buttons()
-        self.set_browser_state(f'正在运行 "{self.current_task}"')
+        target_label = self._target_label(target_type)
+        self.set_browser_state(f'正在运行 "{self.current_task}"（{target_label}）')
 
         # 创建新任务卡（插到最前）
         self._ball_counter += 1
-        card = TaskBallCard(self.current_task, index=self._ball_counter)
+        card = TaskBallCard(
+            self.current_task,
+            index=self._ball_counter,
+            target_type=target_type,
+        )
         self._card_for_layout(card)
         self._current_card = card
 
@@ -525,7 +584,7 @@ QPushButton#TabCloseButton[accountTab="true"] {
         ev = LogEvent(
             account=self.account['name'],
             level=LogLevel.INFO,
-            message=f"开始执行：{self.current_task}",
+            message=f"开始执行：{self.current_task}（目标：{target_label}）",
             source=LogSource.SYSTEM,
         )
         card.add_event(ev)
@@ -537,12 +596,6 @@ QPushButton#TabCloseButton[accountTab="true"] {
                 item.widget().deleteLater()
         self._resize_content()
 
-        # 记录选中的脚本目标（browser / window），供 TaskController 使用
-        target_type = self._target_combo.currentData()
-        print(f"[AccountPanel] currentData={target_type!r}, 下拉框文本="
-              f"{self._target_combo.currentText()!r}")
-        self.account["_target"] = target_type or "browser"
-        print(f"[AccountPanel] _target={self.account['_target']!r}")
         self.start_task.emit(self.account, self.current_task)
 
     def on_reconnect_clicked(self):
@@ -550,7 +603,7 @@ QPushButton#TabCloseButton[accountTab="true"] {
         self._mark_pending_cards_stopped()
 
         self._ball_counter += 1
-        card = TaskBallCard("重新连接", index=self._ball_counter)
+        card = TaskBallCard("重新连接", index=self._ball_counter, target_type="browser")
         self._card_for_layout(card)
         self._current_card = card
 
@@ -569,7 +622,7 @@ QPushButton#TabCloseButton[accountTab="true"] {
 
     def on_close_clicked(self):
         self._ball_counter += 1
-        card = TaskBallCard("关闭", index=self._ball_counter)
+        card = TaskBallCard("关闭", index=self._ball_counter, target_type="browser")
         self._card_for_layout(card)
         self._current_card = card
 

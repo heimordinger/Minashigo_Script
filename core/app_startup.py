@@ -130,16 +130,6 @@ class AppStartup:
         except Exception:
             pass
 
-    def show_main_window(self, loading_animation):
-        from PySide6.QtCore import QTimer
-
-        def close_loading_and_show_main():
-            loading_animation.stop()
-            self._ts("  显示主窗口")
-            self.window.show()
-
-        QTimer.singleShot(500, close_loading_and_show_main)
-
     def run(self):
         self._ts("进入事件循环")
         from PySide6.QtWidgets import QApplication

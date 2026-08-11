@@ -1,0 +1,13 @@
+脚本说明编辑器（隔离目录）
+========================
+
+与主 GUI / ScriptGenerator 解耦，本目录自包含：
+
+  model.py     结构化「脚本说明」模型与校验/导出
+  editor.py    PySide6 编辑器界面
+  drafts/      本地自动草稿（已 gitignore）
+
+启动:
+  python/python311/Scripts/python.exe -m script_spec
+
+尚未接入主窗口与脚本生成管线。

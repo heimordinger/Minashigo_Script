@@ -20,6 +20,7 @@ class ClickTextNode extends ActionNode {
     this.addOutput("成功", "boolean");
     this.addOutput("点击X", "number");
     this.addOutput("点击Y", "number");
+    this.addOutput("错误", LiteGraph.EVENT);
 
     this.properties = {
       text: "",

@@ -11,13 +11,13 @@ from PySide6.QtCore import QThread, Signal, Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
     QLineEdit, QComboBox, QPushButton, QCheckBox, QTextEdit,
-    QLabel, QFileDialog,
+    QLabel, QFileDialog, QSpinBox,
     QMessageBox, QGroupBox, QProgressBar,
     QApplication, QDialog, QScrollArea, QDialogButtonBox,
 )
 from PySide6.QtGui import QFont, QPixmap
 
-from backend.script_generator.agent import generate_script
+from backend.script_generator.agent import generate_script, test_connection
 from core.path import IMG_PATH, SCRIPTS_PATH
 
 
@@ -104,9 +104,48 @@ class ImagePreviewDialog(QDialog):
 # 生成线程
 # ═══════════════════════════════════════════════════════════════
 
+def _reload_generator_modules():
+    """生成/测连前热重载，改 agent/graph 后无需重启整个应用。"""
+    try:
+        from backend.script_generator.reload import reload_script_generator
+        reload_script_generator()
+    except Exception as e:
+        print(f"[ScriptGenerator] 热重载失败（将使用已加载模块）: {e}")
+
+
+class ConnectionTestWorker(QThread):
+    finished = Signal(dict)
+
+    def __init__(self, params: dict):
+        super().__init__()
+        self.params = params
+
+    def run(self):
+        _reload_generator_modules()
+        from backend.script_generator.agent import test_connection as _test
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(_test(**self.params))
+            self.finished.emit(result)
+        except Exception as e:
+            self.finished.emit({
+                "ok": False,
+                "latency_ms": 0,
+                "reply": "",
+                "error": str(e),
+                "input_tokens": 0,
+                "output_tokens": 0,
+            })
+        finally:
+            loop.close()
+
+
 class GenerateWorker(QThread):
     finished = Signal(str)
     partial = Signal(str)  # 流式输出的片段
+    status = Signal(str)  # LangGraph 阶段提示
+    artifact = Signal(str, str)  # kind, payload（如 plan）
     token_info = Signal(int, int)  # 输入tokens, 输出tokens
     error = Signal(str)
 
@@ -115,18 +154,21 @@ class GenerateWorker(QThread):
         self.params = params
 
     def run(self):
+        _reload_generator_modules()
+        from backend.script_generator.agent import generate_script as _generate
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
             self.params["on_partial"] = lambda text: self.partial.emit(text)
-            code, inp, out = loop.run_until_complete(generate_script(**self.params))
+            self.params["on_status"] = lambda msg: self.status.emit(msg)
+            self.params["on_artifact"] = lambda kind, payload: self.artifact.emit(kind, payload)
+            code, inp, out = loop.run_until_complete(_generate(**self.params))
             self.token_info.emit(inp, out)
             self.finished.emit(code)
         except Exception as e:
             self.error.emit(str(e))
         finally:
             loop.close()
-
 
 # ═══════════════════════════════════════════════════════════════
 # 主面板
@@ -164,28 +206,59 @@ class ScriptGenerator(QWidget):
         # ===== API 设置 =====
         api_group = QGroupBox("API 设置")
         g_api = QVBoxLayout(api_group)
-        _al = QLabel("配置 AI 提供商，用于生成脚本代码")
+        _al = QLabel(
+            "在此填写 AI 账号信息。填好后建议先点「连接测试」，"
+            "通过后再写脚本描述并生成代码。"
+        )
         _al.setStyleSheet("color:#888;font-size:11px;")
+        _al.setWordWrap(True)
         g_api.addWidget(_al)
         f = QFormLayout()
         g_api.addLayout(f)
 
         self._endpoint = QLineEdit()
-        self._endpoint.setPlaceholderText("可选，默认使用官方 API")
+        self._endpoint.setPlaceholderText("一般留空；只用官方地址时不用填")
+        self._endpoint.setToolTip(
+            "API 服务器地址。普通用户请留空，程序会自动使用该提供商的官方地址。\n"
+            "只有使用中转站 / 代理地址时才需要填写（通常以 https:// 开头）。"
+        )
         f.addRow("自定义端点:", self._endpoint)
 
         self._provider = QComboBox()
+        self._provider.setToolTip(
+            "选择 AI 服务商，例如 Claude、OpenAI、DeepSeek。\n"
+            "必须与你的 API Key 来源一致，否则会提示 Key 无效。"
+        )
         f.addRow("提供商:", self._provider)
 
         self._api_key = QLineEdit()
         self._api_key.setEchoMode(QLineEdit.EchoMode.Password)
-        self._api_key.setPlaceholderText("sk-...")
+        self._api_key.setPlaceholderText("在官网申请的密钥，粘贴到这里")
+        self._api_key.setToolTip(
+            "在对应提供商官网申请的访问密钥（一串以 sk- 等开头的字符）。\n"
+            "相当于登录密码，请勿泄露。填写后可点「保存配置」记住。"
+        )
         f.addRow("API Key:", self._api_key)
 
         self._model = QComboBox()
         self._model.setEditable(True)
-        self._model.setEditable(True)
+        self._model.setToolTip(
+            "具体使用哪一个 AI 模型。可从列表选择，也可手动输入模型名。\n"
+            "不同提供商的模型名不能混用。"
+        )
         f.addRow("模型:", self._model)
+
+        self._max_tokens = QSpinBox()
+        self._max_tokens.setRange(256, 128000)
+        self._max_tokens.setSingleStep(1024)
+        self._max_tokens.setValue(self._default_max_tokens())
+        self._max_tokens.setToolTip(
+            "单次生成允许的最大输出长度（max_tokens）。\n"
+            "脚本较长时可调高（如 16384～32768）；\n"
+            "DeepSeek 若正文被截断为空，也可适当调高后重试。\n"
+            "数值越大通常越慢、费用越高。"
+        )
+        f.addRow("最大输出 tokens:", self._max_tokens)
 
         self._provider_hint = QLabel()
         self._provider_hint.setStyleSheet("color:#e8a000;font-size:11px;")
@@ -198,10 +271,20 @@ class ScriptGenerator(QWidget):
         save_btn.clicked.connect(self._save_settings)
         load_btn = QPushButton("加载配置")
         load_btn.clicked.connect(self._load_settings)
+        self._test_btn = QPushButton("连接测试")
+        self._test_btn.setToolTip("用当前提供商 / 模型 / Key 发送一条短消息验证连通性")
+        self._test_btn.clicked.connect(self._on_test_connection)
         btn_row.addWidget(save_btn)
         btn_row.addWidget(load_btn)
+        btn_row.addWidget(self._test_btn)
         btn_row.addStretch()
         g_api.addLayout(btn_row)
+
+        self._test_status = QLabel("")
+        self._test_status.setWordWrap(True)
+        self._test_status.setStyleSheet("color:#888;font-size:11px;")
+        g_api.addWidget(self._test_status)
+        self._test_worker: ConnectionTestWorker | None = None
 
         # 所有控件建好后再初始化数据+连信号
         self._providers_config = self._load_providers_config()
@@ -318,6 +401,17 @@ class ScriptGenerator(QWidget):
         gen_row.addStretch()
         layout.addLayout(gen_row)
 
+        # ===== 生成计划（只读）=====
+        plan_group = QGroupBox("生成计划")
+        plan_layout = QVBoxLayout(plan_group)
+        self._plan_preview = QTextEdit()
+        self._plan_preview.setReadOnly(True)
+        self._plan_preview.setFont(QFont("Microsoft YaHei UI", 9))
+        self._plan_preview.setPlaceholderText("规划完成后显示结构化计划…")
+        self._plan_preview.setMaximumHeight(160)
+        plan_layout.addWidget(self._plan_preview)
+        layout.addWidget(plan_group)
+
         # ===== 代码预览 =====
         layout.addWidget(QLabel("生成的脚本:"))
         self._code_preview = QTextEdit()
@@ -344,12 +438,23 @@ class ScriptGenerator(QWidget):
 
     # ── 持久化存储 ──
 
+    @staticmethod
+    def _default_max_tokens() -> int:
+        import json
+        path = Path(__file__).parent.parent.parent / "backend" / "script_generator" / "config.json"
+        try:
+            cfg = json.loads(path.read_text(encoding="utf-8"))
+            return int(cfg.get("defaults", {}).get("max_tokens", 16384))
+        except Exception:
+            return 16384
+
     def _save_settings(self):
         import json
         data = {
             "provider": self._provider.currentText(),
             "model": self._model.currentText().strip(),
             "endpoint": self._endpoint.text().strip(),
+            "max_tokens": int(self._max_tokens.value()),
         }
         self._settings_path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
         # API key 存入系统凭据管理器
@@ -391,6 +496,13 @@ class ScriptGenerator(QWidget):
         endpoint = data.get("endpoint", "")
         if endpoint:
             self._endpoint.setText(endpoint)
+
+        max_tokens = data.get("max_tokens")
+        if max_tokens is not None:
+            try:
+                self._max_tokens.setValue(int(max_tokens))
+            except (TypeError, ValueError):
+                pass
 
         self._provider.blockSignals(False)
         self._model.blockSignals(False)
@@ -453,6 +565,85 @@ class ScriptGenerator(QWidget):
             print(f"[ScriptGenerator] 刷新模型列表失败: {e}")
             import traceback
             traceback.print_exc()
+
+    # ── 连接测试 ──
+
+    def _on_test_connection(self):
+        api_key = self._api_key.text().strip()
+        if not api_key:
+            QMessageBox.warning(self, "缺少 API Key", "请先填写 API Key")
+            return
+        model = self._model.currentText().strip()
+        if not model:
+            QMessageBox.warning(self, "缺少模型", "请先选择或填写模型名")
+            return
+        if self._test_worker and self._test_worker.isRunning():
+            return
+
+        params = {
+            "provider": self._provider.currentText(),
+            "api_key": api_key,
+            "model": model,
+            "api_endpoint": self._endpoint.text().strip() or None,
+            "max_tokens": min(256, int(self._max_tokens.value())),
+        }
+        self._test_btn.setEnabled(False)
+        self._test_status.setStyleSheet("color:#888;font-size:11px;")
+        self._test_status.setText(
+            f"测试中… {params['provider']} / {params['model']}"
+        )
+
+        self._test_worker = ConnectionTestWorker(params)
+        self._test_worker.finished.connect(self._on_test_finished)
+        self._test_worker.start()
+
+    def _on_test_finished(self, result: dict):
+        self._test_btn.setEnabled(True)
+        provider = self._provider.currentText()
+        model = self._model.currentText().strip()
+        if result.get("ok"):
+            reply = (result.get("reply") or "").replace("\n", " ")
+            if len(reply) > 60:
+                reply = reply[:57] + "..."
+            tok = ""
+            inp, out = result.get("input_tokens") or 0, result.get("output_tokens") or 0
+            if inp or out:
+                tok = f" · {inp} 入 / {out} 出"
+            self._test_status.setStyleSheet("color:#2e9e5b;font-size:11px;")
+            self._test_status.setText(
+                f"连接成功 · {provider}/{model} · {result.get('latency_ms', 0)} ms"
+                f"{tok} · 回复: {reply}"
+            )
+            QMessageBox.information(
+                self,
+                "连接测试成功",
+                f"已成功连上 AI 服务。\n\n"
+                f"提供商：{provider}\n"
+                f"模型：{model}\n"
+                f"耗时：{result.get('latency_ms', 0)} 毫秒\n"
+                f"回复：{reply or '(无)'}\n\n"
+                f"说明：这只表示账号和网络可用，还不等于脚本一定能生成成功。",
+            )
+        else:
+            err = (result.get("error") or "未知错误").strip()
+            latency = result.get("latency_ms") or 0
+            explained = self._translate_error(err)
+            self._test_status.setStyleSheet("color:#d64545;font-size:11px;")
+            # 状态行只放中文摘要第一行
+            first_line = explained.splitlines()[0] if explained else "连接失败"
+            self._test_status.setText(
+                f"连接失败 · {provider}/{model}"
+                + (f" · {latency} ms" if latency else "")
+                + f" · {first_line}"
+            )
+            detail = (
+                f"{explained}\n\n"
+                f"────────\n"
+                f"提供商：{provider}\n"
+                f"模型：{model}\n"
+                f"耗时：{latency} 毫秒"
+            )
+            QMessageBox.warning(self, "连接测试失败", detail)
 
     # ── 脚本描述 ──
 
@@ -544,6 +735,23 @@ class ScriptGenerator(QWidget):
             QMessageBox.warning(self, "缺少说明", "请填写脚本解释或描述")
             return
 
+        if not self._source_dir:
+            QMessageBox.warning(
+                self,
+                "缺少图片文件夹",
+                "请先点「选择图片文件夹」。\n\n"
+                "否则生成的脚本会落到默认路径 assets/images/game/script，"
+                "运行时会出现「图片不存在」。",
+            )
+            return
+        if not self._image_entries:
+            QMessageBox.warning(
+                self,
+                "文件夹内无图片",
+                "所选文件夹里没有可用图片，请换一个包含 .png 等素材的目录。",
+            )
+            return
+
         params = {
             "provider": self._provider.currentText(),
             "api_key": api_key,
@@ -554,17 +762,21 @@ class ScriptGenerator(QWidget):
             "source_dir": str(self._source_dir) if self._source_dir else "",
             "send_images": self._send_img_cb.isChecked(),
             "compress_images": self._compress_img_cb.isChecked(),
+            "max_tokens": int(self._max_tokens.value()),
         }
 
         self._generate_btn.setEnabled(False)
         self._cancel_btn.setEnabled(True)
         self._progress.show()
         self._token_label.setText("")
+        self._plan_preview.clear()
         self._code_preview.setText("⏳ thinking...")
 
         self._worker = GenerateWorker(params)
         self._worker.finished.connect(self._on_success)
         self._worker.partial.connect(self._on_partial)
+        self._worker.status.connect(self._on_status)
+        self._worker.artifact.connect(self._on_artifact)
         self._worker.token_info.connect(self._on_token_info)
         self._worker.error.connect(self._on_error)
         self._worker.start()
@@ -572,6 +784,14 @@ class ScriptGenerator(QWidget):
     def _on_token_info(self, inp: int, out: int):
         if inp or out:
             self._token_label.setText(f"↕ {inp} 入 / {out} 出")
+
+    def _on_artifact(self, kind: str, payload: str):
+        if kind == "plan":
+            self._plan_preview.setPlainText(payload or "")
+
+    def _on_status(self, msg: str):
+        # 新阶段开始时清空预览，避免 plan/generate/fix 流式文本混在一起
+        self._code_preview.setText(f"⏳ {msg}")
 
     def _on_partial(self, text: str):
         if self._code_preview.toPlainText().startswith("⏳"):
@@ -609,32 +829,133 @@ class ScriptGenerator(QWidget):
 
     @staticmethod
     def _translate_error(msg: str) -> str:
+        """把 API / 网络异常翻成用户可读的中文说明。"""
         import re
-        # API key 无效
-        if "401" in msg and "authentication" in msg.lower():
-            return "API Key 无效或已过期，请检查后重新填写并保存"
-        # 模型名错误
-        if "400" in msg and "model" in msg.lower():
-            m = re.search(r"passed (\S+)", msg)
-            model_name = m.group(1) if m else "当前模型"
-            return f"模型「{model_name}」不被当前提供商支持，请切换提供商或更换模型"
-        # 速率限制
-        if "429" in msg or "rate limit" in msg.lower():
-            return "请求过于频繁，请稍后再试"
-        # 超时
-        if "timeout" in msg.lower() or "timed out" in msg.lower():
-            return "请求超时，可能是网络问题或服务端响应慢，请重试"
-        # token 超限
-        if "token" in msg.lower() and ("exceed" in msg.lower() or "limit" in msg.lower()):
-            return "内容过长，超过了模型的最大 token 限制，请减少图片或描述文本"
-        # 服务器错误
-        if "500" in msg or "502" in msg or "503" in msg:
-            return "AI 服务暂时不可用，请稍后重试"
-        # 无内容
-        if "空内容" in msg:
-            return "AI 返回了空结果，请重试一次"
-        return msg
 
+        raw = (msg or "").strip() or "未知错误"
+        low = raw.lower()
+
+        def pack(title: str, advice: str) -> str:
+            return (
+                f"{title}\n\n"
+                f"建议：\n{advice}\n\n"
+                f"—— 原始错误（给排查用）——\n{raw}"
+            )
+
+        # API Key 无效 / 缺失（含 DeepSeek 400 + Please pass a valid API key）
+        if (
+            ("valid api key" in low)
+            or ("invalid api key" in low)
+            or ("incorrect api key" in low)
+            or ("invalid_api_key" in low)
+            or ("authentication" in low and ("401" in raw or "invalid" in low))
+            or ("api key" in low and ("invalid" in low or "empty" in low or "missing" in low))
+            or ("invalid argument" in low and "api" in low and "key" in low)
+        ):
+            return pack(
+                "API Key 无效或未正确填写",
+                "1. 检查 API Key 是否完整复制（前后不要有空格或换行）\n"
+                "2. 确认 Key 属于当前选择的「提供商」（例如 DeepSeek 的 Key 不能填到 OpenAI）\n"
+                "3. 到对应官网重新创建 Key，粘贴后点「保存配置」，再点「连接测试」",
+            )
+
+        if "401" in raw or "unauthorized" in low:
+            return pack(
+                "身份验证失败（未授权）",
+                "1. API Key 可能填错、过期或被撤销\n"
+                "2. 重新填写正确的 Key 并保存后重试",
+            )
+
+        if "403" in raw or "permission" in low or "forbidden" in low:
+            return pack(
+                "没有权限使用该模型或接口",
+                "1. 确认账号已开通该模型\n"
+                "2. 换一个列表中的模型再试\n"
+                "3. 检查是否需要充值或完成实名认证",
+            )
+
+        # 模型名错误
+        if "400" in raw and "model" in low and "api key" not in low:
+            m = re.search(r"passed (\S+)", raw)
+            model_name = m.group(1) if m else "当前模型"
+            return pack(
+                f"模型「{model_name}」当前不可用",
+                "1. 从下拉列表换一个该提供商支持的模型\n"
+                "2. 或确认手动填写的模型名是否拼写正确",
+            )
+
+        if "429" in raw or "rate limit" in low or "too many requests" in low:
+            return pack(
+                "请求过于频繁，已被限流",
+                "请稍等一会儿再试；若持续出现，可降低调用频率或升级套餐。",
+            )
+
+        if "timeout" in low or "timed out" in low:
+            return pack(
+                "请求超时",
+                "1. 检查本机网络 / 代理是否正常\n"
+                "2. 若使用了自定义端点，确认地址可访问\n"
+                "3. 稍后重试",
+            )
+
+        if any(x in low for x in ("connection", "connecterror", "namenor", "getaddrinfo", "network")):
+            return pack(
+                "无法连接到 AI 服务器",
+                "1. 检查网络是否畅通\n"
+                "2. 如需代理，请先配置系统或终端代理\n"
+                "3. 自定义端点请确认填写正确（含 https://）",
+            )
+
+        if "ssl" in low or "certificate" in low:
+            return pack(
+                "安全连接（证书）校验失败",
+                "多为网络中间设备或代理导致。可检查代理设置，或换网络后再试。",
+            )
+
+        if "token" in low and ("exceed" in low or "limit" in low or "too long" in low or "context" in low):
+            return pack(
+                "内容过长，超出模型限制",
+                "1. 减少参考图片数量，或勾选「压缩图片」\n"
+                "2. 缩短脚本描述文字后再生成",
+            )
+
+        if "500" in raw or "502" in raw or "503" in raw or "overloaded" in low:
+            return pack(
+                "AI 服务暂时不可用",
+                "这是服务端问题，请稍后再试；也可换一个模型或提供商。",
+            )
+
+        if "空内容" in raw or "empty content" in low:
+            advice = (
+                "1. 请再点一次「生成脚本」重试\n"
+                "2. 若使用 DeepSeek V4（如 deepseek-v4-flash）：默认会先「思考」再写代码，"
+                "思考可能占满输出额度导致正文为空。程序已自动关闭思考模式，请重试\n"
+                "3. DeepSeek 不支持看图，可取消勾选「发送图片给 AI」，只保留文件名描述\n"
+                "4. 仍失败可换 deepseek-chat，或换 Claude / GPT"
+            )
+            if "思考模式" in raw or "had_reasoning" in raw or "finish_reason=length" in raw:
+                advice = (
+                    "这通常不是额度不足，而是模型把输出额度用在了「思考过程」上，正文还没写完就结束了。\n\n"
+                    "1. 直接再生成一次（程序已对 DeepSeek 关闭 thinking）\n"
+                    "2. 取消「发送图片给 AI」（DeepSeek 本身不能看图）\n"
+                    "3. 或改用 deepseek-chat / 其他提供商"
+                )
+            return pack("AI 返回了空结果", advice)
+
+        if "校验失败" in raw or "语法错误" in raw:
+            return pack(
+                "生成的脚本未通过本地检查",
+                "可直接再点一次「生成脚本」让系统自动修复；"
+                "若仍失败，请简化脚本描述后重试。",
+            )
+
+        # 未识别：给通用中文壳，仍附原始错误
+        return pack(
+            "连接或调用失败",
+            "1. 用「连接测试」确认 Key / 模型 / 网络是否正常\n"
+            "2. 对照下方原始错误排查（常见是 Key 填错或模型名不对）\n"
+            "3. 仍无法解决时，可把原始错误发给开发者协助查看",
+        )
     def _save_script(self):
         name = self._script_name.text().strip()
         if not name:

@@ -12,6 +12,7 @@ class urlGoto extends ActionNode {
 
       this.addOutput("下一步", LiteGraph.EVENT);
       this.addOutput("成功", "boolean");
+      this.addOutput("错误", LiteGraph.EVENT);
 
       this.properties = { url: "" };
 

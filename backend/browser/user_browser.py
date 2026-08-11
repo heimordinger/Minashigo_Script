@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 from pathlib import Path
 from backend.browser.browser import Browser
+from backend.automation.stuck_guard import StuckGuard
 from typing import Tuple, Union
 
 
@@ -44,11 +45,21 @@ class UserBrowser:
         self.use_polling_temp_cache = False
         self.polling_temp_cache = {}
 
-        self._watchdog_idle: float = 300.0   # 5 分钟无操作视为卡死
-        self._last_successful_click: float = __import__('time').time()
+        self._stuck = StuckGuard(log_fn=lambda msg: self.script_log(msg))
 
     def script_log(self, msg: str):
         self._browser.script_log(msg)
+
+    def note_state(self, name: str | None):
+        """FSM 每轮上报当前状态；用于状态停滞检测。"""
+        self._stuck.note_state(name)
+
+    def note_progress(self):
+        """脚本可手动标记有进展（可选）。"""
+        self._stuck.note_progress(clear_actions=True)
+
+    def _note_progress(self):
+        self._stuck.note_progress(clear_actions=True)
 
     def __getattr__(self, name):
         attr = getattr(self._browser, name)
@@ -72,13 +83,7 @@ class UserBrowser:
             seconds = random.uniform(seconds, upper_limit)
         if seconds <= 0:
             return
-        # 看门狗：超过 watchdog_idle 秒无有效点击 → 视为卡死
-        idle = __import__('time').time() - self._last_successful_click
-        if idle > self._watchdog_idle:
-            raise RuntimeError(
-                f"看门狗触发：{idle:.0f}秒内无有效操作，"
-                f"超过上限 {self._watchdog_idle:.0f}s，脚本可能已卡死"
-            )
+        self._stuck.check_idle()
         elapsed = 0.0
         while elapsed < seconds:
             await self._task_ctrl.check()
@@ -132,6 +137,10 @@ class UserBrowser:
         if self.use_polling_temp_cache:
             self.polling_temp_cache[key] = result
 
+        # 仅成功匹配计入循环检测；失败是正常等待
+        if result:
+            self._stuck.note_action("match", img_path, True)
+
         return result
 
     async def click_image(
@@ -161,8 +170,9 @@ class UserBrowser:
                 match_select=match_select,
             )
             print(f"[UserBrowser.click_image] _browser.click_image done t={time.time()-_t0:.3f}s result={result}", flush=True)
+            self._stuck.note_action("click", img_path, bool(result))
             if result:
-                self._last_successful_click = __import__('time').time()
+                self._note_progress()
             return result
 
         key = (
@@ -183,6 +193,8 @@ class UserBrowser:
         match = self.polling_temp_cache[key]
 
         if not match or match.x is None:
+            self._emit_click_hud(str(img_path), False, getattr(match, "max_val", None) if match else None)
+            self._stuck.note_action("click", img_path, False)
             return False
 
         offset = human_offset(pianyi)
@@ -193,14 +205,36 @@ class UserBrowser:
             await self.draw_click_point(x, y, color="red")
 
         await self.click(x=x, y=y, down_time=down_time)
-        self._last_successful_click = __import__('time').time()
+        self._note_progress()
+        self._stuck.note_action("click", img_path, True)
 
         print(
             f"{self.account['name']}: 点击图片:{img_path}({x},{y}), "
             f"最大匹配度:{match.max_val}"
         )
+        self._emit_click_hud(str(img_path), True, match.max_val, x=x, y=y)
 
         return True
+
+    def _emit_click_hud(self, img_path, ok, score=None, x=None, y=None):
+        ctrl = getattr(self, "controller", None)
+        if not ctrl and hasattr(self, "_browser"):
+            ctrl = getattr(self._browser, "controller", None)
+        if not ctrl or not hasattr(ctrl, "emit_match_event"):
+            return
+        try:
+            account = self.account["name"]
+        except Exception:
+            return
+        ctrl.emit_match_event(
+            account=account,
+            img_path=img_path,
+            status="ok" if ok else "fail",
+            score=score,
+            action="click",
+            x=x,
+            y=y,
+        )
 
     async def click_text(
             self,
@@ -316,15 +350,15 @@ class UserBrowser:
 
         self._log("DMM 登录完成")
 
-    async def wait_image(self, img_path, timeout=0):
+    async def wait_image(self, img_path, timeout=0, threshold: float = 0.9):
         #0或负数表示无限等待
         deadline = datetime.now() + timedelta(seconds=timeout) if timeout > 0 else None
 
         while True:
             await self._task_ctrl.check()
             await self._browser.update_frame()
-            
-            if await self._browser.match_image(img_path=img_path):
+
+            if await self.match_image(img_path=img_path, threshold=threshold):
                 return True
 
             if deadline and datetime.now() >= deadline:

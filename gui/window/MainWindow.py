@@ -1,4 +1,4 @@
-﻿from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QTabWidget,
     QLabel, QStatusBar, QPushButton, QTabBar, QSystemTrayIcon
@@ -15,6 +15,7 @@ from gui.panels.settings_panel import SettingsPanel
 from gui.tabs.StartTab import StartTab
 from gui.tabs.AccountManagerTab import AccountManagerTab
 from gui.widgets.ScriptGenerator import ScriptGenerator
+from gui.widgets.MatchDebugWindow import MatchDebugWindow
 from gui.panels.account_panel import AccountPanel
 from core.error_handler import safe_call
 from core.path import ICON_PATH
@@ -43,6 +44,11 @@ class MainWindow(QWidget):
         self.facade.controller.screenshot_ready.connect(
             self.on_screenshot_ready
         )
+        self.facade.controller.match_event.connect(
+            self.on_match_event,
+            type=Qt.QueuedConnection,
+        )
+        self._match_debug = MatchDebugWindow(self)
         # 只同步创建首屏 "开始" tab，其余 tab 延迟加载
         self._setup_start_tab()
         self.setup_status_bar()
@@ -254,6 +260,12 @@ QToolTip {
         self.status_label.setObjectName("StatusLabel")
         self.status_bar.addWidget(self.status_label)
 
+        self.match_debug_btn = QPushButton("匹配调试")
+        self.match_debug_btn.setToolTip("打开 match/click 调试窗口 (Ctrl+Shift+D)")
+        self.match_debug_btn.setFlat(True)
+        self.match_debug_btn.clicked.connect(self.open_match_debug)
+        self.status_bar.addPermanentWidget(self.match_debug_btn)
+
     def setup_layout(self):
         """主窗口布局"""
         layout = QVBoxLayout(self)
@@ -455,10 +467,24 @@ QToolTip {
 
         panel.show_screenshot(numpy_to_qimage(frame))
 
+    def on_match_event(self, account_name: str, payload: dict):
+        if self._match_debug is not None:
+            self._match_debug.append_event(account_name, payload or {})
+
+    def open_match_debug(self):
+        if self._match_debug is None:
+            self._match_debug = MatchDebugWindow(self)
+        self._match_debug.show()
+        self._match_debug.raise_()
+        self._match_debug.activateWindow()
+
     def setup_shortcuts(self):
         shortcut_f5 = QShortcut(QKeySequence("F5"), self)
         shortcut_f5.activated.connect(self.reload_all)
         print("样式重载快捷键已设置: F5")
+
+        shortcut_debug = QShortcut(QKeySequence("Ctrl+Shift+D"), self)
+        shortcut_debug.activated.connect(self.open_match_debug)
 
     def reload_stylesheet(self):
         print("正在重载样式表...")

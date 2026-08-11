@@ -14,14 +14,24 @@ class BallIcon(QWidget):
 
     SIZE = 34
 
+    TARGET_RING = {
+        "browser": QColor(76, 163, 255),   # 蓝：浏览器
+        "window": QColor(255, 159, 67),    # 橙：控制窗口
+    }
+
     def __init__(self, index: int = 0, parent=None):
         super().__init__(parent)
         self.index = index
         self.color = QColor(120, 120, 120)
+        self.target_type: str | None = None  # "browser" | "window" | None
         self.setFixedSize(self.SIZE + 8, self.SIZE + 8)
 
     def set_color(self, color: QColor):
         self.color = color
+        self.update()
+
+    def set_target(self, target_type: str | None):
+        self.target_type = target_type or None
         self.update()
 
     def paintEvent(self, event):
@@ -30,6 +40,14 @@ class BallIcon(QWidget):
 
         cx, cy = self.width() // 2, self.height() // 2
         r = self.SIZE // 2
+
+        # 目标类型外环（浏览器蓝 / 窗口橙）
+        ring = self.TARGET_RING.get(self.target_type or "")
+        if ring is not None:
+            p.setBrush(Qt.NoBrush)
+            p.setPen(QPen(ring, 3))
+            pad = 1
+            p.drawEllipse(cx - r - pad, cy - r - pad, (r + pad) * 2, (r + pad) * 2)
 
         # 球体
         p.setBrush(QBrush(self.color))
@@ -63,11 +81,17 @@ class TaskBallCard(QWidget):
     }
     FALLBACK_COLOR = QColor(140, 140, 140)
 
-    def __init__(self, task_name: str, index: int, parent=None):
+    TARGET_LABELS = {
+        "browser": "浏览器",
+        "window": "窗口",
+    }
+
+    def __init__(self, task_name: str, index: int, parent=None, target_type: str | None = None):
         super().__init__(parent)
         self.setObjectName("TaskBallCard")
         self.task_name = task_name
         self.index = index
+        self._target_type = (target_type or "").strip() or None
         self._status = None
         self._expanded = True
         self.events: list[LogEvent] = []
@@ -85,6 +109,7 @@ class TaskBallCard(QWidget):
         ba.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
 
         self._ball = BallIcon(index=index)
+        self._ball.set_target(self._target_type)
         ba.addWidget(self._ball)
 
         # ===== 右侧：内容区 =====
@@ -102,6 +127,10 @@ class TaskBallCard(QWidget):
         self._title = QLabel(task_name)
         self._title.setObjectName("CardTitle")
 
+        self._target_badge = QLabel()
+        self._target_badge.setObjectName("CardTarget")
+        self._apply_target_badge()
+
         self._status_label = QLabel("运行中")
         self._status_label.setObjectName("CardStatus")
 
@@ -112,6 +141,7 @@ class TaskBallCard(QWidget):
         hl.setContentsMargins(10, 6, 10, 6)
         hl.setSpacing(8)
         hl.addWidget(self._title, stretch=1)
+        hl.addWidget(self._target_badge)
         hl.addWidget(self._status_label)
         hl.addWidget(self._arrow)
 
@@ -136,6 +166,32 @@ class TaskBallCard(QWidget):
 
         # 所有子控件创建完毕后触发 setter 更新球颜色和标签
         self.status = "运行中"
+
+    @property
+    def target_type(self) -> str | None:
+        return self._target_type
+
+    def set_target_type(self, target_type: str | None):
+        self._target_type = (target_type or "").strip() or None
+        self._ball.set_target(self._target_type)
+        self._apply_target_badge()
+
+    def _apply_target_badge(self):
+        label = self.TARGET_LABELS.get(self._target_type or "")
+        if not label:
+            self._target_badge.clear()
+            self._target_badge.hide()
+            self._ball.setToolTip("")
+            return
+        self._target_badge.setText(label)
+        self._target_badge.show()
+        tip = "控制目标：浏览器" if self._target_type == "browser" else "控制目标：桌面窗口"
+        self._target_badge.setToolTip(tip)
+        self._ball.setToolTip(tip)
+        # 用 property 驱动样式（浏览器蓝 / 窗口橙）
+        self._target_badge.setProperty("target", self._target_type)
+        self._target_badge.style().unpolish(self._target_badge)
+        self._target_badge.style().polish(self._target_badge)
 
     # =========================================================
 

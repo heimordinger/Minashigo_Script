@@ -70,11 +70,6 @@ def main():
     atexit.register(_cleanup_lock)
     ts("启动主程序...")
 
-
-    from core.loading_animation import LoadingAnimation
-    loading = LoadingAnimation()
-    loading.start()
-
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QIcon
     from core.path import ICON_PATH
@@ -85,6 +80,10 @@ def main():
         pass
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(str(ICON_PATH)))
+
+    from gui.window.LoadingSplash import LoadingSplash
+    loading = LoadingSplash()
+    ts("LoadingSplash 已显示")
 
     from core.app_startup import AppStartup
     startup = AppStartup(t0=_t0)

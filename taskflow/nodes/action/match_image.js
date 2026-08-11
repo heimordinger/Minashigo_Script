@@ -19,6 +19,7 @@ class MatchImage extends LiteGraph.LGraphNode {
     this.addOutput("max_val","number");
     this.addOutput("成功", LiteGraph.EVENT);
     this.addOutput("失败", LiteGraph.EVENT);
+    this.addOutput("错误", LiteGraph.EVENT);
 
 
     /* ========= Properties ========= */

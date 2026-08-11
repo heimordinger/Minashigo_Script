@@ -59,30 +59,22 @@ python main.py
 
 ```
 Minashigo_Script/
-├── main.py                  # 入口
-├── core/                    # 核心框架
-│   ├── path.py              # 路径管理
-│   ├── app_startup.py       # 启动流程
-│   ├── taskflow_manager.py  # TaskFlow 管理器
-│   └── http_api_server.py   # HTTP API 服务器
-├── controller/              # 控制层
-│   ├── ctrl.py              # 主控制器
-│   └── task_controller.py   # 任务控制器
-├── gui/                     # 图形界面
-│   ├── window/              # 主窗口
-│   ├── panels/              # 面板组件
-│   └── tabs/                # Tab 页面
-├── backend/                 # 后端
-│   ├── browser/             # Playwright 浏览器控制
-│   ├── automation/          # Win32 窗口控制
-│   └── matcher/             # 图像匹配引擎
-├── taskflow/                # 可视化工作流编辑器
-    └── matcher/             # 图像匹配引擎
-    └── script_generator/    # AI 脚本生成（agent + config.json）
-│   └── nodes/               # 节点定义
-├── scripts/                 # 用户脚本
-├── assets/                  # 图片资源
-└── models/                  # OCR 模型（自动下载）
+├── main.py                     # 入口
+├── core/                       # 核心框架（启动、路径、TaskFlow、HTTP API）
+├── controller/                 # 控制层（主控 / 任务调度）
+├── gui/                        # 图形界面（窗口、面板、Tab、控件）
+├── backend/
+│   ├── browser/                # Playwright 浏览器控制
+│   ├── automation/             # Win32 窗口控制 + 卡死守卫
+│   ├── matcher/                # 图像匹配引擎
+│   ├── script_generator/       # AI 脚本生成（agent / LangGraph）
+│   └── quick_script/           # 快速脚本录制与 YOLO 检测
+├── taskflow/                   # 可视化工作流编辑器与节点
+├── script_spec/                # 脚本说明规格与编辑器
+├── scripts/                    # 用户脚本（Deep One / 孤儿 / 通用等）
+├── assets/                     # 图片资源
+├── tests/                      # 测试与调试脚本
+└── models/                     # OCR 等模型（自动下载，不入库）
 ```
 
 ## 构建

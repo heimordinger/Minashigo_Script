@@ -1,0 +1,12 @@
+属性表：
+light：光
+lightning：雷
+fire：火
+water：水
+wind：风
+dark：暗
+
+1_xx_1：表示属性xx的助战栏未选取状态图，比如1_light_1.png就是光属性助战栏未选取
+1_xx_2：表示属性xx的助战栏已选取状态图，比如1_light_2.png就是光属性助战栏已选取
+
+2_xx：表示属性xx的属性图标。

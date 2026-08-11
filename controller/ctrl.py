@@ -20,6 +20,7 @@ class Controller(QObject):
     show_overlay_signal = Signal(str)
     close_overlay_signal = Signal(str)
     screenshot_ready = Signal(str, object)
+    match_event = Signal(str, dict)  # account_name, {img_path, status, score}
 
     def __init__(self):
         _t0 = __import__('time').time()
@@ -468,6 +469,27 @@ class Controller(QObject):
 
         self._log_buffer[account].append(event)
         self.log_signal.emit(account, event)
+
+    def emit_match_event(
+            self,
+            *,
+            account: str,
+            img_path: str,
+            status: str,
+            score: float | None = None,
+            action: str = "match",
+            x: float | int | None = None,
+            y: float | int | None = None,
+    ):
+        """匹配/点击调试事件。status = matching | ok | fail；action = match | click"""
+        self.match_event.emit(account, {
+            "img_path": str(img_path),
+            "status": status,
+            "score": score,
+            "action": action,
+            "x": x,
+            "y": y,
+        })
 
     def emit_state(self, data):
         if isinstance(data, dict):

@@ -313,6 +313,7 @@ async def do_work(browser: UserBrowser):
             browser.script_log(f"[DO登录v2] ❌ 总超时 {CFG.total_timeout}s，登录未完成")
             raise TimeoutError(f"登录超时 {CFG.total_timeout}s")
 
+        browser.note_state(state_name)
         await browser.update_frame()
 
         # 守卫优先（网络异常 / 代理下载失败）

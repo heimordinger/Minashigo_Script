@@ -326,6 +326,41 @@ async def goto(url, account=None, websocket=None):
 
 
 # ==============================================================
+# 滚动操作
+# ==============================================================
+
+async def scroll(delta_x=0, delta_y=0, x=None, y=None, steps=10,
+                 scroll_time=0.3, account=None):
+    """增量滚动"""
+    browser = await _get_healthy_browser(account)
+    if not browser:
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
+    await browser.scroll(
+        delta_x=delta_x, delta_y=delta_y,
+        x=x, y=y, steps=steps, scroll_time=scroll_time,
+    )
+    return {"success": True, "delta_x": delta_x, "delta_y": delta_y}
+
+
+async def scroll_to_bottom(smooth=True, step_size=300, interval=0.1, account=None):
+    """滚动到底部"""
+    browser = await _get_healthy_browser(account)
+    if not browser:
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
+    await browser.scroll_to_bottom(smooth=smooth, step_size=step_size, interval=interval)
+    return {"success": True}
+
+
+async def scroll_to_top(smooth=True, account=None):
+    """滚动到顶部"""
+    browser = await _get_healthy_browser(account)
+    if not browser:
+        return {"success": False, "error": "浏览器未启动或连接已断开"}
+    await browser.scroll_to_top(smooth=smooth)
+    return {"success": True}
+
+
+# ==============================================================
 # 账号操作（含子操作分发）
 # ==============================================================
 
@@ -406,6 +441,9 @@ TASK_FUNCS = {
     "dmm_login": dmm_login,
     "b_sleep": b_sleep,
     "goto": goto,
+    "scroll": scroll,
+    "scroll_to_bottom": scroll_to_bottom,
+    "scroll_to_top": scroll_to_top,
     "account_operation": account_operation,
 }
 

@@ -172,6 +172,16 @@ export class WorkflowController {
     } catch (err) {
       console.error(`[Workflow] 节点 ${node.title} 失败:`, err);
       window.unhighlightNode?.(node);
+      // 先查是否有"错误"输出插槽且被连线
+      const errorSlot = node.outputs?.findIndex(
+        o => o.name === "错误" || o.name === "error"
+      );
+      if (errorSlot !== undefined && errorSlot >= 0 && node.outputs?.[errorSlot]?.links?.length) {
+        window.showToast?.(`${node.title} 执行出错, 走错误分支: ${err.message}`, "warn");
+        await node.execOutput(errorSlot);
+        return;
+      }
+      // 没有错误分支 → 崩溃停图
       this.setErrorNode(node);
       this.stop();
       window.showToast?.(`节点 ${node.title} 执行失败: ${err.message}`, "error");

@@ -11,6 +11,7 @@ class DMMLoginNode extends ActionNode {
     this.addInput("触发", LiteGraph.EVENT);
     this.addOutput("下一步", LiteGraph.EVENT);
     this.addOutput("成功", "boolean");
+    this.addOutput("错误", LiteGraph.EVENT);
 
     this.properties = {
       game_name: "",

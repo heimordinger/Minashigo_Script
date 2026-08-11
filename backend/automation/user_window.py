@@ -17,6 +17,7 @@ from core.logging.events import LogLevel
 from typing import Union
 
 from .win32_target import Win32Target
+from .stuck_guard import StuckGuard
 
 
 def human_offset(pianyi: Union[None, int, tuple[int, int]] = None) -> tuple[int, int]:
@@ -50,6 +51,17 @@ class UserWindow:
 
         # 最后截图帧
         self._frame = None
+
+        self._stuck = StuckGuard(log_fn=lambda msg: self.script_log(msg))
+
+    def note_state(self, name: str | None):
+        self._stuck.note_state(name)
+
+    def note_progress(self):
+        self._stuck.note_progress(clear_actions=True)
+
+    def _note_progress(self):
+        self._stuck.note_progress(clear_actions=True)
 
     # ── 代理：所有 Win32Target 属性/方法 ──
 
@@ -110,6 +122,7 @@ class UserWindow:
             seconds = random.uniform(seconds, upper_limit)
         if seconds <= 0:
             return
+        self._stuck.check_idle()
         elapsed = 0.0
         while elapsed < seconds:
             await self._check()
@@ -152,6 +165,8 @@ class UserWindow:
 
         from backend.matcher.matcher import matcher
 
+        self._emit_match_hud(str(img_path), "matching")
+
         frame = self._frame
         if frame is None:
             frame = self._target.screenshot(client_only=True, method="auto")
@@ -165,10 +180,42 @@ class UserWindow:
             match_select=match_select,
         )
 
+        score = getattr(result, "score", getattr(result, "max_val", None))
+        ok = bool(result and result.x is not None)
+        mx = getattr(result, "x", None) if result else None
+        my = getattr(result, "y", None) if result else None
+        self._emit_match_hud(
+            str(img_path), "ok" if ok else "fail", score,
+            x=mx, y=my,
+        )
+        if ok:
+            self._stuck.note_action("match", img_path, True)
+
         if self.use_polling_temp_cache:
             self.polling_temp_cache[key] = result
 
         return result
+
+    def _emit_match_hud(self, img_path: str, status: str, score=None,
+                        action: str = "match", x=None, y=None):
+        ctrl = None
+        if self._task_ctrl and hasattr(self._task_ctrl, "controller"):
+            ctrl = self._task_ctrl.controller
+        if not ctrl or not hasattr(ctrl, "emit_match_event"):
+            return
+        account = getattr(self, "_account_override", {}) or {}
+        name = account.get("name")
+        if not name:
+            return
+        ctrl.emit_match_event(
+            account=name,
+            img_path=img_path,
+            status=status,
+            score=score,
+            action=action,
+            x=x,
+            y=y,
+        )
 
     async def click_image(
             self,
@@ -190,6 +237,9 @@ class UserWindow:
                 img_path=img_path, pianyi=offset, threshold=threshold,
                 use_color_check=use_color_check, match_select=match_select,
             )
+            self._stuck.note_action("click", img_path, bool(result))
+            if result:
+                self._note_progress()
             return result
 
         key = (str(img_path), threshold, use_color_check, match_select)
@@ -202,6 +252,12 @@ class UserWindow:
 
         match = self.polling_temp_cache[key]
         if not match or match.x is None:
+            self._emit_match_hud(
+                str(img_path), "fail",
+                getattr(match, "score", None) if match else None,
+                action="click",
+            )
+            self._stuck.note_action("click", img_path, False)
             return False
 
         offset = human_offset(pianyi)
@@ -209,6 +265,13 @@ class UserWindow:
         y = match.y + offset[1]
 
         self._target.click(x, y)
+        self._note_progress()
+        self._stuck.note_action("click", img_path, True)
+        self._emit_match_hud(
+            str(img_path), "ok",
+            getattr(match, "score", None),
+            action="click", x=x, y=y,
+        )
 
         print(f"{self._target.title}: 点击图片:{img_path}({x},{y}), "
               f"最大匹配度:{match.score if hasattr(match, 'score') else '?'}")
@@ -220,6 +283,8 @@ class UserWindow:
         """同步版找图+点击。"""
         from backend.matcher.matcher import matcher
 
+        self._emit_match_hud(str(img_path), "matching")
+
         frame = self._frame
         if frame is None:
             frame = self._target.screenshot(client_only=True, method="auto")
@@ -229,12 +294,20 @@ class UserWindow:
             target=frame, template=img_path, threshold=threshold,
             use_color_check=use_color_check, match_select=match_select,
         )
+        score = getattr(result, "score", getattr(result, "max_val", None)) if result else None
         if not result or result.x is None:
+            self._emit_match_hud(str(img_path), "fail", score, action="match")
+            self._emit_match_hud(str(img_path), "fail", score, action="click")
             return False
 
+        self._emit_match_hud(str(img_path), "ok", score, action="match",
+                             x=result.x, y=result.y)
         x = result.x + pianyi[0]
         y = result.y + pianyi[1]
         self._target.click(x, y)
+        self._emit_match_hud(
+            str(img_path), "ok", score, action="click", x=x, y=y,
+        )
 
         print(f"{self._target.title}: 点击图片:{img_path}({x},{y}), "
               f"最大匹配度:{result.score if hasattr(result, 'score') else '?'}")

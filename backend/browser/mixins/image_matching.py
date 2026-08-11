@@ -34,6 +34,7 @@ class ImageMatchingMixin:
             print(f"[match_image] 转换为Path: {img_path}")
 
         print(f"[match_image] 开始匹配: template={str(img_path)[:80]}, threshold={threshold}")
+        self._emit_match_hud(str(orig_path), "matching")
         # 在默认线程池中执行 CPU 密集的 OpenCV 匹配，避免阻塞事件循环
         loop = asyncio.get_running_loop()
         result = await loop.run_in_executor(
@@ -52,12 +53,37 @@ class ImageMatchingMixin:
 
         if result.x is None:
             print(f"[match_image] ❌ 匹配无结果, score={result.score}")
+            self._emit_match_hud(str(orig_path), "fail", result.score)
             return MatchResult(x=None, y=None, max_val=result.score, match_success=False)
 
         x, y = self.device_to_css(result.x, result.y)
+        ok = result.score >= threshold
         print(f"[match_image] ✅ 匹配成功: img=({result.x},{result.y}) -> css=({x},{y}), score={result.score}")
+        self._emit_match_hud(
+            str(orig_path), "ok" if ok else "fail", result.score,
+            x=x, y=y,
+        )
 
-        return MatchResult(x=x, y=y, max_val=result.score, match_success=result.score >= threshold)
+        return MatchResult(x=x, y=y, max_val=result.score, match_success=ok)
+
+    def _emit_match_hud(self, img_path: str, status: str, score=None,
+                        action: str = "match", x=None, y=None):
+        ctrl = getattr(self, "controller", None)
+        if not ctrl or not hasattr(ctrl, "emit_match_event"):
+            return
+        try:
+            account = self.account["name"]
+        except Exception:
+            return
+        ctrl.emit_match_event(
+            account=account,
+            img_path=img_path,
+            status=status,
+            score=score,
+            action=action,
+            x=x,
+            y=y,
+        )
 
     async def match_image_multi(
             self,
@@ -121,6 +147,11 @@ class ImageMatchingMixin:
 
         if match.x is None:
             print(f"[Browser.click_image] match失败，返回False", flush=True)
+            self._emit_match_hud(
+                str(img_path), "fail",
+                getattr(match, "score", None),
+                action="click",
+            )
             return False
 
         x = match.x + pianyi[0]
@@ -137,6 +168,10 @@ class ImageMatchingMixin:
         print(
             f"{self.account['name']}: 点击图片:{img_path}({x},{y}), "
             f"最大匹配度:{match.max_val}"
+        )
+        self._emit_match_hud(
+            str(img_path), "ok", match.max_val,
+            action="click", x=x, y=y,
         )
 
         return True
