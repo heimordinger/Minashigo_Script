@@ -114,6 +114,93 @@ class Controller(QObject):
             "message": ""
         }
 
+    def transfer_browser(self, from_account: dict, to_account: dict) -> bool:
+        """把已启动的浏览器运行时从 from 账号迁到 to 账号（不重启 Chrome）。"""
+        from_name = from_account.get("name", "")
+        to_name = to_account.get("name", "")
+        if not from_name or not to_name or from_name == to_name:
+            return False
+
+        has_from = from_name in self._browsers or from_name in self._browser_instances
+        has_to = to_name in self._browsers or to_name in self._browser_instances
+        if not has_from or has_to:
+            return False
+
+        self.stop_task(from_account)
+
+        browser = self._browsers.pop(from_name, None)
+        if browser is not None:
+            browser.account = to_account
+            self._browsers[to_name] = browser
+
+        inst = self._browser_instances.pop(from_name, None)
+        if inst is not None:
+            self._browser_instances[to_name] = inst
+
+        task_ctrl = self._task_ctrls.pop(from_name, None)
+        if task_ctrl is not None:
+            task_ctrl.account = to_account
+            self._task_ctrls[to_name] = task_ctrl
+        else:
+            self._ensure_task_ctrl(to_account)
+
+        task_state = self._tasks.pop(from_name, None)
+        if task_state is not None:
+            self._tasks[to_name] = task_state
+        elif to_name not in self._tasks:
+            self._tasks[to_name] = {
+                "script": None,
+                "status": "idle",
+                "step": "",
+                "message": "",
+            }
+
+        fut = self._connect_futures.pop(from_name, None)
+        if fut is not None:
+            self._connect_futures[to_name] = fut
+
+        running = self._running.pop(from_name, None)
+        if running is not None:
+            self._running[to_name] = running
+
+        win = getattr(self, "_window_instances", None)
+        if isinstance(win, dict) and from_name in win:
+            self._window_instances[to_name] = self._window_instances.pop(from_name)
+
+        try:
+            import sys
+            from pathlib import Path
+            taskflow_path = Path(__file__).parent.parent / "taskflow"
+            if str(taskflow_path) not in sys.path:
+                sys.path.insert(0, str(taskflow_path))
+            from run_taskflow import browsers as tf_browsers
+            old_email = from_account.get("email", "")
+            new_email = to_account.get("email", "")
+            if old_email and old_email in tf_browsers:
+                wrapped = tf_browsers.pop(old_email)
+                if new_email:
+                    tf_browsers[new_email] = wrapped
+        except Exception as e:
+            print(f"[Controller] 移交 TaskFlow browsers 失败: {e}")
+
+        if "_target" in from_account:
+            to_account["_target"] = from_account.get("_target")
+
+        self.emit_log(
+            account=to_name,
+            message=f"已继承浏览器（来自 {from_name}）",
+            level=LogLevel.INFO,
+            source="browser",
+        )
+        self.emit_log(
+            account=from_name,
+            message=f"浏览器已移交给 {to_name}",
+            level=LogLevel.INFO,
+            source="browser",
+        )
+        print(f"[Controller] 浏览器已移交: {from_name} → {to_name}")
+        return True
+
     def start_browser_async(self, account: dict):
         asyncio.run_coroutine_threadsafe(
             self._start_browser(account),
@@ -143,6 +230,9 @@ class Controller(QObject):
 
         await asyncio.to_thread(browser.start)
 
+        # 在 connect（会发 ready）之前注册 TaskController，避免 UI 收到 ready 后立刻 start_task 时 KeyError
+        self._ensure_task_ctrl(account)
+
         connect_task = asyncio.create_task(browser.connect())
         self._connect_futures[account["name"]] = connect_task
 
@@ -162,14 +252,8 @@ class Controller(QObject):
             from taskflow.backend_handler import MainLoopProxy
             from backend.browser.user_browser import UserBrowser
 
-            class TempTaskCtrl:
-                async def check(self):
-                    pass
-                def emit_log(self, account, message, level, source):
-                    pass
-
-            temp_task_ctrl = TempTaskCtrl()
-            user_browser = UserBrowser(browser=browser, task_ctrl=temp_task_ctrl)
+            task_ctrl = self._task_ctrls[account["name"]]
+            user_browser = UserBrowser(browser=browser, task_ctrl=task_ctrl)
             wrapped = MainLoopProxy(user_browser)
 
             account_email = account.get('email', '')
@@ -179,6 +263,19 @@ class Controller(QObject):
                 print(f"[Controller] 已存储UserBrowser到_browser_instances和run_taskflow.browsers: {account_email}")
             else:
                 print(f"[Controller] 账号缺少邮箱信息: {account}")
+
+            # connect() 内部会先发 ready；此时 UserBrowser 可能尚未入库。
+            # 入库后再发一次 ready，确保 UI/排队开跑时实例已可用。
+            from core.state.events import StateEvent, StateDomain
+            self.emit_state(
+                StateEvent(
+                    account=account["name"],
+                    domain=StateDomain.BROWSER,
+                    key="ready",
+                    value=True,
+                    message="UserBrowser 已就绪",
+                )
+            )
 
         except asyncio.CancelledError:
             self.emit_log(
@@ -198,13 +295,23 @@ class Controller(QObject):
             self._connect_futures.pop(account["name"], None)
             raise
 
-        from controller.task_controller import TaskController
-        task_ctrl = TaskController(
-            account=account,
-            task_name="",
-            controller=self,
-        )
-        self._task_ctrls[account['name']] = task_ctrl
+    def _ensure_task_ctrl(self, account: dict):
+        """确保账号有 _tasks / _task_ctrls 槽位（兼容旧调用顺序与竞态）。"""
+        name = account["name"]
+        if name not in self._tasks:
+            self._tasks[name] = {
+                "script": None,
+                "status": "idle",
+                "step": "",
+                "message": "",
+            }
+        if name not in self._task_ctrls:
+            from controller.task_controller import TaskController
+            self._task_ctrls[name] = TaskController(
+                account=account,
+                task_name="",
+                controller=self,
+            )
 
     def register_window_target(self, account: dict):
         """窗口模式：注册账号并创建 UserWindow，存储到 _window_instances。"""
@@ -388,6 +495,36 @@ class Controller(QObject):
 
     def start_task(self, account: dict, task_name: str):
         name = account["name"]
+
+        # 防御：ready 早于 UserBrowser 注册、或旧路径未建 TaskController
+        self._ensure_task_ctrl(account)
+
+        # connect() 发 ready 时 UserBrowser 可能还没入库；短等再开跑
+        if name not in self._browser_instances and name not in self._window_instances:
+            async def _wait_then_start():
+                for _ in range(50):  # ~5s
+                    if name in self._browser_instances or name in self._window_instances:
+                        break
+                    await asyncio.sleep(0.1)
+                if name not in self._browser_instances and name not in self._window_instances:
+                    self.emit_log(
+                        account=name,
+                        message="浏览器/窗口尚未就绪，无法启动任务",
+                        level=LogLevel.ERROR,
+                        source="runner",
+                    )
+                    return
+                self._tasks[name]["script"] = task_name
+                self.emit_task_state(
+                    name,
+                    status=TaskStatus.RUNNING,
+                    script=task_name,
+                    message=f"开始执行任务：{task_name}",
+                )
+                self._task_ctrls[name].start(task_name=task_name)
+
+            self.submit(_wait_then_start())
+            return
 
         self._tasks[name]["script"] = task_name
 

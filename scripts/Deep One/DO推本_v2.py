@@ -33,8 +33,7 @@ class Config:
     img_dir: Path = IMG_PATH / 'DeepOne' / 'DO推本'
 
     # 超时（秒）
-    total_timeout: float = 600.0      # 脚本总超时，防止意外卡死
-    state_timeout: float = 30.0       # 单个状态最长停留
+    state_timeout: float = 30.0       # 单个状态最长停留（默认，各状态见 STATE_TIMEOUT）
     match_timeout: float = 5.0        # 单次 match 保护超时
     wait_appear: float = 3.0          # 等待图像出现
     wait_disappear: float = 3.0       # 等待图像消失
@@ -291,16 +290,10 @@ async def do_work(browser: UserBrowser):
     if state_name is None:
         state_name = "未知"
 
-    total_start = asyncio.get_event_loop().time()
-    state_enter_time = total_start
+    state_enter_time = asyncio.get_event_loop().time()
     browser.script_log(f"[DO推本v2] 初始场景: {state_name}")
 
     while True:
-        # 0. 总超时
-        if asyncio.get_event_loop().time() - total_start > CFG.total_timeout:
-            browser.script_log(f"[DO推本v2] 总超时 {CFG.total_timeout}s，强制结束")
-            break
-
         # 1. 刷新帧
         await browser.update_frame()
 

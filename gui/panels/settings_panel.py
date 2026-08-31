@@ -1,11 +1,11 @@
 ﻿from pathlib import Path
 
-from PySide6.QtCore import Qt, QUrl
+from PySide6.QtCore import Qt, QUrl, Signal
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QMessageBox, QFileDialog, QCheckBox,
-    QScrollArea,
+    QScrollArea, QComboBox,
 )
 
 from core.config.config import config, _DEFAULT_CONFIG
@@ -13,6 +13,7 @@ from gui.widgets.AboutWidget import AboutWidget
 
 
 class SettingsPanel(QWidget):
+    theme_changed = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -32,6 +33,22 @@ class SettingsPanel(QWidget):
         layout = QVBoxLayout(content)
         layout.setSpacing(12)
         layout.setContentsMargins(16, 16, 16, 16)
+
+        appearance_box = QGroupBox("外观")
+        appearance_layout = QVBoxLayout(appearance_box)
+        appearance_layout.addWidget(QLabel("界面主题："))
+        theme_row = QHBoxLayout()
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItem("亮色", "light")
+        self.theme_combo.addItem("暗色", "dark")
+        self.theme_combo.setToolTip("亮色 / 暗色两套纸感工作室主题，切换后立即生效并写入配置")
+        self.theme_combo.currentIndexChanged.connect(self._on_theme_combo_changed)
+        theme_row.addWidget(self.theme_combo, 1)
+        appearance_layout.addLayout(theme_row)
+        tip = QLabel("两套主题结构相同，只换配色；也可按 F5 手动重载样式。")
+        tip.setObjectName("MutedLabel")
+        tip.setWordWrap(True)
+        appearance_layout.addWidget(tip)
 
         browser_box = QGroupBox("浏览器设置")
         browser_layout = QVBoxLayout(browser_box)
@@ -71,7 +88,7 @@ class SettingsPanel(QWidget):
         # 加载动画设置
         loading_box = QGroupBox("加载动画设置")
         loading_layout = QVBoxLayout(loading_box)
-        
+
         self.loading_topmost_checkbox = QCheckBox("加载动画始终置顶")
         self.loading_topmost_checkbox.setToolTip("开启后，加载动画将始终显示在最上层")
         loading_layout.addWidget(self.loading_topmost_checkbox)
@@ -79,7 +96,7 @@ class SettingsPanel(QWidget):
         about_box = QGroupBox("关于")
         about_layout = QVBoxLayout(about_box)
         title = QLabel("Minashigo Script")
-        title.setStyleSheet("font-size:16px; font-weight:bold;")
+        title.setObjectName("TitleLabel")
         self.desc_label = QLabel()
         self.desc_label.setWordWrap(True)
         contact_layout = QHBoxLayout()
@@ -105,11 +122,13 @@ class SettingsPanel(QWidget):
         self.reset_btn.clicked.connect(self._reset_browser_path)
 
         self.save_btn = QPushButton("保存设置")
+        self.save_btn.setObjectName("PrimaryButton")
         self.save_btn.clicked.connect(self._save_config)
 
         btn_layout.addWidget(self.reset_btn)
         btn_layout.addWidget(self.save_btn)
 
+        layout.addWidget(appearance_box)
         layout.addWidget(browser_box)
         layout.addWidget(loading_box)
         layout.addWidget(about_box)
@@ -120,10 +139,9 @@ class SettingsPanel(QWidget):
         outer_layout.addWidget(scroll)
 
     def _set_style(self, edit: QLineEdit, is_user: bool):
-        if is_user:
-            edit.setStyleSheet("color: #ffffff;")
-        else:
-            edit.setStyleSheet("color: #888888;")
+        edit.setObjectName("UserConfigValue" if is_user else "DefaultConfigValue")
+        edit.style().unpolish(edit)
+        edit.style().polish(edit)
 
     def _refresh_about(self):
         self.desc_label.setText(
@@ -151,12 +169,30 @@ class SettingsPanel(QWidget):
         else:
             self.user_data_edit.setText(default_val)
             self._set_style(self.user_data_edit, False)
-        
+
         # 加载动画置顶设置
         loading_cfg = config.data.get("loading", {})
         default_loading_cfg = _DEFAULT_CONFIG.get("loading", {"topmost": True})
         topmost_val = loading_cfg.get("topmost", default_loading_cfg.get("topmost", True))
         self.loading_topmost_checkbox.setChecked(topmost_val)
+
+        theme = config.ui_theme
+        self.theme_combo.blockSignals(True)
+        idx = self.theme_combo.findData(theme)
+        self.theme_combo.setCurrentIndex(idx if idx >= 0 else 0)
+        self.theme_combo.blockSignals(False)
+
+    def _on_theme_combo_changed(self, _index: int):
+        theme = self.theme_combo.currentData()
+        if not theme:
+            return
+        try:
+            config.set("ui.theme", theme)
+            config.save()
+        except Exception as e:
+            QMessageBox.warning(self, "主题切换失败", str(e))
+            return
+        self.theme_changed.emit(theme)
 
     def _select_browser_exe(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -187,17 +223,19 @@ class SettingsPanel(QWidget):
     def _save_config(self):
         path = self.browser_path_edit.text().strip()
         user_data = self.user_data_edit.text().strip()
+        theme = self.theme_combo.currentData() or "light"
 
         try:
             config.set("browser.browser_path", path)
             config.set("browser.browser_data_dir", user_data)
-            # 保存加载动画置顶设置
             config.set("loading.topmost", self.loading_topmost_checkbox.isChecked())
+            config.set("ui.theme", theme)
         except Exception as e:
             QMessageBox.warning(self, "配置错误", str(e))
             return
 
         config.save()
+        self.theme_changed.emit(theme)
         QMessageBox.information(self, "已保存", "设置已保存")
 
     def reload_all(self):

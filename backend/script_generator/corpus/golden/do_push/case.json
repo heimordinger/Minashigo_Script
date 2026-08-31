@@ -1,0 +1,12 @@
+{
+  "id": "do_push",
+  "title": "DeepOne 推本 FSM",
+  "tags": ["deepone", "push", "fsm", "unknown", "routing", "click"],
+  "source_dir": "assets/images/DeepOne/DO推本",
+  "ref_script": "scripts/Deep One/DO推本_v2.py",
+  "explanation_file": "explanation.txt",
+  "expect_few_shot": ["unknown_routing", "post_click_wait"],
+  "expect_template": "do_push_v2",
+  "must_contain": ["async def do_work", "UserBrowser", "unknown_state", "asyncio.gather", "STATES"],
+  "must_not_contain": ["use_color_check"]
+}

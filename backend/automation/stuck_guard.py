@@ -15,6 +15,9 @@ def _is_wait_state(name: str | None) -> bool:
         return True
     if n.startswith("wait_") or n.startswith("等待"):
         return True
+    # 中文步骤名：含「等待」视为加载/战斗等待（如 竞技场等待战斗、塔等待载入）
+    if "等待" in str(name):
+        return True
     return False
 
 

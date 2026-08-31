@@ -33,7 +33,7 @@ ROLE_LABELS = {
 }
 LABEL_TO_ROLE = {v: k for k, v in ROLE_LABELS.items()}
 
-_HELPER_REF_RE = re.compile(r"@([^\s@]+)")
+_HELPER_REF_RE = re.compile(r"@([^\s@（）()\[\]【】,，;；:：→]+)")
 _THRESHOLD_RE = re.compile(r"(?:阈值|threshold)\s*[:=]?\s*(0\.\d+|\d+\.\d+)", re.I)
 _OFFSET_RE = re.compile(r"(?:偏移|pianyi|offset)\s*[:=]?\s*\(?\s*(-?\d+)\s*,\s*(-?\d+)\s*\)?", re.I)
 _YMAX_RE = re.compile(r"y\s*最大|最大\s*y|match_image_multi", re.I)
@@ -41,7 +41,7 @@ _HOLD_RE = re.compile(r"连续\s*(\d+(?:\.\d+)?)\s*秒|持续\s*(\d+(?:\.\d+)?)\
 
 
 def ensure_image_name(name: str) -> str:
-    name = (name or "").strip()
+    name = (name or "").strip().replace("\\", "/")
     if not name:
         return ""
     if Path(name).suffix.lower() in IMAGE_EXTS:
@@ -54,7 +54,8 @@ def _is_cjk(ch: str) -> bool:
 
 
 def _filename_char(ch: str) -> bool:
-    return ch.isalnum() or ch in "._-" or _is_cjk(ch)
+    # 允许 /：子目录相对路径如 room/ok.png
+    return ch.isalnum() or ch in "._-/" or _is_cjk(ch)
 
 
 # source_dir -> (lower_name -> real_name)；仅 refresh_dir_image_map 会扫盘写入
@@ -69,23 +70,31 @@ def clear_image_dir_cache(source_dir: str | Path | None = None) -> None:
 
 
 def refresh_dir_image_map(source_dir: str | Path | None) -> dict[str, str]:
-    """扫盘并更新缓存。仅应在：读取草稿后 / 用户修改图片路径后 调用。"""
+    """扫盘并更新缓存（含子目录）。值相对 source_dir，统一用 /。
+
+    仅应在：读取草稿后 / 用户修改图片路径后 调用。
+    """
     root = Path(source_dir or "")
     key = str(root)
     if not root.is_dir():
         _DIR_IMAGE_CACHE.pop(key, None)
         return {}
-    mapping = {
-        p.name.lower(): p.name
-        for p in root.iterdir()
-        if p.is_file() and p.suffix.lower() in IMAGE_EXTS
-    }
+    mapping: dict[str, str] = {}
+    for p in root.rglob("*"):
+        if not p.is_file() or p.suffix.lower() not in IMAGE_EXTS:
+            continue
+        # 跳过缓存/隐藏目录
+        parts = p.relative_to(root).parts
+        if any(part.startswith(".") for part in parts):
+            continue
+        rel = "/".join(parts)
+        mapping[rel.lower()] = rel
     _DIR_IMAGE_CACHE[key] = mapping
     return mapping
 
 
 def dir_image_map(source_dir: str | Path | None) -> dict[str, str]:
-    """读取已缓存的 lower_name -> real_name；不扫盘。"""
+    """读取已缓存的 lower_rel -> rel；不扫盘。"""
     if not source_dir:
         return {}
     return _DIR_IMAGE_CACHE.get(str(Path(source_dir)), {})
@@ -96,10 +105,10 @@ def image_exists_in_dir(
     source_dir: str | Path,
     known: dict[str, str] | None = None,
 ) -> bool:
-    """判断 token 是否对应目录中的图片文件。"""
+    """判断 token 是否对应目录中的图片文件（支持子目录相对路径）。"""
     if not (token or "").strip():
         return False
-    name = token.strip()
+    name = token.strip().replace("\\", "/")
     lower_map = known if known is not None else dir_image_map(source_dir)
     if name.lower() in lower_map:
         return True
@@ -108,6 +117,27 @@ def image_exists_in_dir(
             if (name + ext).lower() in lower_map:
                 return True
     return False
+
+
+def resolve_image_rel(
+    token: str,
+    source_dir: str | Path | None = None,
+    known: dict[str, str] | None = None,
+) -> str:
+    """把 token 解析成缓存中的相对路径；找不到返回空串。"""
+    if not (token or "").strip():
+        return ""
+    name = token.strip().replace("\\", "/")
+    lower_map = known if known is not None else dir_image_map(source_dir)
+    hit = lower_map.get(name.lower())
+    if hit:
+        return hit
+    if Path(name).suffix.lower() not in IMAGE_EXTS:
+        for ext in IMAGE_EXTS:
+            hit = lower_map.get((name + ext).lower())
+            if hit:
+                return hit
+    return ""
 
 
 def find_image_tokens(
@@ -136,8 +166,8 @@ def find_image_tokens(
 
         candidates: list[tuple[int, int, str]] = []
         for start in range(max_start, dot):
-            token = text[start:end]
-            if not token or token[0] in "._-":
+            token = text[start:end].replace("\\", "/")
+            if not token or token[0] in "._-/":
                 continue
             candidates.append((start, end, token))
         if not candidates:
@@ -167,8 +197,8 @@ def find_image_tokens(
             if not vm or vm.end() > dot:
                 break
             start = vm.end()
-        token = text[start:end]
-        if start < dot and token and token[0] not in "._-":
+        token = text[start:end].replace("\\", "/")
+        if start < dot and token and token[0] not in "._-/":
             spans.append((start, end, token))
             continue
 
@@ -383,6 +413,9 @@ class ScriptSpec:
             if not (h.steps or "").strip():
                 issues.append(SpecIssue("error", f"辅助步骤「{name}」没有步骤内容"))
 
+        # @出击限制 这类：指向图片/规则标签，不是辅助步骤名
+        feature_tags = _feature_tag_names(self)
+
         usable_tasks = [t for t in self.tasks if (t.name or "").strip()]
         if not usable_tasks:
             issues.append(SpecIssue("error", "没有任务：至少添加一个任务并写步骤"))
@@ -390,19 +423,27 @@ class ScriptSpec:
             if not (t.steps or "").strip():
                 issues.append(SpecIssue("error", f"任务「{t.name}」没有步骤"))
             for ref in _HELPER_REF_RE.findall(t.steps or ""):
-                if ref not in named_helpers:
-                    issues.append(SpecIssue(
-                        "error",
-                        f"任务「{t.name}」引用了不存在的辅助步骤 @{ref}",
-                    ))
+                if ref in named_helpers or ref in feature_tags:
+                    continue
+                issues.append(SpecIssue(
+                    "error",
+                    f"任务「{t.name}」引用了不存在的辅助步骤 @{ref}",
+                ))
 
         if self.source_dir:
             root = Path(self.source_dir)
             if root.is_dir():
-                existing = {p.name for p in root.iterdir() if p.is_file()}
+                known = dir_image_map(root)
+                if not known:
+                    known = refresh_dir_image_map(root)
+                existing = set(known.values())
+                existing_lower = set(known.keys())
                 for e in self.images:
                     name = ensure_image_name(e.image)
-                    if name and name not in existing and e.image.strip() not in existing:
+                    if not name:
+                        continue
+                    key = name.replace("\\", "/").lower()
+                    if key not in existing_lower and name not in existing:
                         issues.append(SpecIssue(
                             "warn",
                             f"图片「{e.image}」不在目录中",
@@ -717,6 +758,324 @@ class ScriptSpec:
     @classmethod
     def load_json(cls, path: Path) -> "ScriptSpec":
         return cls.from_dict(json.loads(path.read_text(encoding="utf-8")))
+
+    @classmethod
+    def from_explanation_text(cls, text: str, *, source_dir: str = "") -> "ScriptSpec":
+        """把导出的脚本介绍 txt 解析回结构化说明。"""
+        sections = _split_explanation_sections(text or "")
+        goal = _first_content_line(sections.get("目标", ""))
+        helpers = _parse_named_blocks(sections.get("辅助步骤", ""))
+        tasks = _parse_task_blocks(sections.get("任务流程", ""))
+        images = _parse_scene_images(sections.get("场景标识", ""))
+        images.extend(_parse_picture_notes(sections.get("图片说明", ""), images))
+        notes = (sections.get("特殊规则", "") or "").strip()
+        # 特殊规则里与图片 note 重复的行丢掉，只留全局约定
+        if notes:
+            img_notes = {
+                f"{ensure_image_name(e.image)}：{e.note.strip()}"
+                for e in images
+                if e.image.strip() and e.note.strip()
+            }
+            kept = []
+            for ln in notes.splitlines():
+                s = ln.strip()
+                if not s:
+                    continue
+                if s in img_notes:
+                    continue
+                # 「foo.png：点击偏移」这类自动规则也跳过（已在图片说明里）
+                if re.match(r".+\.(?:png|jpe?g|webp|bmp)：", s, re.I) and any(
+                    ensure_image_name(e.image) == s.split("：", 1)[0].strip()
+                    for e in images
+                ):
+                    continue
+                kept.append(ln.rstrip())
+            notes = "\n".join(kept).strip()
+        return cls(
+            goal=goal,
+            source_dir=source_dir or "",
+            images=images,
+            helpers=helpers,
+            tasks=tasks,
+            notes=notes,
+        )
+
+
+_SECTION_HEAD_RE = re.compile(
+    r"^(目标|辅助步骤|场景标识|图片说明|任务流程|特殊规则)\b"
+)
+_PLACEHOLDER_RE = re.compile(r"^（未填写|未填写）")
+_NAMED_BLOCK_RE = re.compile(r"^（(?:[a-z]|\d+)）\s*(.+)$")
+_SCENE_LINE_RE = re.compile(
+    r"^(.+?\.(?:png|jpe?g|webp|bmp)(?:\s*[/／、]\s*.+?\.(?:png|jpe?g|webp|bmp))*)"
+    r"\s*[：:]\s*可作为「([^」]+)」的标识图(?:[；;](.*))?$",
+    re.I,
+)
+_IMG_LINE_RE = re.compile(
+    r"^((?:[^\s：:/／、]+?\.(?:png|jpe?g|webp|bmp))"
+    r"(?:\s*[/／、]\s*[^\s：:/／、]+?\.(?:png|jpe?g|webp|bmp))*)"
+    r"\s*[：:]\s*(.*)$",
+    re.I,
+)
+_HELPER_EXPAND_RE = re.compile(r"^执行辅助步骤「([^」]+)」：?\s*$")
+_DOT_STEP_RE = re.compile(r"^[·•]\s*")
+# 图片说明里「a.png / b.png」等同义多文件名
+_IMG_NAME_SPLIT_RE = re.compile(r"\s*[/／、]\s*")
+_IMG_FILE_RE = re.compile(
+    r"^(.+?\.(?:png|jpe?g|webp|bmp))$",
+    re.I,
+)
+
+
+def _split_image_token(raw: str) -> list[str]:
+    """拆分「a.png / b.png」→ 多个文件名。"""
+    out: list[str] = []
+    for part in _IMG_NAME_SPLIT_RE.split((raw or "").strip()):
+        p = part.strip()
+        if not p:
+            continue
+        m = _IMG_FILE_RE.match(p)
+        if not m:
+            continue
+        name = ensure_image_name(m.group(1))
+        if name and name not in out:
+            out.append(name)
+    return out
+
+
+def _split_state_and_note(rest: str) -> tuple[str, str]:
+    """短格式「主界面」或「竞技场列表（说明…）」→ (状态名, 备注)。"""
+    s = (rest or "").strip()
+    if not s:
+        return "", ""
+    if "（" in s:
+        head, _, tail = s.partition("（")
+        head = head.strip()
+        note = ("（" + tail).strip() if tail else ""
+        return head, note
+    if "(" in s and re.search(r"\([\u4e00-\u9fff]", s):
+        head, _, tail = s.partition("(")
+        return head.strip(), ("(" + tail).strip() if tail else ""
+    return s, ""
+
+
+def _feature_tag_names(spec: "ScriptSpec") -> set[str]:
+    """可被 @引用、但不是辅助步骤的标签（图片名 stem / 特殊规则里的通用名）。"""
+    tags: set[str] = set()
+    for e in spec.images:
+        name = ensure_image_name(e.image)
+        if not name:
+            continue
+        stem = Path(name).stem
+        if stem:
+            tags.add(stem)
+    notes = (spec.notes or "") + "\n"
+    for h in spec.helpers:
+        notes += (h.steps or "") + "\n"
+    # 「出击限制（通用）」等
+    for m in re.finditer(r"(?:^|[\n；;·•\-])\s*([^\s：:]{1,20})（通用）", notes):
+        tags.add(m.group(1).strip())
+    if spec.source_dir:
+        root = Path(spec.source_dir)
+        if root.is_dir():
+            known = dir_image_map(root) or refresh_dir_image_map(root)
+            for rel in known.values():
+                stem = Path(rel).stem
+                if stem:
+                    tags.add(stem)
+    return tags
+
+
+def _split_explanation_sections(text: str) -> dict[str, str]:
+    sections: dict[str, list[str]] = {}
+    current = ""
+    for raw in (text or "").splitlines():
+        line = raw.rstrip()
+        m = _SECTION_HEAD_RE.match(line.strip())
+        if m:
+            current = m.group(1)
+            sections.setdefault(current, [])
+            continue
+        if current:
+            sections[current].append(line)
+    return {k: "\n".join(v).strip() for k, v in sections.items()}
+
+
+def _first_content_line(block: str) -> str:
+    for ln in (block or "").splitlines():
+        s = ln.strip()
+        if not s or _PLACEHOLDER_RE.match(s):
+            continue
+        return s
+    return ""
+
+
+def _parse_named_blocks(block: str) -> list[HelperSpec]:
+    items: list[HelperSpec] = []
+    name = ""
+    steps: list[str] = []
+
+    def flush():
+        nonlocal name, steps
+        if name or steps:
+            items.append(HelperSpec(name=name, steps="\n".join(steps).strip()))
+        name, steps = "", []
+
+    for ln in (block or "").splitlines():
+        s = ln.strip()
+        if not s or _PLACEHOLDER_RE.match(s):
+            continue
+        m = _NAMED_BLOCK_RE.match(s)
+        if m:
+            flush()
+            name = m.group(1).strip()
+            continue
+        if s.startswith("- "):
+            steps.append(s[2:].strip())
+        elif name:
+            steps.append(s)
+    flush()
+    return items
+
+
+def _collapse_helper_steps(raw_steps: list[str]) -> str:
+    out: list[str] = []
+    skipping_expand = False
+    for s in raw_steps:
+        line = (s or "").strip()
+        if not line:
+            continue
+        hm = _HELPER_EXPAND_RE.match(line)
+        if hm:
+            out.append(f"@{hm.group(1)}")
+            skipping_expand = True
+            continue
+        if skipping_expand:
+            if line.startswith(("·", "•")) or _DOT_STEP_RE.match(line):
+                continue
+            skipping_expand = False
+        line = re.sub(r"\s*（引用：[^）]+）\s*$", "", line)
+        out.append(line)
+    return "\n".join(out).strip()
+
+
+def _parse_task_blocks(block: str) -> list[TaskSpec]:
+    items: list[TaskSpec] = []
+    name = ""
+    steps: list[str] = []
+
+    def flush():
+        nonlocal name, steps
+        if name or steps:
+            items.append(TaskSpec(name=name, steps=_collapse_helper_steps(steps)))
+        name, steps = "", []
+
+    for ln in (block or "").splitlines():
+        raw = ln.rstrip()
+        s = raw.strip()
+        if not s or _PLACEHOLDER_RE.match(s):
+            continue
+        m = _NAMED_BLOCK_RE.match(s)
+        if m:
+            flush()
+            name = m.group(1).strip()
+            continue
+        if s.startswith("- "):
+            steps.append(s[2:])
+        elif s.startswith("·") or s.startswith("•"):
+            steps.append(s)
+        elif name:
+            steps.append(s)
+    flush()
+    return items
+
+
+def _parse_scene_images(block: str) -> list[ImageEntry]:
+    out: list[ImageEntry] = []
+    seen: set[str] = set()
+    for ln in (block or "").splitlines():
+        s = ln.strip()
+        if not s or _PLACEHOLDER_RE.match(s):
+            continue
+        m = _SCENE_LINE_RE.match(s)
+        if m:
+            names = _split_image_token(m.group(1)) or [ensure_image_name(m.group(1))]
+            state = m.group(2).strip()
+            note = (m.group(3) or "").strip()
+            for name in names:
+                key = name.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(ImageEntry(
+                    image=name, role=ROLE_ID, state=state, note=note,
+                ))
+            continue
+        m2 = _IMG_LINE_RE.match(s)
+        if not m2:
+            continue
+        # 短格式：rank.png：主界面 / jjc_logo.png：竞技场列表（…）
+        names = _split_image_token(m2.group(1)) or [ensure_image_name(m2.group(1))]
+        state, note = _split_state_and_note(m2.group(2) or "")
+        for name in names:
+            key = name.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(ImageEntry(
+                image=name, role=ROLE_ID, state=state, note=note,
+            ))
+    return out
+
+
+def _parse_picture_notes(block: str, existing: list[ImageEntry]) -> list[ImageEntry]:
+    by_name = {ensure_image_name(e.image).lower(): e for e in existing if e.image.strip()}
+    extra: list[ImageEntry] = []
+    for ln in (block or "").splitlines():
+        s = ln.strip()
+        if not s or _PLACEHOLDER_RE.match(s):
+            continue
+        m = _IMG_LINE_RE.match(s)
+        if not m:
+            continue
+        names = _split_image_token(m.group(1))
+        if not names:
+            names = [ensure_image_name(m.group(1))]
+        rest = (m.group(2) or "").strip()
+        role: str | None = None  # None = 未显式指定，不覆盖已有角色
+        state = ""
+        note = rest
+        parts = [p.strip() for p in rest.split("；") if p.strip()]
+        if parts and parts[0] in ("按钮", "标识", "其它"):
+            role = LABEL_TO_ROLE.get(parts[0], ROLE_OTHER)
+            parts = parts[1:]
+        elif rest.startswith("按钮"):
+            role = ROLE_BUTTON
+            parts = [p.strip() for p in rest.split("；") if p.strip()][1:]
+        if parts and parts[0].startswith("界面「") and parts[0].endswith("」"):
+            state = parts[0][3:-1]
+            parts = parts[1:]
+        note = "；".join(parts)
+        for name in names:
+            key = name.lower()
+            if key in by_name:
+                e = by_name[key]
+                # 仅当说明显式写了角色时才改；避免把场景标识降成「其它」
+                if role is not None:
+                    e.role = role
+                if state and not e.state:
+                    e.state = state
+                if note and not e.note:
+                    e.note = note
+            else:
+                extra.append(ImageEntry(
+                    image=name,
+                    role=role if role is not None else ROLE_OTHER,
+                    state=state,
+                    note=note,
+                ))
+                by_name[key] = extra[-1]
+    return extra
 
 
 def list_images(folder: str | Path) -> list[str]:

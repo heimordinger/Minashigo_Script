@@ -2,7 +2,7 @@
 脚本说明编辑器（script_spec 隔离包）
 ====================================
 图角色 / 辅助步骤 / 任务 / 校验 → 导出脚本说明文本。
-草稿保存在 script_spec/drafts/。暂不接入主窗口与生成管线。
+草稿保存在 script_spec/drafts/。主窗口右下角「脚本说明」与 python -m script_spec 共用本编辑器。
 """
 from __future__ import annotations
 
@@ -16,28 +16,30 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from PySide6.QtCore import (
-    Qt, Signal, QSize, QTimer, QPoint, QEvent, QRect, QStringListModel,
+    Qt, Signal, QSize, QTimer, QPoint, QEvent, QRect,
 )
 from PySide6.QtGui import (
     QFont, QIcon, QPixmap, QTextCursor, QPalette, QColor, QTextCharFormat,
-    QCursor, QSyntaxHighlighter, QPainter,
+    QCursor, QSyntaxHighlighter, QPainter, QStandardItemModel, QStandardItem,
 )
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit, QTextEdit, QPlainTextEdit,
     QPushButton, QFileDialog, QComboBox, QTableWidget, QTableWidgetItem,
     QHeaderView, QAbstractItemView, QSplitter, QMessageBox,
     QApplication, QListWidget, QListWidgetItem, QInputDialog, QFrame,
-    QTabWidget, QToolButton, QMenu, QSizePolicy, QCompleter,
+    QTabWidget, QMenu, QSizePolicy, QCompleter, QToolButton, QScrollArea,
 )
 
 from script_spec.model import (
     ScriptSpec, ImageEntry, HelperSpec, TaskSpec, IMAGE_EXTS,
     ROLE_ID, ROLE_BUTTON, ROLE_OTHER, ROLE_LABELS, LABEL_TO_ROLE,
     find_image_tokens, image_exists_in_dir, dir_image_map, refresh_dir_image_map,
+    resolve_image_rel,
 )
 from core.path import IMG_PATH
 
 _THUMB_SIZE = 40
+_COMP_THUMB_SIZE = 32  # 步骤补全弹层缩略图
 _HOVER_THUMB = 160
 _ROLE_ORDER = (ROLE_ID, ROLE_BUTTON, ROLE_OTHER)
 # 草稿落在本隔离目录下，不写进主工程 user_data
@@ -46,13 +48,57 @@ _DRAFT_AUTOSAVE_MS = 800
 _PREVIEW_DEBOUNCE_MS = 220
 
 
+def _ui():
+    """跟主窗口纸感主题对齐的绘制色（QSS 管不到的 Painter / 弹出层）。"""
+    dark = False
+    try:
+        from gui.styles.theme import current_theme_from_config
+        dark = current_theme_from_config() == "dark"
+    except Exception:
+        dark = False
+    if dark:
+        return {
+            "gutter_bg": "#1c1f24",
+            "gutter_line": "#2c3138",
+            "muted": "#8b929c",
+            "danger": "#d16b6b",
+            "surface": "#121418",
+            "text": "#e8eaed",
+            "hover": "#23272e",
+            "sel_bg": "#1e2a3e",
+            "sel_text": "#e8eaed",
+            "accent": "#5b8def",
+            "border": "#2c3138",
+            "popup_bg": "#1c1f24",
+        }
+    return {
+        "gutter_bg": "#ebe8e1",
+        "gutter_line": "#ddd8ce",
+        "muted": "#7a776f",
+        "danger": "#c44b4b",
+        "surface": "#ffffff",
+        "text": "#2a2a28",
+        "hover": "#f0eee8",
+        "sel_bg": "#e8effc",
+        "sel_text": "#1f1f1d",
+        "accent": "#3b6fd8",
+        "border": "#ddd8ce",
+        "popup_bg": "#ffffff",
+    }
+
+
 def _is_filename_char(ch: str) -> bool:
-    return ch.isalnum() or ch in "._-" or ("\u4e00" <= ch <= "\u9fff")
+    return ch.isalnum() or ch in "._-/" or ("\u4e00" <= ch <= "\u9fff")
 
 
 def _is_ascii_filename_char(ch: str) -> bool:
     """补全替换向右扩展时只用 ASCII，避免吃掉后面的中文正文。"""
-    return ch.isascii() and (ch.isalnum() or ch in "._-")
+    return ch.isascii() and (ch.isalnum() or ch in "._-/")
+
+
+def _is_helper_name_char(ch: str) -> bool:
+    """@辅助名：中文/字母数字/下划线；不含 . 以免吃掉后面说明。"""
+    return ch.isalnum() or ch in "_-" or ("\u4e00" <= ch <= "\u9fff")
 
 
 class NoWheelComboBox(QComboBox):
@@ -60,6 +106,334 @@ class NoWheelComboBox(QComboBox):
 
     def wheelEvent(self, event):
         event.ignore()
+
+
+class _ScrollImageMenu(QFrame):
+    """可滚动的图片选择弹层；子目录在右侧再开同款可滚动面板。"""
+
+    picked = Signal(str)
+
+    def __init__(
+        self,
+        paths: list[str] | None = None,
+        icon_fn=None,
+        parent=None,
+        *,
+        node: dict | None = None,
+        root: '_ScrollImageMenu | None' = None,
+        show_empty: bool = False,
+    ):
+        super().__init__(
+            parent,
+            # Tool 而非 Popup：避免右侧子层抢焦点时本层被系统自动关掉
+            Qt.WindowType.Tool
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.NoDropShadowWindowHint,
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        self._icon_fn = icon_fn
+        self._root = root or self
+        self._child: _ScrollImageMenu | None = None
+        self._folder_nodes: dict[QToolButton, dict] = {}
+        self._app_filter_installed = False
+        self._node_id = id(node) if node is not None else None
+        c = _ui()
+        self.setStyleSheet(
+            f"QFrame {{ background:{c['popup_bg']}; border:1px solid {c['border']}; }}"
+        )
+
+        if paths is not None:
+            node = self._path_tree(paths)
+            show_empty = True
+
+        root_lay = QVBoxLayout(self)
+        root_lay.setContentsMargins(0, 0, 0, 0)
+        root_lay.setSpacing(0)
+
+        scroll = QScrollArea(self)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        max_h = self._max_panel_height()
+        scroll.setMaximumHeight(max_h)
+        scroll.setMinimumWidth(240)
+        root_lay.addWidget(scroll)
+
+        inner = QWidget()
+        v = QVBoxLayout(inner)
+        v.setContentsMargins(4, 4, 4, 4)
+        v.setSpacing(1)
+
+        node = node or {'_files': [], '_dirs': {}}
+        if show_empty:
+            v.addWidget(self._make_file_btn('（空）', '', icon=QIcon()))
+            if (node.get('_files') or node.get('_dirs')):
+                line = QFrame()
+                line.setFrameShape(QFrame.Shape.HLine)
+                line.setStyleSheet(f"color:{c['border']};")
+                v.addWidget(line)
+
+        for name in sorted((node.get('_dirs') or {}).keys(), key=str.lower):
+            v.addWidget(self._make_folder_btn(name, node['_dirs'][name]))
+        for rel in sorted(node.get('_files') or [], key=str.lower):
+            icon = icon_fn(rel) if icon_fn else QIcon()
+            v.addWidget(self._make_file_btn(Path(rel).name, rel, icon=icon))
+        v.addStretch(1)
+        scroll.setWidget(inner)
+
+        inner.adjustSize()
+        w = max(240, inner.sizeHint().width() + 24)
+        h = min(max_h, inner.sizeHint().height() + 12)
+        self.resize(w, h)
+
+    @staticmethod
+    def _max_panel_height() -> int:
+        screen = QApplication.primaryScreen()
+        if screen is None:
+            return 360
+        return max(240, min(480, int(screen.availableGeometry().height() * 0.55)))
+
+    @staticmethod
+    def _path_tree(paths: list[str]) -> dict:
+        root: dict = {'_files': [], '_dirs': {}}
+        for rel in paths:
+            parts = rel.split('/')
+            node = root
+            for part in parts[:-1]:
+                node = node['_dirs'].setdefault(part, {'_files': [], '_dirs': {}})
+            node['_files'].append(rel)
+        return root
+
+    def _item_style(self) -> str:
+        c = _ui()
+        return (
+            'QToolButton {'
+            f"  background:transparent; color:{c['muted']}; border:none;"
+            f"  text-align:left; padding:6px 10px; min-height:28px;"
+            '}'
+            f"QToolButton:hover {{ background:{c['sel_bg']}; color:{c['sel_text']}; }}"
+        )
+
+    def _make_file_btn(self, label: str, rel: str, *, icon: QIcon) -> QToolButton:
+        btn = QToolButton()
+        btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        btn.setIconSize(QSize(_THUMB_SIZE, _THUMB_SIZE))
+        btn.setIcon(icon)
+        btn.setText(label)
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        btn.setStyleSheet(self._item_style())
+        btn.clicked.connect(lambda: self._emit_pick(rel))
+        btn.installEventFilter(self)
+        return btn
+
+    def _make_folder_btn(self, name: str, node: dict) -> QToolButton:
+        btn = QToolButton()
+        btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        btn.setText(f'{name}/  ›')
+        btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        btn.setStyleSheet(self._item_style())
+        self._folder_nodes[btn] = node
+        btn.installEventFilter(self)
+        btn.clicked.connect(lambda checked=False, b=btn, n=node: self._open_side_panel(b, n))
+        return btn
+
+    def eventFilter(self, obj, event):
+        et = event.type()
+        if et == QEvent.Type.Enter and obj is not self:
+            node = self._folder_nodes.get(obj)
+            if node is not None:
+                self._open_side_panel(obj, node)
+            elif isinstance(obj, QToolButton) and self.isAncestorOf(obj):
+                self._hide_side_panel()
+        elif et == QEvent.Type.MouseButtonPress and self._root is self and self.isVisible():
+            gp = event.globalPosition().toPoint()  # type: ignore[attr-defined]
+            if not self._hit_popup_tree(gp):
+                self.close()
+                return False
+        return super().eventFilter(obj, event)
+
+    def _hit_popup_tree(self, gp: QPoint) -> bool:
+        panel: _ScrollImageMenu | None = self._root
+        while panel is not None:
+            try:
+                if panel.isVisible() and panel.frameGeometry().contains(gp):
+                    return True
+                panel = panel._child
+            except RuntimeError:
+                break
+        return False
+
+    def _hide_side_panel(self):
+        if self._child is not None:
+            try:
+                self._child._hide_side_panel()
+                self._child.close()
+            except RuntimeError:
+                pass
+            self._child = None
+
+    def _open_side_panel(self, btn: QToolButton, node: dict):
+        if (
+            self._child is not None
+            and getattr(self._child, '_node_id', None) is id(node)
+            and self._child.isVisible()
+        ):
+            return
+        self._hide_side_panel()
+        child = _ScrollImageMenu(
+            icon_fn=self._icon_fn,
+            parent=self._root.parent(),
+            node=node,
+            root=self._root,
+            show_empty=False,
+        )
+        child._node_id = id(node)
+        child.picked.connect(self._root.picked.emit)
+        self._child = child
+
+        top_left = btn.mapToGlobal(QPoint(0, 0))
+        x = self.mapToGlobal(QPoint(self.width() - 2, 0)).x()
+        y = top_left.y()
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            geo = screen.availableGeometry()
+            if x + child.width() > geo.right():
+                x = self.mapToGlobal(QPoint(0, 0)).x() - child.width() + 2
+            if y + child.height() > geo.bottom():
+                y = max(geo.top(), geo.bottom() - child.height())
+            if y < geo.top():
+                y = geo.top()
+        child.move(QPoint(x, y))
+        child.show()
+        child.raise_()
+
+    def _emit_pick(self, rel: str):
+        self._root.picked.emit(rel or '')
+        self._root.close()
+
+    def popup_below(self, anchor: QWidget):
+        pos = anchor.mapToGlobal(QPoint(0, anchor.height()))
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            geo = screen.availableGeometry()
+            if pos.y() + self.height() > geo.bottom():
+                pos.setY(max(geo.top(), anchor.mapToGlobal(QPoint(0, 0)).y() - self.height()))
+            if pos.x() + self.width() > geo.right():
+                pos.setX(max(geo.left(), geo.right() - self.width()))
+        self.move(pos)
+        self.show()
+        self.raise_()
+        app = QApplication.instance()
+        if app is not None and not self._app_filter_installed:
+            app.installEventFilter(self)
+            self._app_filter_installed = True
+
+    def closeEvent(self, event):
+        self._hide_side_panel()
+        if self._root is self:
+            app = QApplication.instance()
+            if app is not None and self._app_filter_installed:
+                app.removeEventFilter(self)
+                self._app_filter_installed = False
+        super().closeEvent(event)
+
+
+class ImagePathPicker(QWidget):
+    """图片路径选择：按钮弹出可滚动列表；子目录悬停旁开。"""
+
+    currentTextChanged = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._paths: list[str] = []
+        self._icon_fn = None
+        self._path = ""
+        self._popup: _ScrollImageMenu | None = None
+
+        self._btn = QToolButton(self)
+        self._btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self._btn.setPopupMode(QToolButton.ToolButtonPopupMode.DelayedPopup)
+        self._btn.setIconSize(QSize(_THUMB_SIZE, _THUMB_SIZE))
+        self._btn.setMinimumHeight(_THUMB_SIZE + 8)
+        self._btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._btn.clicked.connect(self._show_popup)
+        self._apply_btn_style(selected=False)
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+        lay.addWidget(self._btn)
+        self.setMinimumHeight(_THUMB_SIZE + 8)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self._refresh_button()
+
+    def currentText(self) -> str:
+        return self._path
+
+    def set_row_selected(self, selected: bool):
+        self._apply_btn_style(selected)
+
+    def _apply_btn_style(self, selected: bool):
+        c = _ui()
+        if selected:
+            self._btn.setStyleSheet(
+                "QToolButton {"
+                f"  background:{c['sel_bg']}; color:{c['sel_text']};"
+                f"  border:1px solid {c['accent']}; border-radius:4px; padding:4px 8px;"
+                f"  text-align:left;"
+                "}"
+                "QToolButton::menu-indicator { width:12px; }"
+            )
+        else:
+            self._btn.setStyleSheet(
+                "QToolButton {"
+                f"  background:{c['surface']}; color:{c['text']};"
+                f"  border:1px solid {c['border']}; border-radius:4px; padding:4px 8px;"
+                f"  text-align:left;"
+                "}"
+                f"QToolButton:hover {{ border-color:{c['accent']}; background:{c['hover']}; }}"
+                "QToolButton::menu-indicator { width:12px; }"
+            )
+
+    def set_image_paths(self, paths: list[str], icon_fn, selected: str = ""):
+        self._paths = list(paths)
+        self._icon_fn = icon_fn
+        self._path = (selected or "").replace("\\", "/")
+        self._refresh_button()
+
+    def _rebuild_menu(self):
+        # 兼容主题刷新调用；弹层按需重建
+        self._refresh_button()
+
+    def _show_popup(self):
+        if self._popup is not None:
+            try:
+                self._popup.close()
+            except RuntimeError:
+                pass
+            self._popup = None
+        pop = _ScrollImageMenu(self._paths, self._icon_fn, parent=self.window())
+        pop.picked.connect(self._pick)
+        self._popup = pop
+        pop.popup_below(self._btn)
+
+    def _refresh_button(self):
+        if self._path:
+            icon = self._icon_fn(self._path) if self._icon_fn else QIcon()
+            self._btn.setIcon(icon)
+            self._btn.setText(self._path)
+        else:
+            self._btn.setIcon(QIcon())
+            self._btn.setText("选择图片…")
+
+    def _pick(self, rel: str):
+        rel = (rel or "").replace("\\", "/")
+        if rel == self._path:
+            return
+        self._path = rel
+        self._refresh_button()
+        self.currentTextChanged.emit(self._path)
 
 
 class ImageMentionHighlighter(QSyntaxHighlighter):
@@ -70,11 +444,16 @@ class ImageMentionHighlighter(QSyntaxHighlighter):
         self._get_source_dir = get_source_dir  # callable() -> str
         self._ok_fmt = QTextCharFormat()
         self._ok_fmt.setFontUnderline(True)
-        self._ok_fmt.setUnderlineColor(QColor("#c9d1d9"))
         self._bad_fmt = QTextCharFormat()
         self._bad_fmt.setFontUnderline(True)
-        self._bad_fmt.setUnderlineColor(QColor("#f85149"))
-        self._bad_fmt.setForeground(QColor("#f85149"))
+        self.apply_theme()
+
+    def apply_theme(self):
+        c = _ui()
+        self._ok_fmt.setUnderlineColor(QColor(c["muted"]))
+        self._bad_fmt.setUnderlineColor(QColor(c["danger"]))
+        self._bad_fmt.setForeground(QColor(c["danger"]))
+        self.rehighlight()
 
     def highlightBlock(self, text: str):
         if not text:
@@ -100,7 +479,7 @@ class _StepNumberArea(QWidget):
 
 
 class StepTextEdit(QPlainTextEdit):
-    """带步骤序号 + 图片文件名补全的步骤编辑框。"""
+    """带步骤序号 + 图片文件名 / @辅助 补全的步骤编辑框。"""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -109,8 +488,11 @@ class StepTextEdit(QPlainTextEdit):
         self.updateRequest.connect(self._update_narea)
         self._update_narea_width(0)
 
-        self._img_model = QStringListModel(self)
+        self._img_model = QStandardItemModel(self)
+        self._helper_model = QStandardItemModel(self)
         self._img_lower: set[str] = set()
+        self._helper_lower: set[str] = set()
+        self._icon_fn = None
         # 当前补全弹层对应的替换区间 [start, end)
         self._replace_start = 0
         self._replace_end = 0
@@ -121,18 +503,13 @@ class StepTextEdit(QPlainTextEdit):
         self._completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
         self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
-        self._completer.setMaxVisibleItems(12)
+        self._completer.setMaxVisibleItems(10)
+        self._completer.setCompletionRole(Qt.ItemDataRole.DisplayRole)
         self._completer.activated.connect(self._insert_completion)
         popup = self._completer.popup()
-        popup.setStyleSheet(
-            "QListView {"
-            "  background:#161b22; color:#e6edf3;"
-            "  border:1px solid #c9a15b; outline:none;"
-            "  selection-background-color:#a67c3a; selection-color:#1a1c1e;"
-            "}"
-            "QListView::item { padding:4px 10px; min-height:22px; }"
-            "QListView::item:hover { background:#2b3036; }"
-        )
+        popup.setIconSize(QSize(_COMP_THUMB_SIZE, _COMP_THUMB_SIZE))
+        popup.setUniformItemSizes(True)
+        self._style_completer_popup(popup)
         # 键抬起后再弹：避免与当前 key 事件/输入法抢焦点导致「只有删除才出现」
         self._comp_timer = QTimer(self)
         self._comp_timer.setSingleShot(True)
@@ -140,10 +517,52 @@ class StepTextEdit(QPlainTextEdit):
         self._comp_timer.timeout.connect(self._on_comp_timer)
         self.textChanged.connect(self._schedule_completion)
 
-    def set_image_names(self, names: list[str]):
+    def apply_theme(self):
+        popup = self._completer.popup()
+        self._style_completer_popup(popup)
+        self._narea.update()
+
+    @staticmethod
+    def _style_completer_popup(popup):
+        c = _ui()
+        row_h = _COMP_THUMB_SIZE + 10
+        popup.setStyleSheet(
+            "QListView {"
+            f"  background:{c['popup_bg']}; color:{c['text']};"
+            f"  border:1px solid {c['border']}; outline:none;"
+            f"  selection-background-color:{c['sel_bg']}; selection-color:{c['sel_text']};"
+            "}"
+            f"QListView::item {{ padding:4px 10px 4px 6px; min-height:{row_h}px; }}"
+            f"QListView::item:hover {{ background:{c['hover']}; }}"
+        )
+        popup.setIconSize(QSize(_COMP_THUMB_SIZE, _COMP_THUMB_SIZE))
+
+    def set_image_names(self, names: list[str], icon_fn=None):
         ordered = sorted(names, key=str.lower)
-        self._img_model.setStringList(ordered)
+        self._icon_fn = icon_fn
+        self._img_model.clear()
+        for name in ordered:
+            item = QStandardItem(name)
+            item.setEditable(False)
+            if icon_fn is not None:
+                icon = icon_fn(name)
+                if icon is not None and not icon.isNull():
+                    item.setIcon(icon)
+            self._img_model.appendRow(item)
         self._img_lower = {n.lower() for n in ordered}
+
+    def set_helper_names(self, names: list[str]):
+        """任务步骤里输入 @ 时的辅助名补全列表。"""
+        ordered = sorted(
+            {n.strip() for n in names if n and str(n).strip()},
+            key=str.lower,
+        )
+        self._helper_model.clear()
+        for name in ordered:
+            item = QStandardItem(f"@{name}")
+            item.setEditable(False)
+            self._helper_model.appendRow(item)
+        self._helper_lower = {f"@{n}".lower() for n in ordered}
 
     def step_number_width(self) -> int:
         digits = max(2, len(str(max(1, self.blockCount()))))
@@ -169,8 +588,9 @@ class StepTextEdit(QPlainTextEdit):
 
     def paint_step_numbers(self, event):
         painter = QPainter(self._narea)
-        painter.fillRect(event.rect(), QColor("#21262d"))
-        painter.setPen(QColor("#30363d"))
+        c = _ui()
+        painter.fillRect(event.rect(), QColor(c["gutter_bg"]))
+        painter.setPen(QColor(c["gutter_line"]))
         painter.drawLine(
             self._narea.width() - 1,
             event.rect().top(),
@@ -187,7 +607,7 @@ class StepTextEdit(QPlainTextEdit):
         painter.setFont(font)
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
-                painter.setPen(QColor("#8b949e"))
+                painter.setPen(QColor(c["muted"]))
                 painter.drawText(
                     0,
                     top,
@@ -219,11 +639,55 @@ class StepTextEdit(QPlainTextEdit):
             end += 1
         return start, end, text[start:pos]
 
+    def _helper_ref_under_cursor(self) -> tuple[int, int, str] | None:
+        """光标若在 @辅助 引用内，返回 (at_pos, token_end, @后前缀)。"""
+        tc = self.textCursor()
+        text = self.toPlainText()
+        pos = tc.position()
+        start = pos
+        while start > 0 and _is_helper_name_char(text[start - 1]):
+            start -= 1
+        if start <= 0 or text[start - 1] != "@":
+            return None
+        at_pos = start - 1
+        end = pos
+        while end < len(text) and _is_helper_name_char(text[end]):
+            end += 1
+        return at_pos, end, text[start:pos]
+
+    def _resolve_helper_completion(self, force: bool) -> tuple[int, int, str] | None:
+        href = self._helper_ref_under_cursor()
+        if href is None:
+            return None
+        if self._helper_model.rowCount() == 0:
+            return None
+        at_pos, token_end, after = href
+        prefix = "@" + after
+        if not force and prefix.lower() in self._helper_lower:
+            return None
+        self._completer.setModel(self._helper_model)
+        self._completer.setCompletionPrefix(prefix)
+        if self._completer.completionCount() > 0:
+            return at_pos, token_end, prefix
+        if force:
+            self._completer.setCompletionPrefix("@")
+            if self._completer.completionCount() > 0:
+                return at_pos, token_end, "@"
+        return None
+
     def _resolve_completion_range(self, force: bool) -> tuple[int, int, str] | None:
-        """选出能匹配到图片名的最长后缀作为补全前缀。
+        """选出补全前缀：优先 @辅助，否则图片名最长可匹配后缀。
 
         例如「点击ho」→ 用「ho」匹配 home.png，替换区间只覆盖 ho，保留「点击」。
         """
+        helper = self._resolve_helper_completion(force)
+        if helper is not None:
+            return helper
+        # 光标在 @… 内但无可用辅助时，不要误弹图片补全
+        if self._helper_ref_under_cursor() is not None:
+            return None
+
+        self._completer.setModel(self._img_model)
         token_start, token_end, full_prefix = self._token_under_cursor()
         if self._img_model.rowCount() == 0:
             return None
@@ -244,7 +708,10 @@ class StepTextEdit(QPlainTextEdit):
         return None
 
     def _insert_completion(self, completion):
-        text = str(completion)
+        if hasattr(completion, "data"):
+            text = str(completion.data(Qt.ItemDataRole.DisplayRole) or "")
+        else:
+            text = str(completion)
         if not text:
             return
         self._suppress_comp = True
@@ -307,10 +774,11 @@ class StepTextEdit(QPlainTextEdit):
         popup = self._completer.popup()
         cr.setWidth(
             max(
-                220,
+                280,
                 popup.sizeHintForColumn(0)
                 + popup.verticalScrollBar().sizeHint().width()
-                + 12,
+                + _COMP_THUMB_SIZE
+                + 28,
             )
         )
         # 先交给 QCompleter 算出尺寸并显示，再挪到行外留白处
@@ -357,32 +825,28 @@ class _ThumbHoverPopup(QFrame):
         )
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.setStyleSheet(
-            "#ThumbHoverPopup {"
-            "  background:#0d1117;"
-            "  border:1px solid #c9a15b;"
-            "  border-radius:8px;"
-            "}"
-            "#ThumbHoverPopup QLabel#ThumbName {"
-            "  color:#e6b35a; font-size:12px;"
-            "}"
-        )
         self.setObjectName("ThumbHoverPopup")
         lay = QVBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
         lay.setSpacing(6)
         self._img = QLabel()
+        self._img.setObjectName("ThumbImage")
         self._img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._img.setMinimumSize(_HOVER_THUMB, _HOVER_THUMB)
-        self._img.setStyleSheet(
-            "background:#161b22; border:1px solid #30363d; border-radius:4px;"
-        )
         self._name = QLabel()
         self._name.setObjectName("ThumbName")
         self._name.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(self._img)
         lay.addWidget(self._name)
+        self.apply_theme()
         self.hide()
+
+    def apply_theme(self):
+        try:
+            from gui.styles.theme import current_theme_from_config, load_theme_qss
+            self.setStyleSheet(load_theme_qss(current_theme_from_config()))
+        except Exception:
+            pass
 
     def show_image(self, path: Path, global_pos: QPoint):
         pix = QPixmap(str(path))
@@ -410,204 +874,6 @@ class _ThumbHoverPopup(QFrame):
         self.show()
 
 
-_STYLE = """
-#SpecEditor {
-    background: #1a1c1e;
-    color: #e8eaed;
-    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
-    font-size: 13px;
-}
-#SpecHeader {
-    background: #23262a;
-    border: 1px solid #343a40;
-    border-radius: 10px;
-}
-#SpecHeader QLabel#Title {
-    font-size: 18px;
-    font-weight: 700;
-    color: #f1f3f5;
-}
-#SpecHeader QLabel#Subtitle {
-    color: #8b949e;
-    font-size: 12px;
-}
-#FolderChip {
-    background: #2b3036;
-    border: 1px solid #3d444d;
-    border-radius: 6px;
-    padding: 6px 10px;
-    color: #c9d1d9;
-}
-#DraftChip {
-    background: #2b3036;
-    border: 1px solid #3d444d;
-    border-radius: 6px;
-    padding: 6px 10px;
-    color: #8b949e;
-    font-size: 12px;
-}
-#DraftChip[hasDraft="true"] {
-    color: #e6b35a;
-    border-color: #a67c3a;
-}
-#ValidationBar {
-    border-radius: 8px;
-    padding: 8px 12px;
-    font-size: 12px;
-}
-#ValidationBar[level="idle"] {
-    background: #21262d;
-    color: #8b949e;
-    border: 1px solid #30363d;
-}
-#ValidationBar[level="ok"] {
-    background: #1a3d2e;
-    color: #3fb950;
-    border: 1px solid #238636;
-}
-#ValidationBar[level="warn"] {
-    background: #3d2e1a;
-    color: #d29922;
-    border: 1px solid #9e6a03;
-}
-#ValidationBar[level="error"] {
-    background: #3d1a1a;
-    color: #f85149;
-    border: 1px solid #da3633;
-}
-QTabWidget::pane {
-    border: 1px solid #343a40;
-    border-radius: 8px;
-    background: #212529;
-    top: -1px;
-}
-QTabBar::tab {
-    background: #2b3036;
-    color: #adb5bd;
-    padding: 8px 14px;
-    margin-right: 4px;
-    border-top-left-radius: 8px;
-    border-top-right-radius: 8px;
-    border: 1px solid #343a40;
-    border-bottom: none;
-}
-QTabBar::tab:selected {
-    background: #212529;
-    color: #e6b35a;
-    font-weight: 600;
-}
-QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QListWidget, QTableWidget {
-    background: #161b22;
-    color: #e6edf3;
-    border: 1px solid #30363d;
-    border-radius: 6px;
-    padding: 6px;
-    selection-background-color: #a67c3a;
-    selection-color: #1a1c1e;
-}
-QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QComboBox:focus {
-    border-color: #c9a15b;
-}
-QComboBox QAbstractItemView {
-    background: #161b22;
-    color: #8b949e;
-    border: 1px solid #3d444d;
-    outline: none;
-    selection-background-color: #a67c3a;
-    selection-color: #1a1c1e;
-}
-QComboBox QAbstractItemView::item {
-    min-height: 44px;
-    padding: 2px 8px;
-    color: #8b949e;
-    background: #161b22;
-}
-QComboBox QAbstractItemView::item:hover {
-    background: #2b3036;
-    color: #e6edf3;
-}
-QComboBox QAbstractItemView::item:selected {
-    background: #a67c3a;
-    color: #1a1c1e;
-}
-QHeaderView::section {
-    background: #21262d;
-    color: #8b949e;
-    padding: 6px;
-    border: none;
-    border-bottom: 1px solid #30363d;
-}
-QTableWidget {
-    gridline-color: #30363d;
-    outline: none;
-}
-QTableWidget::item:selected {
-    background: #3f3520;
-    color: #f0d9a8;
-}
-QListWidget::item {
-    padding: 10px 12px;
-    border-radius: 6px;
-    margin: 2px 4px;
-}
-QListWidget::item:selected {
-    background: #3f3520;
-    color: #e6b35a;
-    border: 1px solid #a67c3a;
-}
-QPushButton {
-    background: #2b3036;
-    color: #e6edf3;
-    border: 1px solid #3d444d;
-    border-radius: 6px;
-    padding: 7px 14px;
-}
-QPushButton:hover {
-    background: #343a40;
-    border-color: #c9a15b;
-}
-QPushButton#PrimaryBtn {
-    background: #a67c3a;
-    border-color: #a67c3a;
-    color: #1a1c1e;
-    font-weight: 600;
-}
-QPushButton#PrimaryBtn:hover {
-    background: #c9a15b;
-    border-color: #c9a15b;
-}
-QPushButton#GhostBtn {
-    background: transparent;
-    border: 1px dashed #484f58;
-    color: #8b949e;
-}
-QPushButton#GhostBtn:hover {
-    color: #e6b35a;
-    border-color: #c9a15b;
-}
-#PreviewPane {
-    background: #0d1117;
-    border: 1px solid #30363d;
-    border-radius: 10px;
-}
-#PreviewPane QLabel#PreviewTitle {
-    color: #8b949e;
-    font-size: 12px;
-    letter-spacing: 1px;
-}
-#PreviewBody {
-    background: #0d1117;
-    color: #c9d1d9;
-    border: none;
-    font-family: Consolas, "Cascadia Mono", monospace;
-    font-size: 12px;
-}
-QLabel#FieldLabel {
-    color: #8b949e;
-    font-size: 12px;
-}
-"""
-
 
 class SpecEditor(QWidget):
     """隔离的说明编辑器。"""
@@ -617,7 +883,6 @@ class SpecEditor(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("SpecEditor")
-        self.setStyleSheet(_STYLE)
         self._images: list[str] = []
         self._source_dir = ""
         self._thumb_cache: dict[str, QIcon] = {}
@@ -640,6 +905,7 @@ class SpecEditor(QWidget):
         self._build_ui()
         self._install_image_hover(self._helper_steps)
         self._install_image_hover(self._task_steps)
+        self.apply_theme()
         self._refresh_preview()
         self._refresh_draft_chip()
         QTimer.singleShot(0, self._restore_draft_on_start)
@@ -657,10 +923,10 @@ class SpecEditor(QWidget):
 
         title_col = QVBoxLayout()
         title_col.setSpacing(2)
-        t = QLabel("脚本说明编辑器")
-        t.setObjectName("Title")
-        s = QLabel("图角色 · 辅助步骤 · 自动草稿 → 脚本说明")
-        s.setObjectName("Subtitle")
+        t = QLabel("脚本IDE")
+        t.setObjectName("TitleLabel")
+        s = QLabel("图角色 · 辅助步骤 · 自动草稿 → 脚本介绍")
+        s.setObjectName("MutedLabel")
         title_col.addWidget(t)
         title_col.addWidget(s)
         hl.addLayout(title_col, stretch=1)
@@ -677,14 +943,14 @@ class SpecEditor(QWidget):
         hl.addWidget(self._folder_chip)
 
         btn_dir = QPushButton("选择目录")
-        btn_dir.setObjectName("PrimaryBtn")
+        btn_dir.setObjectName("PrimaryButton")
         btn_dir.clicked.connect(self._pick_folder)
         hl.addWidget(btn_dir)
         root.addWidget(header)
 
         goal_row = QHBoxLayout()
         gl = QLabel("目标")
-        gl.setObjectName("FieldLabel")
+        gl.setObjectName("MutedLabel")
         gl.setFixedWidth(36)
         self._goal = QLineEdit()
         self._goal.setPlaceholderText("一句话描述脚本要完成什么…")
@@ -727,13 +993,9 @@ class SpecEditor(QWidget):
         pt.setObjectName("PreviewTitle")
         phead.addWidget(pt)
         phead.addStretch()
-        btn_copy = QToolButton()
-        btn_copy.setText("复制")
+        btn_copy = QPushButton("复制")
+        btn_copy.setObjectName("GhostButton")
         btn_copy.clicked.connect(self._copy_preview)
-        btn_copy.setStyleSheet(
-            "QToolButton { color:#e6b35a; border:none; padding:4px 8px; }"
-            "QToolButton:hover { text-decoration: underline; }"
-        )
         phead.addWidget(btn_copy)
         pl.addLayout(phead)
 
@@ -750,7 +1012,7 @@ class SpecEditor(QWidget):
         for text, slot in (
             ("恢复草稿", self._load_draft_clicked),
             ("存草稿", self._save_draft_clicked),
-            ("清草稿", self._clear_draft_clicked),
+            ("清除", self._clear_editor_clicked),
         ):
             b = QPushButton(text)
             b.clicked.connect(slot)
@@ -761,13 +1023,13 @@ class SpecEditor(QWidget):
         actions_bot = QHBoxLayout()
         actions_bot.setSpacing(8)
         for text, slot, primary in (
-            ("加载 JSON", self._load_json, False),
+            ("加载介绍", self._import_script, False),
             ("保存 JSON", self._save_json, False),
             ("导出 txt", self._export_txt, True),
         ):
             b = QPushButton(text)
             if primary:
-                b.setObjectName("PrimaryBtn")
+                b.setObjectName("PrimaryButton")
             b.clicked.connect(slot)
             actions_bot.addWidget(b)
         actions_bot.addStretch()
@@ -797,7 +1059,7 @@ class SpecEditor(QWidget):
             "标识图 → 状态名（unknown_state 路由）；按钮/其它写说明（偏移、阈值、y最大…）。"
             "点击「角色」表头可按角色筛选（类似 Excel）。"
         )
-        hint.setObjectName("FieldLabel")
+        hint.setObjectName("MutedLabel")
         hint.setWordWrap(True)
         lay.addWidget(hint)
 
@@ -819,8 +1081,11 @@ class SpecEditor(QWidget):
         self._image_table.setShowGrid(False)
         self._image_table.verticalHeader().setVisible(False)
         self._image_table.setAlternatingRowColors(True)
-        self._image_table.setStyleSheet(
-            "QTableWidget { alternate-background-color: #1a1f26; }"
+        # 图片/角色列是控件；禁止点空单元格时变成可编辑输入框
+        self._image_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+            | QAbstractItemView.EditTrigger.AnyKeyPressed
         )
         # 避免单元格下拉按最长文件名撑死整表最小宽度，导致分栏几乎拖不动
         self._image_table.setMinimumWidth(0)
@@ -831,7 +1096,7 @@ class SpecEditor(QWidget):
 
         row = QHBoxLayout()
         add = QPushButton("+ 添加图片")
-        add.setObjectName("GhostBtn")
+        add.setObjectName("GhostButton")
         add.clicked.connect(lambda: self._add_image_row())
         rem = QPushButton("删除所选")
         rem.clicked.connect(self._del_image_row)
@@ -849,7 +1114,7 @@ class SpecEditor(QWidget):
 
         side = QVBoxLayout()
         sl = QLabel("辅助步骤")
-        sl.setObjectName("FieldLabel")
+        sl.setObjectName("MutedLabel")
         side.addWidget(sl)
         self._helper_list = QListWidget()
         self._helper_list.setMinimumWidth(140)
@@ -858,7 +1123,7 @@ class SpecEditor(QWidget):
         side.addWidget(self._helper_list, stretch=1)
         sbtns = QHBoxLayout()
         add_h = QPushButton("+")
-        add_h.setObjectName("GhostBtn")
+        add_h.setObjectName("GhostButton")
         add_h.setFixedWidth(40)
         add_h.clicked.connect(self._add_helper)
         del_h = QPushButton("−")
@@ -905,7 +1170,7 @@ class SpecEditor(QWidget):
         side.addWidget(self._task_list, stretch=1)
         sbtns = QHBoxLayout()
         add_t = QPushButton("+")
-        add_t.setObjectName("GhostBtn")
+        add_t.setObjectName("GhostButton")
         add_t.setFixedWidth(40)
         add_t.clicked.connect(self._add_task)
         del_t = QPushButton("−")
@@ -926,11 +1191,11 @@ class SpecEditor(QWidget):
 
         step_head = QHBoxLayout()
         step_head.addWidget(self._field_label(
-            "步骤（可用 @辅助；图片名补全 Alt+/；悬停可预览）"
+            "步骤（输入 @ 补全辅助；图片名补全 Alt+/；悬停可预览）"
         ))
         step_head.addStretch()
         self._btn_insert_helper = QPushButton("插入 @辅助")
-        self._btn_insert_helper.setObjectName("GhostBtn")
+        self._btn_insert_helper.setObjectName("GhostButton")
         self._btn_insert_helper.clicked.connect(self._insert_helper_ref)
         step_head.addWidget(self._btn_insert_helper)
         detail.addLayout(step_head)
@@ -954,7 +1219,7 @@ class SpecEditor(QWidget):
         hint = QLabel(
             "全局特殊规则。图片表「说明」里的阈值/偏移/y最大也会自动抽进导出的特殊规则。"
         )
-        hint.setObjectName("FieldLabel")
+        hint.setObjectName("MutedLabel")
         hint.setWordWrap(True)
         lay.addWidget(hint)
         self._notes = QTextEdit()
@@ -966,8 +1231,28 @@ class SpecEditor(QWidget):
     @staticmethod
     def _field_label(text: str) -> QLabel:
         lb = QLabel(text)
-        lb.setObjectName("FieldLabel")
+        lb.setObjectName("MutedLabel")
         return lb
+
+    def apply_theme(self):
+        """窗口套主题 QSS 之后，刷新 Painter / 弹出层颜色。"""
+        if hasattr(self, "_thumb_popup") and self._thumb_popup is not None:
+            self._thumb_popup.apply_theme()
+        for edit in self.findChildren(StepTextEdit):
+            edit.apply_theme()
+            hl = getattr(edit, "_image_highlighter", None)
+            if hl is not None:
+                hl.apply_theme()
+        if hasattr(self, "_image_table"):
+            for row in range(self._image_table.rowCount()):
+                for col in (0, 1):
+                    w = self._image_table.cellWidget(row, col)
+                    if isinstance(w, QComboBox):
+                        self._style_combo_popup(w)
+                    elif isinstance(w, ImagePathPicker):
+                        w._rebuild_menu()
+                        w._refresh_button()
+            self._sync_row_combo_selection()
 
     # ── 公共 API ──
 
@@ -978,7 +1263,9 @@ class SpecEditor(QWidget):
             role_w = self._image_table.cellWidget(row, 1)
             state_item = self._image_table.item(row, 2)
             note_item = self._image_table.item(row, 3)
-            image = img_w.currentText().strip() if isinstance(img_w, QComboBox) else ""
+            image = ""
+            if isinstance(img_w, (ImagePathPicker, QComboBox)):
+                image = img_w.currentText().strip()
             role = ROLE_ID
             if isinstance(role_w, QComboBox):
                 role = LABEL_TO_ROLE.get(role_w.currentText(), ROLE_OTHER)
@@ -1028,6 +1315,7 @@ class SpecEditor(QWidget):
                 self._task_steps.clear()
         finally:
             self._updating = False
+        self._sync_helper_completers()
         self._rehighlight_step_edits()
         self._refresh_preview()
 
@@ -1157,25 +1445,21 @@ class SpecEditor(QWidget):
         self._refresh_draft_chip(saved_at)
         QMessageBox.information(self, "已存草稿", f"已保存到\n{_DRAFT_PATH}")
 
-    def _clear_draft_clicked(self):
-        if not _DRAFT_PATH.is_file():
-            QMessageBox.information(self, "草稿", "没有草稿可清除")
+    def _clear_editor_clicked(self):
+        if self.get_spec().is_blank():
+            QMessageBox.information(self, "清除", "当前内容已空")
             return
         ans = QMessageBox.question(
             self,
-            "清除草稿",
-            "删除已保存的草稿文件？\n（当前编辑区内容不会清空）",
+            "清除",
+            "清空当前编辑内容？\n（图片目录与草稿文件保留）",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if ans != QMessageBox.StandardButton.Yes:
             return
-        try:
-            _DRAFT_PATH.unlink(missing_ok=True)
-        except Exception as e:
-            QMessageBox.warning(self, "清除失败", str(e))
-            return
-        self._refresh_draft_chip("")
+        folder = (self._source_dir or "").strip()
+        self.set_spec(ScriptSpec(source_dir=folder))
 
     def _pick_folder(self):
         start = str(IMG_PATH) if Path(IMG_PATH).is_dir() else ""
@@ -1199,7 +1483,9 @@ class SpecEditor(QWidget):
             self._sync_step_completers()
             for row in range(self._image_table.rowCount()):
                 w = self._image_table.cellWidget(row, 0)
-                if isinstance(w, QComboBox):
+                if isinstance(w, ImagePathPicker):
+                    self._fill_image_combo(w, w.currentText())
+                elif isinstance(w, QComboBox):
                     self._fill_image_combo(w, w.currentText())
             if self._image_table.rowCount() == 0:
                 self._add_image_row()
@@ -1211,7 +1497,14 @@ class SpecEditor(QWidget):
         names = list(self._images)
         for edit in (getattr(self, "_helper_steps", None), getattr(self, "_task_steps", None)):
             if isinstance(edit, StepTextEdit):
-                edit.set_image_names(names)
+                edit.set_image_names(names, icon_fn=self._icon_for)
+        self._sync_helper_completers()
+
+    def _sync_helper_completers(self):
+        helpers = [h.name.strip() for h in self._helpers_data if h.name.strip()]
+        for edit in (getattr(self, "_helper_steps", None), getattr(self, "_task_steps", None)):
+            if isinstance(edit, StepTextEdit):
+                edit.set_helper_names(helpers)
 
     # ── 步骤文本：图片名悬停缩略图 ──
 
@@ -1250,19 +1543,10 @@ class SpecEditor(QWidget):
         if not self._source_dir or not token:
             return None
         known = dir_image_map(self._source_dir)
-        if not image_exists_in_dir(token, self._source_dir, known=known):
+        rel = resolve_image_rel(token, self._source_dir, known=known)
+        if not rel:
             return None
-        root = Path(self._source_dir)
-        name = token.strip()
-        real = known.get(name.lower())
-        if real:
-            return root / real
-        if Path(name).suffix.lower() not in IMAGE_EXTS:
-            for ext in IMAGE_EXTS:
-                real = known.get((name + ext).lower())
-                if real:
-                    return root / real
-        return None
+        return Path(self._source_dir) / rel
 
     def _iter_image_spans(self, text: str) -> list[tuple[int, int, str]]:
         text = text or ""
@@ -1304,6 +1588,7 @@ class SpecEditor(QWidget):
     def _icon_for(self, name: str) -> QIcon:
         if not name or not self._source_dir:
             return QIcon()
+        name = name.replace("\\", "/")
         cached = self._thumb_cache.get(name)
         if cached is not None:
             return cached
@@ -1321,7 +1606,13 @@ class SpecEditor(QWidget):
         self._thumb_cache[name] = icon
         return icon
 
-    def _fill_image_combo(self, cb: QComboBox, selected: str = ""):
+    def _fill_image_combo(self, cb, selected: str = ""):
+        selected = (selected or "").replace("\\", "/")
+        if isinstance(cb, ImagePathPicker):
+            cb.set_image_paths(self._images, self._icon_for, selected)
+            return
+        if not isinstance(cb, QComboBox):
+            return
         cb.blockSignals(True)
         try:
             cb.clear()
@@ -1333,7 +1624,6 @@ class SpecEditor(QWidget):
                 if i >= 0:
                     cb.setCurrentIndex(i)
                 else:
-                    # 目录外手填名：追加一项以便显示
                     cb.addItem(self._icon_for(selected), selected)
                     cb.setCurrentIndex(cb.count() - 1)
             else:
@@ -1342,41 +1632,48 @@ class SpecEditor(QWidget):
             cb.blockSignals(False)
 
     def _style_combo_popup(self, cb: QComboBox):
-        """未选项用灰字暗底，选中用琥珀，避免系统白底看不清。"""
+        """下拉层跟主题走，避免系统白底看不清。"""
+        c = _ui()
         view = cb.view()
         view.setStyleSheet(
             "QAbstractItemView {"
-            "  background:#161b22; color:#8b949e;"
-            "  border:1px solid #3d444d; outline:0;"
+            f"  background:{c['popup_bg']}; color:{c['muted']};"
+            f"  border:1px solid {c['border']}; outline:0;"
             "}"
             "QAbstractItemView::item {"
-            "  min-height:44px; padding:4px 8px;"
-            "  color:#8b949e; background:#161b22;"
+            f"  min-height:44px; padding:4px 8px;"
+            f"  color:{c['muted']}; background:{c['popup_bg']};"
             "}"
             "QAbstractItemView::item:hover {"
-            "  background:#2b3036; color:#e6edf3;"
+            f"  background:{c['hover']}; color:{c['text']};"
             "}"
             "QAbstractItemView::item:selected {"
-            "  background:#a67c3a; color:#1a1c1e;"
+            f"  background:{c['sel_bg']}; color:{c['sel_text']};"
             "}"
         )
         pal = view.palette()
-        pal.setColor(QPalette.ColorRole.Base, QColor("#161b22"))
-        pal.setColor(QPalette.ColorRole.Text, QColor("#8b949e"))
-        pal.setColor(QPalette.ColorRole.Highlight, QColor("#a67c3a"))
-        pal.setColor(QPalette.ColorRole.HighlightedText, QColor("#1a1c1e"))
+        pal.setColor(QPalette.ColorRole.Base, QColor(c["popup_bg"]))
+        pal.setColor(QPalette.ColorRole.Text, QColor(c["muted"]))
+        pal.setColor(QPalette.ColorRole.Highlight, QColor(c["sel_bg"]))
+        pal.setColor(QPalette.ColorRole.HighlightedText, QColor(c["sel_text"]))
         view.setPalette(pal)
         view.setAlternatingRowColors(False)
 
-    def _set_combo_row_selected(self, cb: QComboBox, selected: bool):
+    def _set_combo_row_selected(self, cb, selected: bool):
         """单元格里的下拉框跟随整行选中高亮。"""
+        if isinstance(cb, ImagePathPicker):
+            cb.set_row_selected(selected)
+            return
+        if not isinstance(cb, QComboBox):
+            return
         if selected:
+            c = _ui()
             cb.setStyleSheet(
                 "QComboBox {"
-                "  background:#3f3520; color:#f0d9a8;"
-                "  border:1px solid #a67c3a; border-radius:6px; padding:4px;"
+                f"  background:{c['sel_bg']}; color:{c['sel_text']};"
+                f"  border:1px solid {c['accent']}; border-radius:4px; padding:4px;"
                 "}"
-                "QComboBox:hover { border-color:#c9a15b; }"
+                f"QComboBox:hover {{ border-color:{c['accent']}; }}"
                 "QComboBox::drop-down { border:none; width:20px; }"
             )
         else:
@@ -1390,20 +1687,11 @@ class SpecEditor(QWidget):
             on = row in selected
             for col in (0, 1):
                 w = self._image_table.cellWidget(row, col)
-                if isinstance(w, QComboBox):
+                if isinstance(w, (ImagePathPicker, QComboBox)):
                     self._set_combo_row_selected(w, on)
 
-    def _make_image_combo(self, selected: str = "") -> QComboBox:
-        cb = NoWheelComboBox()
-        # 不可编辑：缩略图+文件名不会和行内编辑框叠在一起
-        cb.setEditable(False)
-        cb.setIconSize(QSize(_THUMB_SIZE, _THUMB_SIZE))
-        cb.setMinimumHeight(_THUMB_SIZE + 8)
-        cb.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        cb.setMinimumContentsLength(8)
-        # Ignored：不要用最长项撑大 sizeHint，否则中间分栏可拖范围极小
-        cb.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
-        self._style_combo_popup(cb)
+    def _make_image_combo(self, selected: str = "") -> ImagePathPicker:
+        cb = ImagePathPicker()
         self._fill_image_combo(cb, selected)
         cb.currentTextChanged.connect(self._on_edited)
         return cb
@@ -1432,11 +1720,12 @@ class SpecEditor(QWidget):
         if section != 1:
             return
         menu = QMenu(self)
+        c = _ui()
         menu.setStyleSheet(
-            "QMenu { background:#161b22; color:#c9d1d9; border:1px solid #3d444d; }"
+            f"QMenu {{ background:{c['popup_bg']}; color:{c['text']}; border:1px solid {c['border']}; }}"
             "QMenu::item { padding:8px 28px 8px 16px; }"
-            "QMenu::item:selected { background:#3f3520; color:#e6b35a; }"
-            "QMenu::indicator:checked { color:#e6b35a; }"
+            f"QMenu::item:selected {{ background:{c['sel_bg']}; color:{c['sel_text']}; }}"
+            f"QMenu::indicator:checked {{ color:{c['accent']}; }}"
         )
         options = [("", "全部")] + [(r, ROLE_LABELS[r]) for r in _ROLE_ORDER]
         for key, label in options:
@@ -1486,8 +1775,10 @@ class SpecEditor(QWidget):
             self._image_table.setRowHeight(row, _THUMB_SIZE + 12)
             self._image_table.setCellWidget(row, 0, self._make_image_combo(entry.image))
             self._image_table.setCellWidget(row, 1, self._make_role_combo(entry.role or ROLE_ID))
-            self._image_table.setItem(row, 2, QTableWidgetItem(entry.state or ""))
-            self._image_table.setItem(row, 3, QTableWidgetItem(entry.note or ""))
+            state_item = QTableWidgetItem(entry.state or "")
+            note_item = QTableWidgetItem(entry.note or "")
+            self._image_table.setItem(row, 2, state_item)
+            self._image_table.setItem(row, 3, note_item)
         finally:
             self._updating = False
         self._apply_role_filter()
@@ -1564,6 +1855,7 @@ class SpecEditor(QWidget):
         if item:
             item.setText(f"{row + 1}.  {self._helpers_data[row].name or '未命名'}")
         self._helper_list.blockSignals(False)
+        self._sync_helper_completers()
         self._on_edited()
 
     def _add_helper(self):
@@ -1576,6 +1868,7 @@ class SpecEditor(QWidget):
         self._helpers_data.append(HelperSpec(name=name.strip() or "辅助步骤", steps=""))
         self._reload_helper_list()
         self._helper_list.setCurrentRow(len(self._helpers_data) - 1)
+        self._sync_helper_completers()
         self._on_edited()
 
     def _del_helper(self):
@@ -1590,6 +1883,7 @@ class SpecEditor(QWidget):
         else:
             self._helper_name.clear()
             self._helper_steps.clear()
+        self._sync_helper_completers()
         self._on_edited()
 
     def _insert_helper_ref(self):
@@ -1747,31 +2041,64 @@ class SpecEditor(QWidget):
         QApplication.clipboard().setText(self.explanation_text())
         QMessageBox.information(self, "已复制", "脚本说明文本已复制到剪贴板")
 
+    def _dialog_start_dir(self) -> str:
+        """文件对话框初始目录：优先当前素材夹，否则 assets/images。"""
+        folder = (self._source_dir or "").strip()
+        if folder and Path(folder).is_dir():
+            return folder
+        if Path(IMG_PATH).is_dir():
+            return str(IMG_PATH)
+        return ""
+
     def _save_json(self):
         path, _ = QFileDialog.getSaveFileName(
-            self, "保存脚本说明 JSON", str(IMG_PATH), "JSON (*.json)"
+            self, "保存脚本说明 JSON", self._dialog_start_dir(), "JSON (*.json)"
         )
         if not path:
             return
         self.get_spec().save_json(Path(path))
         QMessageBox.information(self, "已保存", path)
 
-    def _load_json(self):
+    def _confirm_replace(self, action: str) -> bool:
+        if self.get_spec().is_blank():
+            return True
+        ans = QMessageBox.question(
+            self,
+            action,
+            "当前编辑器里已有内容，加载会覆盖。继续？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return ans == QMessageBox.StandardButton.Yes
+
+    def _import_script(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "加载脚本说明 JSON", str(IMG_PATH), "JSON (*.json)"
+            self,
+            "加载介绍",
+            self._dialog_start_dir(),
+            "介绍 / 脚本 (*.txt *.py *.json);;介绍 txt (*.txt);;Python (*.py);;JSON (*.json)",
         )
         if not path:
             return
+        if not self._confirm_replace("加载介绍"):
+            return
+        from script_spec.import_script import import_from_path
         try:
-            spec = ScriptSpec.load_json(Path(path))
+            spec, info = import_from_path(Path(path))
         except Exception as e:
             QMessageBox.warning(self, "加载失败", str(e))
             return
         self.set_spec(spec)
+        self.apply_theme()
+        QMessageBox.information(self, "已加载", info)
 
     def _export_txt(self):
+        start = self._dialog_start_dir()
+        default = ""
+        if start:
+            default = str(Path(start) / "脚本介绍.txt")
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出脚本说明 txt", str(IMG_PATH), "Text (*.txt)"
+            self, "导出脚本说明 txt", default or start, "Text (*.txt)"
         )
         if not path:
             return
@@ -1786,8 +2113,10 @@ def main():
         sys.path.insert(0, str(root))
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
+    from gui.styles.theme import current_theme_from_config, load_theme_qss
+    app.setStyleSheet(load_theme_qss(current_theme_from_config()))
     w = SpecEditor()
-    w.setWindowTitle("脚本说明编辑器 · 隔离预览")
+    w.setWindowTitle("脚本IDE")
     w.resize(1120, 740)
     w.show()
     sys.exit(app.exec())

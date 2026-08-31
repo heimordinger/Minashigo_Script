@@ -42,6 +42,18 @@ taskflow/ws_port.js
 # ========== User data ==========
 json/accounts.json
 user/config.json
+user_data/match_hotspots.json
+user_data/match_hotspots.tmp
+
+# ========== Local caches / tooling ==========
+.freebuff/
+**/.vision_cache/
+
+# ========== Local backups / scratch ==========
+scripts/_backup/
+scripts/_trial/
+gui/styles/_backup_*/
+scripts/测试/_*.py
 
 # ========== Logs / Binary ==========
 *.log

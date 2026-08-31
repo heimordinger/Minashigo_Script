@@ -31,7 +31,6 @@ from core.path import IMG_PATH
 class Config:
     img_dir: Path = IMG_PATH / 'minashigo' / '孤儿登录'
     entry_url: str = "https://play.games.dmm.co.jp/game/minashigo_x"
-    total_timeout: float = 300.0     # 脚本总超时
     state_timeout: float = 30.0
     wait_appear: float = 5.0
     threshold: float = 0.85

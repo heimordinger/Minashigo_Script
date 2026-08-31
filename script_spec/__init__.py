@@ -1,6 +1,6 @@
 """脚本说明编辑器（与主工程隔离的独立包）。
 
-运行:
+主窗口右下角「脚本说明」打开本编辑器；也可单独运行:
   python/python311/Scripts/python.exe -m script_spec
 """
 

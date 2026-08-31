@@ -4,13 +4,55 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
                                QPushButton, QMessageBox, QComboBox, QSpinBox,
                                QDoubleSpinBox, QCheckBox, QLabel, QFileDialog)
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QIcon, QShortcut, QKeySequence
-from PySide6.QtCore import Qt, Signal, Slot
+from PySide6.QtCore import Qt, Signal, Slot, QTimer, QRect
 from core.coord.viewport_context import viewport_ctx
 import math
 from backend.matcher.matcher import matcher
 import os
 
 from core.path import ICON_PATH, IMG_PATH
+
+
+class _ToastLabel(QLabel):
+    """画布上短暂显示的气泡提示。"""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet(
+            "QLabel {"
+            "  background: rgba(32, 32, 32, 210);"
+            "  color: #fff;"
+            "  padding: 10px 20px;"
+            "  border-radius: 10px;"
+            "  font-size: 14px;"
+            "}"
+        )
+        self.hide()
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self.hide)
+
+    def show_message(self, text: str, ms: int = 1000):
+        self.setText(text)
+        self.adjustSize()
+        self._reposition()
+        self.show()
+        self.raise_()
+        self._timer.start(ms)
+
+    def _reposition(self):
+        p = self.parentWidget()
+        if p is None:
+            return
+        self.move(
+            max(0, (p.width() - self.width()) // 2),
+            max(0, (p.height() - self.height()) // 2),
+        )
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._reposition()
 
 
 class _ImageCanvas(QWidget):
@@ -47,6 +89,7 @@ class _ImageCanvas(QWidget):
         self.offset_y = 0
         self.match_rects = []
 
+        self._toast = _ToastLabel(self)
         self._update_scale_offset()
 
     def set_pixmap(self, pixmap):
@@ -102,7 +145,31 @@ class _ImageCanvas(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
 
         draw_w, draw_h = int(self.img_w * self.scale), int(self.img_h * self.scale)
-        painter.drawPixmap(int(self.offset_x), int(self.offset_y), draw_w, draw_h, self.original_pixmap)
+        ox, oy = int(self.offset_x), int(self.offset_y)
+        painter.drawPixmap(ox, oy, draw_w, draw_h, self.original_pixmap)
+
+        # 有匹配结果时：压暗非匹配区域，匹配块保持原色 + 绿框
+        if self.match_rects:
+            painter.fillRect(ox, oy, draw_w, draw_h, QColor(0, 0, 0, 150))
+            for match in self.match_rects:
+                match_x, match_y, width, height, _score = match
+                sx = max(0, int(match_x))
+                sy = max(0, int(match_y))
+                sw = max(0, int(width))
+                sh = max(0, int(height))
+                if sw <= 0 or sh <= 0:
+                    continue
+                if sx >= self.img_w or sy >= self.img_h:
+                    continue
+                sw = min(sw, self.img_w - sx)
+                sh = min(sh, self.img_h - sy)
+                dest = QRect(
+                    int(sx * self.scale + self.offset_x),
+                    int(sy * self.scale + self.offset_y),
+                    int(sw * self.scale),
+                    int(sh * self.scale),
+                )
+                painter.drawPixmap(dest, self.original_pixmap, QRect(sx, sy, sw, sh))
 
         self.dpr = viewport_ctx.get_dpr(account=self.viewer.account)
         for match in self.match_rects:
@@ -199,7 +266,12 @@ class _ImageCanvas(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         self._update_scale_offset()
+        if self._toast.isVisible():
+            self._toast._reposition()
         self.update()
+
+    def show_toast(self, text: str, ms: int = 1000):
+        self._toast.show_message(text, ms)
 
 
 class ScreenshotViewer(QWidget):
@@ -230,7 +302,7 @@ class ScreenshotViewer(QWidget):
         control_layout.setContentsMargins(4, 4, 4, 4)
 
         self.match_type_combo = QComboBox(self)
-        self.match_type_combo.addItems(["图片匹配", "文字匹配"])
+        self.match_type_combo.addItems(["图片匹配", "像素匹配", "文字匹配"])
         self.match_type_combo.setCurrentIndex(0)
         self.match_type_combo.currentTextChanged.connect(self.on_match_type_changed)
         control_layout.addWidget(QLabel("匹配类型:"))
@@ -290,8 +362,18 @@ class ScreenshotViewer(QWidget):
             self.target_input.setPlaceholderText("输入目标图片路径")
             self.threshold_input.setRange(0.0, 1.0)
             self.threshold_input.setValue(0.9)
-            self.threshold_input.setToolTip("图片匹配相似度阈值 (0~1)")
+            self.threshold_input.setToolTip("多尺度模板相似度阈值 (0~1)")
             self.color_check.setEnabled(True)
+            self.color_check.setVisible(True)
+        elif text == "像素匹配":
+            self.target_input.setPlaceholderText("输入目标图片路径（须与运行帧同缩放）")
+            self.threshold_input.setRange(0.0, 1.0)
+            self.threshold_input.setValue(0.98)
+            self.threshold_input.setToolTip(
+                "像素级相似度 (0~1)；1:1 不缩放，建议 ≥0.95"
+            )
+            self.color_check.setChecked(False)
+            self.color_check.setEnabled(False)
             self.color_check.setVisible(True)
         else:
             self.target_input.setPlaceholderText("输入要匹配的文字")
@@ -309,8 +391,11 @@ class ScreenshotViewer(QWidget):
         use_color = self.color_check.isChecked() and match_type == "图片匹配"
         use_region = self.region_check.isChecked()
 
-        if match_type == "图片匹配" and not target_text:
+        if match_type in ("图片匹配", "像素匹配") and not target_text:
             self.show_error_message("输入无效", "请输入目标图片路径")
+            return
+        if match_type == "文字匹配":
+            self.show_error_message("提示", "截图预览暂仅支持图片/像素匹配")
             return
         qimg = self.canvas.original_pixmap.toImage()
         buf = qimg.bits().tobytes()
@@ -318,7 +403,6 @@ class ScreenshotViewer(QWidget):
             qimg.height(), qimg.width(), 4
         )[:, :, :3]
 
-        roi_img = full_img
         roi_offset_x = 0
         roi_offset_y = 0
         crop_top_left = None
@@ -344,16 +428,19 @@ class ScreenshotViewer(QWidget):
             self.show_error_message("模板错误", "无法读取模板图片")
             return
 
+        mtype = "pixel_multi" if match_type == "像素匹配" else "image_multi"
         try:
             results = matcher.match(
                 target=full_img,
                 template=template_bgr,
-                match_type="image_multi",
+                match_type=mtype,
                 threshold=threshold,
                 use_color_check=use_color,
-                color_tol=30.0 if use_color else None,
+                color_tol=30.0 if use_color else 30.0,
                 crop_top_left=crop_top_left,
-                crop_bottom_right=crop_bottom_right
+                crop_bottom_right=crop_bottom_right,
+                use_orb=(match_type == "图片匹配"),
+                pixel_tol=8.0,
             )
         except Exception as e:
             self.show_error_message("匹配出错", str(e))
@@ -362,7 +449,8 @@ class ScreenshotViewer(QWidget):
         self.canvas.match_rects.clear()
 
         if not results:
-            self.show_error_message("无匹配结果", "未找到符合条件的目标")
+            self.canvas.update()
+            self.canvas.show_toast("匹配到 0 项", 1000)
             return
 
         h, w = template_bgr.shape[:2]
@@ -379,6 +467,7 @@ class ScreenshotViewer(QWidget):
             )
 
         self.canvas.update()
+        self.canvas.show_toast(f"匹配到 {len(results)} 项", 1000)
 
     def _emit_refresh(self):
         self.refresh_requested.emit()

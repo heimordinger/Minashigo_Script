@@ -1,0 +1,244 @@
+{
+  "version": 1,
+  "universal": {
+    "title": "v2 FSM 通用契约（所有脚本）",
+    "branching": [
+      "handler 的每一个 return 字符串必须在 STATES 中注册，或通过 SCENE_TO_STEP 映射到已注册步骤名。",
+      "场景名（主界面/出击界面/房间界面/…）与步骤名（进入房间/检查次数/…）是两层：unknown/辅助 return 场景名时，STATES 须有场景桩或 run_task._resolve_state。",
+      "介绍「有则…无则…」→ 独立步骤 handler + if match return 下一步 else return 另一步/__exit__；禁止塞进 unknown_state。",
+      "介绍「回到第 N 步」→ return 该步 STATES 键（如「检查次数」「刷新倍率」），形成显式环。",
+      "run_task 启动须 bootstrap：unknown 识场景 → 已在出击界面直接「进入竞技场/进入塔」；禁止先跑返回主界面空等超时",
+      "handler is None：先 resolve(scene/state_name)，禁止默认 helper_返回主界面 兜底（竞技场任务会走错）。"
+    ],
+    "rules": [
+      "STATES 键 = 行为步骤名、导航辅助名、或场景桩名（主界面/出击界面 映射到入口步）；未认出 return None。",
+      "本步骤结束（导航成功、已在 rank/出击_logo）→ return 业务态名（如「主界面」「出击界面」），禁止 __exit__；且该名必须在 STATES 或 SCENE_TO_STEP 可解析。",
+      "本任务/脚本完成 → return __exit__（登录见 rank；推本见无 new 且切栏上限；日常见 jjc_end/ta 次数耗尽等）。",
+      "介绍「执行@辅助」→ return 辅助态名走 STATES（如 return「返回主界面」），禁止另写私有分支或 return「未知」。",
+      "介绍「回到第 N 步」→ return 该步 STATES 键名，带循环/超时，禁止死递归。",
+      "GUARDS：介绍「异常/网络/弹窗随时出现」→ register_guard + 每 tick check_guards 优先于状态机。",
+      "点击转场后 wait_image(下一场景标识)；失败 → return「未知」或回 hub 重识（登录用 wait_game_load）。",
+      "do_work：update_frame → check_guards → 超时处理 → handler；禁止巨型 handler 包办整条任务链。",
+      "多任务脚本须遵循 corpus/few_shot/12_minimal_multitask_paradigm.py 骨架（SCENE_TO_STEP + bootstrap run_task）。"
+    ],
+    "anti_patterns": [
+      "unknown_state 里 click 或 return task 巨型函数名（场景层只认屏）。",
+      "在 jjc_logo/ta_logo 上 return「主界面」表示任务完成（应用 __exit__ 或下一步 step）。",
+      "task_phase 硬映射与 unknown_state 路由两套并行、互不消费。",
+      "把 room_ok/jjc_结算 等弹窗循环写进 unknown_state。",
+      "helper return「主界面」但 TASK_STATES 无「主界面」键（分支断裂，run_task handler None）。",
+      "run_task 超时/无 handler 时一律 helper_返回主界面（塔/竞技场任务会误导航）。"
+    ]
+  },
+  "patterns": [
+    {
+      "id": "do_login_v2",
+      "title": "DO登录 v2 — 网页导航 + wait_game_load 枢纽",
+      "script": "scripts/Deep One/DO登录_v2.py",
+      "explanation": "assets/images/DeepOne/DO登录/脚本解释.txt",
+      "archetype": "login_url_hub",
+      "tags": ["login", "deepone", "dmm", "fsm"],
+      "folder_keys": ["do登录", "do登录"],
+      "keywords": ["网页跳转", "DMM", "start1", "start2", "logo", "skip", "rank", "登录"],
+      "orchestration": "await login(url) 处理 URL/DMM；游戏内 state_name 从 wait_game_load 开始；无 unknown_state。",
+      "scene_map": [],
+      "intro_to_structure": [
+        {
+          "intro": "①网页跳转 / DMM 登录",
+          "structure": "async def login(browser, url) — URL 检测 + dmm_login；不进 STATES"
+        },
+        {
+          "intro": "②游戏页 start1 / start2",
+          "structure": "wait_game_load 并发 match → start_dialog；start_dialog_state 点 start2，等 start1 消失 → wait_game_load"
+        },
+        {
+          "intro": "③进入游戏 logo/menu 附近点击",
+          "structure": "wait_game_load → tap_screen；tap_screen_state 点 logo 偏移 → wait_game_load"
+        },
+        {
+          "intro": "④登录奖励 skip / 关闭",
+          "structure": "skip_anim_state 循环点 skip；close_popup_state 点 关闭 → 均回 wait_game_load"
+        },
+        {
+          "intro": "⑤完成登录 rank 出现",
+          "structure": "wait_game_load match rank → return __exit__"
+        },
+        {
+          "intro": "(0)异常 err1_1 重试",
+          "structure": "register_guard(err1_1) + check_guards 每 tick 优先"
+        }
+      ],
+      "states": [
+        "wait_game_load (枢纽：并发识阶段)",
+        "start_dialog",
+        "tap_screen",
+        "skip_anim",
+        "close_popup"
+      ],
+      "timeouts": "单态超时 → 回 wait_game_load 重识，不是 __exit__"
+    },
+    {
+      "id": "orphan_login_v2",
+      "title": "孤儿登录 v2 — 同 DO登录 + 多弹窗优先级",
+      "script": "scripts/孤儿/孤儿登录_v2.py",
+      "explanation": "assets/images/minashigo/孤儿登录/脚本解释.txt",
+      "archetype": "login_url_hub",
+      "tags": ["login", "minashigo", "孤儿", "dmm", "fsm"],
+      "folder_keys": ["孤儿登录"],
+      "keywords": ["孤儿", "minashigo", "menu", "skip", "ok", "close1", "石头", "rank"],
+      "orchestration": "同 do_login_v2：login() + wait_game_load 枢纽。",
+      "intro_to_structure": [
+        {
+          "intro": "②游戏页 start2",
+          "structure": "start_dialog_state 点 start2"
+        },
+        {
+          "intro": "③进入游戏 menu",
+          "structure": "tap_screen_state 点 menu 大偏移"
+        },
+        {
+          "intro": "④登录奖励 skip/ok/close/石头",
+          "structure": "wait_game_load 并发优先级：rank>skip>close1>close2>ok>menu>start2；石头单独最低优先级 stone_state"
+        },
+        {
+          "intro": "⑤rank 完成",
+          "structure": "done → __exit__"
+        }
+      ],
+      "states": [
+        "wait_game_load",
+        "start_dialog",
+        "tap_screen",
+        "skip_anim",
+        "close_popup",
+        "close_btn",
+        "close_btn2",
+        "stone"
+      ],
+      "timeouts": "超时 → wait_game_load"
+    },
+    {
+      "id": "do_push_v2",
+      "title": "DO推本 v2 — unknown 并发识场景 + 业务态 handler",
+      "script": "scripts/Deep One/DO推本_v2.py",
+      "explanation": "assets/images/DeepOne/DO推本/脚本解释.txt",
+      "archetype": "scene_fsm",
+      "tags": ["push", "deepone", "fsm", "unknown", "scene"],
+      "folder_keys": ["do推本"],
+      "keywords": ["推本", "选关", "备战", "剧情", "new", "1_select", "2_chuji", "3_skip", "4_result"],
+      "orchestration": "单 do_work；初始 unknown_state()；超时 → unknown_state() 重识；无 task_phase。",
+      "scene_map": [
+        { "image": "1_select.png", "state": "选关", "layer": "scene→handler同名" },
+        { "image": "2_chuji.png", "state": "备战", "layer": "scene→handler同名" },
+        { "image": "3_skip.png", "state": "跳过剧情", "layer": "scene→handler同名" },
+        { "image": "4_result.png", "state": "等待战后结算", "layer": "scene→handler同名；handler 内再分 4_rank/4_next" }
+      ],
+      "intro_to_structure": [
+        {
+          "intro": "(0)异常 err → 点重试/确认",
+          "structure": "register_guard(1_close, err1_1, err2_2) + check_guards"
+        },
+        {
+          "intro": "(1)选关 有 new 进备战",
+          "structure": "select_stage_state：点 1_new → return「备战」；无 new 切栏 1_c 偏移 → 保持或 __exit__"
+        },
+        {
+          "intro": "(2)备战 点出击",
+          "structure": "ready_state：点 2_chuji；离开备战 → return「未知」重识"
+        },
+        {
+          "intro": "(3)剧情 skip + 确认",
+          "structure": "skip_story_state：3_skip → wait 3_hai → 点确认"
+        },
+        {
+          "intro": "(4)结算 4_rank / 4_next / 4_cihe",
+          "structure": "result_state 内部分段处理；离开 4_result → return「未知」"
+        },
+        {
+          "intro": "无 new 且切栏达上限",
+          "structure": "select_stage_state → __exit__（脚本结束）"
+        }
+      ],
+      "states": ["未知", "选关", "备战", "跳过剧情", "等待战后结算"],
+      "timeouts": "态超时 → await unknown_state() or「未知」，不是假完成"
+    },
+    {
+      "id": "do_daily_multitask",
+      "title": "DO日常 — run_task 多任务 + 场景层/行为层分离",
+      "script": "scripts/Deep One/DO日常.py",
+      "explanation": "assets/images/DeepOne/DO日常/脚本介绍.txt",
+      "archetype": "multi_run_task",
+      "tags": ["daily", "multi", "run_task", "deepone", "日常", "room", "scene"],
+      "folder_keys": ["do日常"],
+      "keywords": ["日常", "房间", "竞技场", "爬塔", "room_logo", "jjc_logo", "ta_logo", "出击_logo", "rank"],
+      "orchestration": "do_work 仅 run_task 顺序调度；每任务 TASK_*_STATES + TIMEOUT；禁止 task_phase 单循环与 run_task 混用。",
+      "scene_map": [
+        { "image": "rank.png", "state": "主界面", "layer": "scene（unknown_state 只 return 场景名）" },
+        { "image": "出击_logo.png", "state": "出击界面", "layer": "scene" },
+        { "image": "room_logo.png", "state": "房间界面", "layer": "scene" },
+        { "image": "jjc_logo.png", "state": "竞技场界面", "layer": "scene" },
+        { "image": "ta_logo.png", "state": "塔界面", "layer": "scene" }
+      ],
+      "scene_to_entry": [
+        { "scene": "主界面", "when": "task=房间", "entry": "返回主界面 或 task1 首步" },
+        { "scene": "房间界面", "when": "task=房间", "entry": "房间领体力步骤链（非 unknown 直接跳检查奖励）" },
+        { "scene": "出击界面", "when": "task=竞技场/塔", "entry": "返回出击界面" },
+        { "scene": "竞技场界面", "when": "task=竞技场", "entry": "进入竞技场 → 检查次数 → …（分步 STATES）" },
+        { "scene": "塔界面", "when": "task=塔", "entry": "进入塔 → 检查塔标识 → …" }
+      ],
+      "intro_to_structure": [
+        {
+          "intro": "场景标识「可作为…界面标识」",
+          "structure": "unknown_state：gather match → return 场景名（主界面/出击界面/…）；禁止 click"
+        },
+        {
+          "intro": "辅助@返回主界面 / @返回出击界面",
+          "structure": "helper 成功 return「主界面」「出击界面」；STATES 必须注册同名键或 SCENE_TO_STEP；失败 return 辅助态自环"
+        },
+        {
+          "intro": "分支：有奖励/无奖励、jjc_end、次数耗尽",
+          "structure": "各条件独立步骤：检查次数 if jjc_end→__exit__ else→刷新倍率；无收取奖励→__exit__ 或 主界面"
+        },
+        {
+          "intro": "（1）房间 无 room_收取奖励",
+          "structure": "task1 末步 → __exit__（仅结束 run_task 房间任务）"
+        },
+        {
+          "intro": "room_ok 循环 / room_ap上限",
+          "structure": "task1_领取奖励 或确认步骤内循环；不在 unknown_state"
+        },
+        {
+          "intro": "（2）竞技场 jjc_end",
+          "structure": "task2_检查次数 match jjc_end → __exit__；战斗循环在 task2_检查次数↔刷新倍率↔…↔回到竞技场"
+        },
+        {
+          "intro": "jjc_结算 + jjc_ok",
+          "structure": "task2_战斗结算 / task2_回到竞技场 分步；禁止 task2_竞技场 单体包办"
+        },
+        {
+          "intro": "（3）塔 ta_cishu 耗尽",
+          "structure": "task3_检查次数 → __exit__；ta_jiangli 在 task3_等待奖励"
+        },
+        {
+          "intro": "恢复：当前在未知且已识场景",
+          "structure": "run_task 入口 _task_entry_state 或 SCENE_TO_ENTRY[scene]→该任务首步；禁止仅 task_phase 硬绑"
+        }
+      ],
+      "states": [
+        "每任务：未知 + 返回主界面/返回出击界面 + 分步业务态",
+        "禁止：主界面 handler 只 match rank return 主界面"
+      ],
+      "timeouts": "态超时 → unknown + SCENE_TO_STEP；仅多次失败才 __task_failed__；任务完成仅 __exit__",
+      "scene_to_step": [
+        { "task": "room", "scene": "主界面", "step": "进入房间" },
+        { "task": "room", "scene": "房间界面", "step": "房间领体力" },
+        { "task": "arena", "scene": "主界面", "step": "返回主界面" },
+        { "task": "arena", "scene": "出击界面", "step": "进入竞技场" },
+        { "task": "arena", "scene": "竞技场界面", "step": "检查次数" },
+        { "task": "tower", "scene": "主界面", "step": "返回主界面" },
+        { "task": "tower", "scene": "出击界面", "step": "进入塔" },
+        { "task": "tower", "scene": "塔界面", "step": "检查塔次数" }
+      ]
+    }
+  ]
+}

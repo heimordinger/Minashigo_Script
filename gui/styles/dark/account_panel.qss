@@ -1,0 +1,224 @@
+/*
+  账号面板 · 暗色主题
+*/
+
+QWidget#AccountPanel {
+    background-color: transparent;
+}
+
+QLabel#AccountTitle {
+    font-size: 14px;
+    font-weight: bold;
+    color: #e8eaed;
+}
+
+QComboBox#AccountSwitchCombo {
+    min-width: 160px;
+    max-width: 280px;
+    font-weight: bold;
+}
+
+QWidget#TopRow {
+    background: transparent;
+}
+
+QWidget#ScriptSelect {
+    background-color: #1c1f24;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+}
+
+QLabel#ScriptSelectLabel {
+    padding: 4px 8px;
+    background-color: #16181c;
+    border-right: 1px solid #2c3138;
+    color: #8b929c;
+}
+
+QComboBox#ScriptSelectCombo,
+QPushButton#ScriptSelectCombo {
+    border: none;
+    background-color: transparent;
+    color: #e8eaed;
+    padding: 4px 6px;
+}
+
+QWidget#ScriptSelect:hover,
+QWidget#ScriptSelect:focus-within {
+    border-color: #5b8def;
+}
+
+QScrollArea#CardScroll {
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+    background-color: #121418;
+}
+
+#CardScroll QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 0;
+}
+
+#CardScroll QScrollBar::handle:vertical {
+    background: #3a404a;
+    min-height: 30px;
+    border-radius: 4px;
+}
+
+#CardScroll QScrollBar::handle:vertical:hover {
+    background: #525966;
+}
+
+#CardScroll QScrollBar::add-line:vertical,
+#CardScroll QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+#CardScroll QScrollBar::add-page:vertical,
+#CardScroll QScrollBar::sub-page:vertical {
+    background: none;
+}
+
+QWidget#CardContainer {
+    background-color: #121418;
+}
+
+QWidget#TaskBallCard {
+    background-color: transparent;
+    border-bottom: 1px solid #2c3138;
+}
+
+QWidget#BallColumn {
+    background-color: #121418;
+    border-right: 1px solid #2c3138;
+}
+
+QWidget#CardContent {
+    background-color: #16181c;
+}
+
+QWidget#CardHeader {
+    background-color: #1c1f24;
+    border-bottom: 1px solid #2c3138;
+}
+
+QWidget#CardHeader:hover {
+    background-color: #23272e;
+}
+
+QLabel#CardTitle {
+    color: #e8eaed;
+    font-weight: bold;
+    font-size: 12px;
+}
+
+QLabel#CardStatus {
+    color: #6fbf8a;
+    font-size: 11px;
+}
+
+QLabel#CardTarget {
+    font-size: 10px;
+    font-weight: bold;
+    padding: 1px 6px;
+    border-radius: 8px;
+    color: #c5c9d0;
+    background-color: #23272e;
+}
+
+QLabel#CardTarget[target="browser"] {
+    color: #c8daf8;
+    background-color: #243552;
+}
+
+QLabel#CardTarget[target="window"] {
+    color: #f0dcc0;
+    background-color: #4a3520;
+}
+
+QLabel#CardArrow {
+    color: #6a7078;
+    font-size: 11px;
+}
+
+QWidget#CardBody {
+    background-color: #121418;
+}
+
+QTextEdit#CardLog {
+    background-color: #121418;
+    border: none;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 10pt;
+    color: #c5c9d0;
+    padding: 2px 8px;
+}
+
+QTextEdit#LogView {
+    background-color: #121418;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 10pt;
+}
+
+#AccountHeader {
+    background-color: transparent;
+}
+
+#CloseXButton {
+    background: transparent;
+    color: #8b929c;
+    border: none;
+    font-weight: bold;
+    padding: 2px 6px;
+}
+
+#CloseXButton:hover {
+    color: #ffffff;
+    background-color: #d16b6b;
+    border-radius: 8px;
+}
+
+QPushButton#TabCloseButton[accountTab="true"] {
+    margin-left: 4px;
+}
+
+QLabel#MousePosLabel {
+    color: #8b929c;
+    font-size: 11px;
+}
+
+/* ===== 脚本排队标签 ===== */
+QWidget#ScriptQueueBar {
+    background: transparent;
+}
+
+QWidget#QueueChip {
+    background-color: #243552;
+    border: 1px solid #3a5080;
+    border-radius: 12px;
+}
+
+QLabel#QueueChipLabel {
+    color: #c8daf8;
+    font-size: 12px;
+    font-weight: bold;
+    background: transparent;
+}
+
+QPushButton#QueueChipClose {
+    background: transparent;
+    border: none;
+    color: #8b9bb8;
+    font-size: 14px;
+    font-weight: bold;
+    padding: 0;
+    border-radius: 9px;
+}
+
+QPushButton#QueueChipClose:hover {
+    background-color: #d16b6b;
+    color: #ffffff;
+}

@@ -1,0 +1,140 @@
+/* 脚本IDE · 暗色 */
+
+QWidget#SpecEditorWindow,
+QWidget#SpecEditor {
+    background-color: #16181c;
+}
+
+QFrame#SpecHeader {
+    background-color: #1c1f24;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+}
+
+QLabel#FolderChip,
+QLabel#DraftChip {
+    background-color: #23272e;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+    padding: 6px 10px;
+    color: #8b929c;
+    font-size: 12px;
+}
+
+QLabel#DraftChip[hasDraft="true"] {
+    color: #5b8def;
+    border-color: #5b8def;
+    background-color: #1e2a3e;
+}
+
+QLabel#ValidationBar {
+    border-radius: 4px;
+    padding: 8px 12px;
+    font-size: 12px;
+}
+
+QLabel#ValidationBar[level="idle"] {
+    background-color: #1c1f24;
+    color: #8b929c;
+    border: 1px solid #2c3138;
+}
+
+QLabel#ValidationBar[level="ok"] {
+    background-color: #1a2e24;
+    color: #6fbf8a;
+    border: 1px solid #2f5a40;
+}
+
+QLabel#ValidationBar[level="warn"] {
+    background-color: #2a2418;
+    color: #c9a227;
+    border: 1px solid #6b5420;
+}
+
+QLabel#ValidationBar[level="error"] {
+    background-color: #2a1c1c;
+    color: #d16b6b;
+    border: 1px solid #5a3434;
+}
+
+QFrame#PreviewPane {
+    background-color: #1c1f24;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+}
+
+QLabel#PreviewTitle {
+    color: #8b929c;
+    font-size: 12px;
+}
+
+QTextEdit#PreviewBody {
+    background-color: #121418;
+    color: #e8eaed;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 12px;
+}
+
+QWidget#SpecEditor QTableWidget {
+    background-color: #121418;
+    color: #e8eaed;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+    gridline-color: #2c3138;
+    outline: none;
+    alternate-background-color: #1c1f24;
+    selection-background-color: #1e2a3e;
+    selection-color: #e8eaed;
+}
+
+QWidget#SpecEditor QHeaderView::section {
+    background-color: #1c1f24;
+    color: #8b929c;
+    padding: 6px;
+    border: none;
+    border-bottom: 1px solid #2c3138;
+    border-right: 1px solid #2c3138;
+}
+
+QWidget#SpecEditor QListWidget {
+    background-color: #121418;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+    outline: none;
+}
+
+QWidget#SpecEditor QListWidget::item {
+    padding: 8px 10px;
+    border-radius: 4px;
+    margin: 2px 4px;
+}
+
+QWidget#SpecEditor QListWidget::item:selected {
+    background-color: #1e2a3e;
+    color: #e8eaed;
+    border: 1px solid #5b8def;
+}
+
+QWidget#SpecEditor QComboBox QAbstractItemView::item {
+    min-height: 44px;
+    padding: 2px 8px;
+}
+
+QFrame#ThumbHoverPopup {
+    background-color: #1c1f24;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+}
+
+QFrame#ThumbHoverPopup QLabel#ThumbName {
+    color: #5b8def;
+    font-size: 12px;
+}
+
+QFrame#ThumbHoverPopup QLabel#ThumbImage {
+    background-color: #121418;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+}

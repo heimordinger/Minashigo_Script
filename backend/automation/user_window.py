@@ -18,6 +18,7 @@ from typing import Union
 
 from .win32_target import Win32Target
 from .stuck_guard import StuckGuard
+from .frame_observer import FrameObserver, HARD_CAP_FPS
 
 
 def human_offset(pianyi: Union[None, int, tuple[int, int]] = None) -> tuple[int, int]:
@@ -48,11 +49,51 @@ class UserWindow:
         # 轮询缓存（跟 UserBrowser 一致）
         self.use_polling_temp_cache = False
         self.polling_temp_cache: dict = {}
+        self.use_hotspot_roi = True
 
         # 最后截图帧
         self._frame = None
 
         self._stuck = StuckGuard(log_fn=lambda msg: self.script_log(msg))
+        title = ""
+        try:
+            title = str(getattr(target, "title", "") or "")
+        except Exception:
+            title = ""
+        self._observer = FrameObserver(
+            self._capture_raw,
+            hard_cap=HARD_CAP_FPS,
+            name=f"window:{title or id(self)}",
+            get_frame=lambda: self._frame,
+            on_frame=self._on_obs_frame,
+        )
+
+    async def _capture_raw(self):
+        loop = asyncio.get_running_loop()
+        frame = await loop.run_in_executor(
+            None,
+            lambda: self._target.screenshot(client_only=True, method="auto"),
+        )
+        self._frame = frame
+        return frame
+
+    def _on_obs_frame(self, frame) -> None:
+        self._frame = frame
+        self.polling_temp_cache = {}
+
+    def invalidate_frame(self) -> None:
+        self._observer.invalidate()
+        self.polling_temp_cache = {}
+
+    async def request_fps(self, fps: float, *, key: str = "script") -> float:
+        """声明本调用方期望的截图频率(Hz)。多需求取 max；无人声明则停截。"""
+        return await self._observer.request_fps(key, fps)
+
+    async def release_fps(self, key: str = "script") -> float:
+        return await self._observer.release_fps(key)
+
+    def observation_fps(self) -> float:
+        return self._observer.effective_fps
 
     def note_state(self, name: str | None):
         self._stuck.note_state(name)
@@ -121,6 +162,7 @@ class UserWindow:
                 seconds, upper_limit = upper_limit, seconds
             seconds = random.uniform(seconds, upper_limit)
         if seconds <= 0:
+            self.invalidate_frame()
             return
         self._stuck.check_idle()
         elapsed = 0.0
@@ -128,15 +170,16 @@ class UserWindow:
             await self._check()
             await asyncio.sleep(step)
             elapsed += step
+        self.invalidate_frame()
 
     # ── 截图 ──
 
     async def update_frame(self, save_screenshot=False):
-        """截图并缓存到 self._frame，重置轮询缓存，返回帧。"""
+        """强制拉一帧并清空轮询缓存（日常 match 会自动 ensure）。"""
         await self._check()
-        self._frame = self._target.screenshot(client_only=True, method="auto")
+        frame = await self._observer.capture_once()
         self.polling_temp_cache = {}
-        return self._frame
+        return frame
 
     # ── 点击 ──
 
@@ -145,6 +188,7 @@ class UserWindow:
         await self._check()
         px, py = human_offset(pianyi)
         self._target.click(x + px, y + py)
+        self.invalidate_frame()
 
     # ── 图像匹配 ──
 
@@ -154,34 +198,70 @@ class UserWindow:
             threshold: float = 0.9,
             use_color_check: bool = False,
             match_select: str = "best",
+            match_mode: str = "image",
+            pixel_tol: float = 8.0,
+            quiet: bool = False,
+            use_hotspot_roi: bool | None = None,
     ):
         """在最新截图中找模板图。"""
         await self._check()
+        await self._observer.ensure_frame()
 
-        key = (str(img_path), threshold, use_color_check, match_select)
+        mode = (match_mode or "image").lower()
+        if mode not in ("image", "pixel"):
+            mode = "image"
+        mtype = "pixel" if mode == "pixel" else "image"
+
+        key = (
+            str(img_path),
+            threshold,
+            use_color_check,
+            match_select,
+            mode,
+            pixel_tol,
+        )
 
         if self.use_polling_temp_cache and key in self.polling_temp_cache:
             return self.polling_temp_cache[key]
 
         from backend.matcher.matcher import matcher
+        from backend.matcher.hotspot_roi import (
+            adaptive_match,
+            normalize_template_key,
+            resolve_capture_mode,
+        )
 
         self._emit_match_hud(str(img_path), "matching")
 
         frame = self._frame
         if frame is None:
-            frame = self._target.screenshot(client_only=True, method="auto")
-            self._frame = frame
+            frame = await self._observer.ensure_frame(force=True)
 
-        result = matcher.match(
-            target=frame,
-            template=img_path,
+        hotspot_on = (
+            self.use_hotspot_roi
+            if use_hotspot_roi is None
+            else bool(use_hotspot_roi)
+        )
+        result = adaptive_match(
+            matcher,
+            frame,
+            img_path,
             threshold=threshold,
-            use_color_check=use_color_check,
+            match_type=mtype,
+            use_color_check=use_color_check if mode == "image" else False,
             match_select=match_select,
+            use_orb=(mode == "image"),
+            pixel_tol=pixel_tol,
+            template_key=normalize_template_key(img_path),
+            capture_mode=resolve_capture_mode(self),
+            enabled=hotspot_on,
+            multi=False,
         )
 
         score = getattr(result, "score", getattr(result, "max_val", None))
-        ok = bool(result and result.x is not None)
+        ok = bool(result and result.x is not None and getattr(result, "match_success", True))
+        if result and hasattr(result, "score") and result.score is not None:
+            ok = bool(result.x is not None and result.score >= threshold)
         mx = getattr(result, "x", None) if result else None
         my = getattr(result, "y", None) if result else None
         self._emit_match_hud(
@@ -226,28 +306,45 @@ class UserWindow:
             use_color_check: bool = False,
             match_select: str = "best",
             max_delay: float | None = None,
+            match_mode: str = "image",
+            pixel_tol: float = 8.0,
     ):
         """找图 → 偏移 → 后台点击。"""
         _t0 = time.time()
         await self._check()
 
         if not self.use_polling_temp_cache:
+            await self._observer.ensure_frame()
             offset = human_offset(pianyi)
             result = self._match_and_click(
                 img_path=img_path, pianyi=offset, threshold=threshold,
                 use_color_check=use_color_check, match_select=match_select,
+                match_mode=match_mode, pixel_tol=pixel_tol,
             )
             self._stuck.note_action("click", img_path, bool(result))
             if result:
                 self._note_progress()
+                self.invalidate_frame()
+                try:
+                    await self._observer.ensure_frame(force=True)
+                except Exception:
+                    self.polling_temp_cache = {}
             return result
 
-        key = (str(img_path), threshold, use_color_check, match_select)
+        key = (
+            str(img_path),
+            threshold,
+            use_color_check,
+            match_select,
+            match_mode,
+            pixel_tol,
+        )
 
         if key not in self.polling_temp_cache:
             self.polling_temp_cache[key] = await self.match_image(
                 img_path=img_path, threshold=threshold,
                 use_color_check=use_color_check, match_select=match_select,
+                match_mode=match_mode, pixel_tol=pixel_tol,
             )
 
         match = self.polling_temp_cache[key]
@@ -276,23 +373,39 @@ class UserWindow:
         print(f"{self._target.title}: 点击图片:{img_path}({x},{y}), "
               f"最大匹配度:{match.score if hasattr(match, 'score') else '?'}")
 
+        self.invalidate_frame()
+        try:
+            await self._observer.ensure_frame(force=True)
+        except Exception:
+            self.polling_temp_cache = {}
         return True
 
     def _match_and_click(self, img_path, pianyi, threshold,
-                         use_color_check, match_select):
+                         use_color_check, match_select,
+                         match_mode="image", pixel_tol=8.0):
         """同步版找图+点击。"""
         from backend.matcher.matcher import matcher
 
         self._emit_match_hud(str(img_path), "matching")
 
         frame = self._frame
-        if frame is None:
+        if frame is None or self._observer.is_stale:
             frame = self._target.screenshot(client_only=True, method="auto")
             self._frame = frame
+            self._observer._note_new_frame(frame)
+
+        mode = (match_mode or "image").lower()
+        if mode not in ("image", "pixel"):
+            mode = "image"
+        mtype = "pixel" if mode == "pixel" else "image"
 
         result = matcher.match(
             target=frame, template=img_path, threshold=threshold,
-            use_color_check=use_color_check, match_select=match_select,
+            match_type=mtype,
+            use_color_check=use_color_check if mode == "image" else False,
+            match_select=match_select,
+            use_orb=(mode == "image"),
+            pixel_tol=pixel_tol,
         )
         score = getattr(result, "score", getattr(result, "max_val", None)) if result else None
         if not result or result.x is None:
@@ -321,7 +434,7 @@ class UserWindow:
 
         while True:
             await self._check()
-            await self.update_frame()
+            await self._observer.ensure_frame(force=True)
             result = await self.match_image(img_path=img_path)
             if result and result.x is not None:
                 return True
@@ -334,7 +447,7 @@ class UserWindow:
         deadline = datetime.now() + timedelta(seconds=timeout)
         while datetime.now() < deadline:
             await self._check()
-            await self.update_frame()
+            await self._observer.ensure_frame(force=True)
             if await self.click_image(img_path=img_path):
                 continue
             else:

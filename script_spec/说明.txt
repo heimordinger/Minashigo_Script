@@ -10,4 +10,5 @@
 启动:
   python/python311/Scripts/python.exe -m script_spec
 
-尚未接入主窗口与脚本生成管线。
+主窗口右下角「脚本说明」打开本编辑器（关闭仅隐藏，内容保留）；也可继续用 python -m script_spec 单独打开。
+尚未接入脚本生成管线（导出文本后仍需自行贴到生成器）。

@@ -6,12 +6,14 @@ from datetime import datetime
 from pathlib import Path
 
 from PySide6.QtCore import Qt, QEvent, QPoint, QTimer
-from PySide6.QtGui import QColor, QPixmap, QCursor
+from PySide6.QtGui import QColor, QPixmap, QCursor, QIcon
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QComboBox, QCheckBox, QTableWidget, QTableWidgetItem, QHeaderView,
     QAbstractItemView, QFrame, QDialog, QScrollArea, QDialogButtonBox,
 )
+
+from core.path import ICON_PATH
 
 
 _ACTION_TEXT = {"match": "match", "click": "click"}
@@ -126,16 +128,31 @@ class _FullPreviewDialog(QDialog):
 
 
 class MatchDebugWindow(QWidget):
-    """无模态 Tool 窗口，可拖到副屏边跑边看。"""
+    """无模态独立窗口：可与主窗互相遮挡；关闭仅隐藏，继续采集。"""
 
     MAX_ROWS = 800
+    _instance: MatchDebugWindow | None = None
 
     def __init__(self, parent=None):
-        super().__init__(parent, Qt.Tool)
+        # 不挂 parent，避免 Tool/子窗口始终压在主窗之上
+        super().__init__(None, Qt.Window)
         self.setWindowTitle("匹配调试")
+        self.setWindowIcon(QIcon(str(ICON_PATH)))
         self.setMinimumSize(720, 360)
         self.resize(860, 480)
         self.setObjectName("MatchDebugWindow")
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+        self._force_close = False
+
+        parent_qss = (parent.styleSheet() or "").strip() if parent is not None else ""
+        if parent_qss:
+            self.setStyleSheet(parent_qss)
+        else:
+            try:
+                from gui.styles.theme import current_theme_from_config, load_theme_qss
+                self.setStyleSheet(load_theme_qss(current_theme_from_config()))
+            except Exception:
+                pass
 
         self._events: deque[dict] = deque(maxlen=self.MAX_ROWS)
         self._accounts: set[str] = set()
@@ -247,6 +264,31 @@ class MatchDebugWindow(QWidget):
     def hideEvent(self, event):
         self._hide_hover()
         super().hideEvent(event)
+
+    def force_close(self):
+        """主程序退出时真正关闭并释放。"""
+        self._force_close = True
+        self.close()
+
+    def closeEvent(self, event):
+        if self._force_close:
+            if MatchDebugWindow._instance is self:
+                MatchDebugWindow._instance = None
+            super().closeEvent(event)
+            return
+        self.hide()
+        event.ignore()
+
+    @classmethod
+    def open(cls, *, parent=None) -> MatchDebugWindow:
+        win = cls._instance
+        if win is None:
+            win = cls(parent=parent)
+            cls._instance = win
+        win.show()
+        win.raise_()
+        win.activateWindow()
+        return win
 
     def changeEvent(self, event):
         if event.type() == QEvent.Type.WindowDeactivate:

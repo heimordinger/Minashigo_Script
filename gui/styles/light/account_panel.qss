@@ -1,0 +1,224 @@
+/*
+  账号面板 · 亮色主题 · 纸感工作室 v1
+*/
+
+QWidget#AccountPanel {
+    background-color: transparent;
+}
+
+QLabel#AccountTitle {
+    font-size: 14px;
+    font-weight: bold;
+    color: #1f1f1d;
+}
+
+QComboBox#AccountSwitchCombo {
+    min-width: 160px;
+    max-width: 280px;
+    font-weight: bold;
+}
+
+QWidget#TopRow {
+    background: transparent;
+}
+
+QWidget#ScriptSelect {
+    background-color: #ffffff;
+    border: 1px solid #ddd8ce;
+    border-radius: 4px;
+}
+
+QLabel#ScriptSelectLabel {
+    padding: 4px 8px;
+    background-color: #f4f2ed;
+    border-right: 1px solid #ddd8ce;
+    color: #7a776f;
+}
+
+QComboBox#ScriptSelectCombo,
+QPushButton#ScriptSelectCombo {
+    border: none;
+    background-color: transparent;
+    color: #2a2a28;
+    padding: 4px 6px;
+}
+
+QWidget#ScriptSelect:hover,
+QWidget#ScriptSelect:focus-within {
+    border-color: #3b6fd8;
+}
+
+QScrollArea#CardScroll {
+    border: 1px solid #ddd8ce;
+    border-radius: 4px;
+    background-color: #ffffff;
+}
+
+#CardScroll QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 0;
+}
+
+#CardScroll QScrollBar::handle:vertical {
+    background: #c9c3b6;
+    min-height: 30px;
+    border-radius: 4px;
+}
+
+#CardScroll QScrollBar::handle:vertical:hover {
+    background: #aea89a;
+}
+
+#CardScroll QScrollBar::add-line:vertical,
+#CardScroll QScrollBar::sub-line:vertical {
+    height: 0;
+}
+
+#CardScroll QScrollBar::add-page:vertical,
+#CardScroll QScrollBar::sub-page:vertical {
+    background: none;
+}
+
+QWidget#CardContainer {
+    background-color: #ffffff;
+}
+
+QWidget#TaskBallCard {
+    background-color: transparent;
+    border-bottom: 1px solid #ebe8e1;
+}
+
+QWidget#BallColumn {
+    background-color: #faf8f4;
+    border-right: 1px solid #ebe8e1;
+}
+
+QWidget#CardContent {
+    background-color: #ffffff;
+}
+
+QWidget#CardHeader {
+    background-color: #f4f2ed;
+    border-bottom: 1px solid #ebe8e1;
+}
+
+QWidget#CardHeader:hover {
+    background-color: #ebe8e1;
+}
+
+QLabel#CardTitle {
+    color: #1f1f1d;
+    font-weight: bold;
+    font-size: 12px;
+}
+
+QLabel#CardStatus {
+    color: #2f9a5f;
+    font-size: 11px;
+}
+
+QLabel#CardTarget {
+    font-size: 10px;
+    font-weight: bold;
+    padding: 1px 6px;
+    border-radius: 8px;
+    color: #5c5952;
+    background-color: #ebe8e1;
+}
+
+QLabel#CardTarget[target="browser"] {
+    color: #2a4f8f;
+    background-color: #dce8fb;
+}
+
+QLabel#CardTarget[target="window"] {
+    color: #7a4a12;
+    background-color: #f5e6d0;
+}
+
+QLabel#CardArrow {
+    color: #a8a59c;
+    font-size: 11px;
+}
+
+QWidget#CardBody {
+    background-color: #faf8f4;
+}
+
+QTextEdit#CardLog {
+    background-color: #faf8f4;
+    border: none;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 10pt;
+    color: #3a3834;
+    padding: 2px 8px;
+}
+
+QTextEdit#LogView {
+    background-color: #ffffff;
+    border: 1px solid #ddd8ce;
+    border-radius: 4px;
+    font-family: Consolas, "Cascadia Mono", monospace;
+    font-size: 10pt;
+}
+
+#AccountHeader {
+    background-color: transparent;
+}
+
+#CloseXButton {
+    background: transparent;
+    color: #7a776f;
+    border: none;
+    font-weight: bold;
+    padding: 2px 6px;
+}
+
+#CloseXButton:hover {
+    color: #ffffff;
+    background-color: #c44b4b;
+    border-radius: 8px;
+}
+
+QPushButton#TabCloseButton[accountTab="true"] {
+    margin-left: 4px;
+}
+
+QLabel#MousePosLabel {
+    color: #7a776f;
+    font-size: 11px;
+}
+
+/* ===== 脚本排队标签 ===== */
+QWidget#ScriptQueueBar {
+    background: transparent;
+}
+
+QWidget#QueueChip {
+    background-color: #e8effc;
+    border: 1px solid #b7c9ef;
+    border-radius: 12px;
+}
+
+QLabel#QueueChipLabel {
+    color: #2a4f8f;
+    font-size: 12px;
+    font-weight: bold;
+    background: transparent;
+}
+
+QPushButton#QueueChipClose {
+    background: transparent;
+    border: none;
+    color: #5c6f94;
+    font-size: 14px;
+    font-weight: bold;
+    padding: 0;
+    border-radius: 9px;
+}
+
+QPushButton#QueueChipClose:hover {
+    background-color: #c44b4b;
+    color: #ffffff;
+}

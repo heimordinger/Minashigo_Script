@@ -1,0 +1,163 @@
+{
+  "version": 1,
+  "few_shot_max": 5,
+  "few_shot": [
+    {
+      "id": "unknown_routing",
+      "file": "few_shot/01_unknown_routing.py",
+      "tags": ["fsm", "unknown", "routing", "login", "push", "deepone", "minashigo"],
+      "title": "unknown_state 场景路由（命中返回业务态，禁止返回未知）"
+    },
+    {
+      "id": "post_click_wait",
+      "file": "few_shot/02_post_click_wait.py",
+      "tags": ["fsm", "click", "wait", "transition", "login", "push"],
+      "title": "点击后 wait_image 确认转场"
+    },
+    {
+      "id": "multi_task_dispatch",
+      "file": "few_shot/03_multi_task_dispatch.py",
+      "tags": ["multi", "daily", "run_task", "deepone", "日常"],
+      "title": "多任务 run_task：每任务独立入口；出击枢纽禁止 return 自身"
+    },
+    {
+      "id": "goal_exit",
+      "file": "few_shot/04_goal_exit.py",
+      "tags": ["exit", "done", "idle", "goal", "daily", "multi", "login"],
+      "title": "本任务 __exit__ vs 本步骤结束；@返回主界面 = return 态名；出击点不到先回家"
+    },
+    {
+      "id": "threshold_usage",
+      "file": "few_shot/05_threshold_usage.py",
+      "tags": ["threshold", "nav", "icon", "match"],
+      "title": "场景 id / 按钮阈值分工"
+    },
+    {
+      "id": "room_ok_popup",
+      "file": "few_shot/06_room_ok_popup.py",
+      "tags": ["room", "daily", "deepone", "popup", "click", "exit", "日常", "multi"],
+      "title": "房间领取 room_ok 弹窗（无收取按钮时仍须关 ok）"
+    },
+    {
+      "id": "update_frame_refresh",
+      "file": "few_shot/07_update_frame.py",
+      "tags": ["frame", "update_frame", "click", "wait", "fsm", "daily", "room", "multi", "login", "push"],
+      "title": "click/b_sleep 后再 match 必须先 update_frame"
+    },
+    {
+      "id": "match_multi_dict",
+      "file": "few_shot/08_match_multi_dict.py",
+      "tags": ["match", "multi", "jjc", "daily", "deepone", "日常", "click", "dict"],
+      "title": "match_image_multi：jjc_段位按 x 最大选 hit 再 click(x,y)"
+    },
+    {
+      "id": "scene_first",
+      "file": "few_shot/09_scene_first_architecture.py",
+      "tags": ["fsm", "unknown", "routing", "scene", "architecture", "daily", "multi"],
+      "title": "先识场景再决策：unknown_state 只认屏，步骤 handler 再做事"
+    },
+    {
+      "id": "v2_semantic_map",
+      "file": "few_shot/10_v2_semantic_structure_map.py",
+      "tags": ["fsm", "v2", "semantic", "architecture", "daily", "multi", "login", "push", "deepone", "scene", "run_task"],
+      "title": "v2 介绍语义→结构：推本 scene_fsm + 日常 run_task（禁巨型 handler）"
+    },
+    {
+      "id": "fsm_branch_dispatch",
+      "file": "few_shot/11_fsm_branch_dispatch.py",
+      "tags": ["fsm", "branch", "routing", "scene", "daily", "multi", "run_task", "v2", "semantic", "exit", "goal"],
+      "title": "FSM 分支：SCENE_TO_STEP + resolve_state；场景桩注册 STATES"
+    },
+    {
+      "id": "minimal_multitask_paradigm",
+      "file": "few_shot/12_minimal_multitask_paradigm.py",
+      "tags": ["paradigm", "minimal", "structure", "multi", "run_task", "scene", "routing", "fsm", "architecture", "v2", "semantic"],
+      "title": "【结构范式】最小多任务：scene + SCENE_TO_STEP + bootstrap run_task",
+      "pin": "multi_scene"
+    },
+    {
+      "id": "jjc_fight_wait",
+      "file": "few_shot/13_jjc_fight_wait.py",
+      "tags": ["jjc", "arena", "daily", "deepone", "wait", "fight", "loading", "multi", "日常"],
+      "title": "竞技场出击后长时间等待战斗/loading（独立等待步，禁止信 jjc_logo）"
+    }
+  ],
+  "template_max": 1,
+  "templates": [
+    {
+      "id": "do_login_v2",
+      "title": "DeepOne 登录 v2",
+      "script": "scripts/Deep One/DO登录_v2.py",
+      "explanation": "assets/images/DeepOne/DO登录/脚本解释.txt",
+      "source_dir": "assets/images/DeepOne/DO登录",
+      "tags": ["login", "deepone", "fsm", "dmm"],
+      "summary": "从任意网页跳到 DeepOne 游戏页，处理 DMM 登录，点进游戏并清掉登录奖励后结束。",
+      "when_to_use": "介绍含登录/网页跳转/DMM/账号密码，或素材夹是 DO登录；场景含 start1/start2/logo/skip/关闭/rank。",
+      "copy": [
+        "FSM + GUARDS 弹窗优先",
+        "unknown_state 并发匹配，命中返回业务态",
+        "点击后复查标识图是否消失",
+        "出现 rank 立刻 __exit__"
+      ],
+      "do_not_copy": [
+        "IMG_DIR / entry_url / 图片文件名",
+        "goto / dmm_login / get_url（仅登录网页跳转需要）"
+      ],
+      "states": ["网页跳转", "游戏页加载", "进入游戏", "登录奖励", "完成登录"],
+      "images": ["start1", "start2", "logo", "skip", "关闭", "rank", "err1_1"],
+      "keywords": ["登录", "login", "网页跳转", "DMM", "账号", "密码", "start1", "start2", "logo", "rank", "DeepOne", "deeponer"]
+    },
+    {
+      "id": "do_push_v2",
+      "title": "DeepOne 推本 v2",
+      "script": "scripts/Deep One/DO推本_v2.py",
+      "explanation": "assets/images/DeepOne/DO推本/脚本解释.txt",
+      "source_dir": "assets/images/DeepOne/DO推本",
+      "tags": ["push", "deepone", "fsm", "click"],
+      "summary": "从任意场景开始清活动 new 关：选关 → 备战出击 → 跳过剧情 → 结算，任务栏切满后结束。",
+      "when_to_use": "介绍含推本/选关/备战/剧情/new关卡，或素材夹是 DO推本；场景含 1_select/1_new/2_chuji/3_skip/4_result。",
+      "copy": [
+        "unknown_state 四场景并发识别",
+        "GUARDS 处理广告和网络弹窗",
+        "点击后 wait_image / 复查转场",
+        "无 new 且切栏达上限则 __exit__"
+      ],
+      "do_not_copy": [
+        "IMG_DIR / 关卡图文件名",
+        "max_tab_switches 的具体数字（按当前介绍）"
+      ],
+      "states": ["选关", "备战", "跳过剧情", "等待战后结算"],
+      "images": ["1_select", "1_new", "1_complete", "1_c", "2_chuji", "3_skip", "3_hai", "4_result", "4_rank", "4_next", "4_cihe"],
+      "keywords": ["推本", "选关", "备战", "剧情", "new", "通关", "任务栏", "结算", "出击", "1_new", "1_select", "2_chuji", "3_skip", "4_result"]
+    },
+    {
+      "id": "orphan_login_v2",
+      "title": "孤儿登录 v2",
+      "script": "scripts/孤儿/孤儿登录_v2.py",
+      "explanation": "assets/images/minashigo/孤儿登录/脚本解释.txt",
+      "source_dir": "assets/images/minashigo/孤儿登录",
+      "tags": ["login", "minashigo", "fsm", "dmm"],
+      "summary": "从任意网页跳到孤儿游戏页，处理 DMM 登录，点进游戏并按优先级清奖励弹窗后结束。",
+      "when_to_use": "介绍含登录且游戏是孤儿/minashigo，或素材夹是孤儿登录；场景含 start1/start2/menu/skip/ok/close1/石头/rank。",
+      "copy": [
+        "与 DO登录 相同的网页跳转 + FSM",
+        "奖励弹窗按优先级点：skip/ok/close，石头最低",
+        "出现 rank 立刻 __exit__"
+      ],
+      "do_not_copy": [
+        "IMG_DIR / entry_url / 图片文件名",
+        "goto / dmm_login（仅登录网页跳转需要）"
+      ],
+      "states": ["网页跳转", "游戏页加载", "进入游戏", "登录奖励", "完成登录"],
+      "images": ["start1", "start2", "menu", "skip", "ok", "close1", "close2", "石头", "rank"],
+      "keywords": ["登录", "login", "网页跳转", "DMM", "孤儿", "minashigo", "start1", "start2", "menu", "石头", "rank"]
+    }
+  ],
+  "golden": [
+    {"id": "do_login", "dir": "golden/do_login"},
+    {"id": "do_push", "dir": "golden/do_push"},
+    {"id": "orphan_sortie", "dir": "golden/orphan_sortie"},
+    {"id": "do_daily_multitask", "dir": "golden/do_daily_multitask"},
+    {"id": "synthetic_minimal", "dir": "golden/synthetic_minimal"}
+  ]
+}

@@ -19,10 +19,14 @@ class ScriptGenState(TypedDict, total=False):
     enable_plan: bool
     max_fix_retries: int
     max_tokens: int
+    free_mode: bool
 
     # intermediate
     plan: str  # display / fallback text
     plan_struct: dict  # normalized structured plan
+    split_mode: bool  # True → generate_task × N → merge
+    task_index: int
+    task_codes: list[str]  # per-task fragments
     code: str
     errors: list[str]
     attempt: int

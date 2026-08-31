@@ -1,0 +1,13 @@
+{
+  "id": "orphan_sortie",
+  "title": "孤儿出击（可复用模块）",
+  "tags": ["minashigo", "orphan", "sortie", "reuse"],
+  "source_dir": "assets/images/minashigo/孤儿出击",
+  "ref_script": "scripts/孤儿/孤儿出击.py",
+  "explanation_file": "explanation.txt",
+  "expect_few_shot": ["unknown_routing"],
+  "expect_template": null,
+  "must_contain": ["async def do_work", "UserBrowser"],
+  "must_not_contain": [],
+  "notes": "手写可复用脚本；生成侧应倾向 import select_support_and_sorite（手写版仍含 use_color_check，不作为负向指纹）"
+}

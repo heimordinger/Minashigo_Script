@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import subprocess
 import sys
@@ -119,11 +119,17 @@ class FacadeImpl:
         if not process_dir.exists():
             return []
 
-        return sorted([
+        paths = [
             str(p.relative_to(process_dir)).replace("\\", "/")
             for p in process_dir.rglob("*.py")
             if p.is_file()
-        ])
+            and p.name != "__init__.py"
+            and not str(p.relative_to(process_dir)).replace("\\", "/").startswith("_trial/")
+        ]
+        trial_gen = process_dir / "_trial" / "_gen_trial.py"
+        if trial_gen.is_file():
+            paths.append("_trial/_gen_trial.py")
+        return sorted(set(paths))
 
     def get_status_snapshot(self):
         return []
@@ -174,6 +180,10 @@ class FacadeImpl:
         self.controller.submit(
             self._start_browser_async(account)
         )
+
+    def transfer_browser(self, from_account: dict, to_account: dict) -> bool:
+        """切换账号面板时继承已启动的浏览器（不新开 Chrome）。"""
+        return self.controller.transfer_browser(from_account, to_account)
 
     async def _start_browser_async(self, account: dict):
         await self.controller.start_browser_async(account)

@@ -34,15 +34,41 @@ class TaskController:
         self._stopped = False
 
     def start(self, *, task_name):
-        if self._future:
-            return
+        if self._future is not None:
+            if not self._future.done():
+                print(
+                    f"[TaskController] 忽略重复 start：{self.account['name']} "
+                    f"任务仍在运行 ({self.task_name})"
+                )
+                return
+            self._future = None
         self._stopped = False
         self._paused = False
         self.task_name = task_name
         self._future = self.controller.submit(self._run_async())
 
+    async def _archive_stop_frame(self, target, *, reason: str) -> None:
+        if target is None:
+            return
+        from backend.automation.stop_frame_archive import save_task_stop_frame
+
+        path = await save_task_stop_frame(
+            target,
+            account=self.account,
+            reason=reason,
+            task_name=self.task_name,
+        )
+        if path:
+            self.controller.emit_log(
+                account=self.account["name"],
+                level=LogLevel.INFO,
+                message=f"结束帧已归档: {path}",
+                source="runner",
+            )
+
     async def _run_async(self):
         name = self.account["name"]
+        run_target = None
 
         try:
             # 先加载脚本，通过 do_work 的参数类型注解决定目标
@@ -90,6 +116,8 @@ class TaskController:
                     )
                     raise RuntimeError(f"脚本需要{'窗口' if prefer_window else '浏览器'}目标，{hint}")
 
+            run_target = user_browser
+
             # 日志确认实际使用的对象类型
             type_name = type(user_browser).__name__
             if hasattr(user_browser, '_obj'):
@@ -105,11 +133,29 @@ class TaskController:
                     _target.note_progress()
                 except Exception:
                     pass
-            await script.do_work(user_browser)
+
+            # 按需观察：脚本运行期间默认声明 floor Hz；结束即释放（无人则停截）
+            from backend.automation.frame_observer import DEFAULT_SCRIPT_FPS
+            _obs = user_browser
+            try:
+                if hasattr(_obs, "request_fps"):
+                    await _obs.request_fps(DEFAULT_SCRIPT_FPS, key="script")
+            except Exception as e:
+                print(f"[TaskController] request_fps 失败: {e}")
+
+            try:
+                await script.do_work(user_browser)
+            finally:
+                try:
+                    if hasattr(_obs, "release_fps"):
+                        await _obs.release_fps("script")
+                except Exception as e:
+                    print(f"[TaskController] release_fps 失败: {e}")
 
             self.controller.on_task_finished(name)
 
         except (TaskStopped, asyncio.CancelledError):
+            await self._archive_stop_frame(run_target, reason="stopped")
             self.controller.emit_log(
                 account=name,
                 level=LogLevel.INFO,
@@ -119,6 +165,7 @@ class TaskController:
             self.controller.on_task_stopped(name)
 
         except Exception:
+            await self._archive_stop_frame(run_target, reason="error")
             self.controller.emit_log(
                 account=name,
                 level=LogLevel.ERROR,
@@ -130,6 +177,15 @@ class TaskController:
                 status=TaskStatus.ERROR,
                 step="exception",
                 message="任务执行异常",
+            )
+            from core.state.events import StateEvent, StateDomain
+            self.controller.emit_state(
+                StateEvent(
+                    account=name,
+                    domain=StateDomain.RUNTIME,
+                    key="running",
+                    value=False,
+                )
             )
 
         finally:

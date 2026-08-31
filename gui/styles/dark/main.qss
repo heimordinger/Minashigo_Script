@@ -1,0 +1,357 @@
+/*
+  暗色主题 · 纸感工作室
+  ------------------------------------------------
+  Tokens:
+    bg          #16181c
+    surface     #1c1f24
+    surface-2   #23272e
+    border      #2c3138
+    text        #e8eaed
+    muted       #8b929c
+    accent      #5b8def
+    success     #6fbf8a
+    danger      #d16b6b
+    warn        #c9a227
+*/
+
+QWidget {
+    background-color: #16181c;
+    color: #e8eaed;
+    font-family: "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Segoe UI", sans-serif;
+    font-size: 13px;
+}
+
+*:disabled {
+    color: #6a7078;
+}
+
+QLabel {
+    background: transparent;
+    color: #e8eaed;
+}
+
+QLabel#TitleLabel {
+    font-size: 16px;
+    font-weight: bold;
+    color: #e8eaed;
+    letter-spacing: 0.5px;
+}
+
+QLabel#StatusLabel {
+    color: #6fbf8a;
+    font-weight: bold;
+}
+
+QLabel#MutedLabel {
+    color: #8b929c;
+    font-size: 11px;
+}
+
+QPushButton {
+    background-color: transparent;
+    color: #e8eaed;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+    padding: 6px 14px;
+}
+
+QPushButton:hover {
+    background-color: #1c1f24;
+    border-color: #3d4450;
+}
+
+QPushButton:pressed {
+    background-color: #121418;
+}
+
+QPushButton:disabled {
+    background-color: transparent;
+    color: #6a7078;
+    border-color: #252930;
+}
+
+QPushButton#PrimaryButton {
+    background-color: #5b8def;
+    color: #ffffff;
+    border: 1px solid #5b8def;
+    font-weight: bold;
+}
+
+QPushButton#PrimaryButton:hover {
+    background-color: #6b9af5;
+    border-color: #6b9af5;
+}
+
+QPushButton#PrimaryButton:pressed {
+    background-color: #4a7ad8;
+}
+
+QPushButton#PrimaryButton:disabled {
+    background-color: #2a3344;
+    color: #7a8494;
+    border-color: #2a3344;
+}
+
+QPushButton#DangerButton {
+    background-color: transparent;
+    color: #d16b6b;
+    border: 1px solid #5a3434;
+}
+
+QPushButton#DangerButton:hover {
+    background-color: #3a2222;
+    border-color: #d16b6b;
+}
+
+QPushButton#SecondaryButton {
+    background-color: #1c1f24;
+    border: 1px solid #2c3138;
+}
+
+QPushButton#GhostButton {
+    background-color: transparent;
+    border: none;
+    color: #8b929c;
+    padding: 4px 10px;
+}
+
+QPushButton#GhostButton:hover {
+    color: #e8eaed;
+    background-color: #1c1f24;
+}
+
+QLineEdit,
+QTextEdit,
+QPlainTextEdit {
+    background-color: #121418;
+    color: #e8eaed;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+    padding: 6px 8px;
+    selection-background-color: #3a5080;
+}
+
+QLineEdit:focus,
+QTextEdit:focus,
+QPlainTextEdit:focus {
+    border-color: #5b8def;
+}
+
+QComboBox {
+    background-color: #121418;
+    color: #e8eaed;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+    padding: 6px 8px;
+}
+
+QComboBox:hover {
+    border-color: #3d4450;
+}
+
+QComboBox:focus {
+    border-color: #5b8def;
+}
+
+QComboBox::drop-down {
+    border-left: 1px solid #2c3138;
+    width: 22px;
+}
+
+QComboBox QAbstractItemView {
+    background-color: #1c1f24;
+    color: #e8eaed;
+    border: 1px solid #2c3138;
+    selection-background-color: #2a3a58;
+    outline: none;
+}
+
+QSpinBox {
+    background-color: #121418;
+    color: #e8eaed;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+    padding: 4px 6px;
+}
+
+QCheckBox {
+    color: #c5c9d0;
+    spacing: 6px;
+}
+
+QGroupBox {
+    background-color: transparent;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+    margin-top: 12px;
+    padding-top: 10px;
+    font-weight: bold;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 4px;
+    color: #a8b0bc;
+}
+
+QTabWidget::pane {
+    border: none;
+    border-top: 1px solid #2c3138;
+    background-color: #16181c;
+    top: -1px;
+}
+
+QTabBar::tab {
+    background-color: transparent;
+    color: #8b929c;
+    padding: 9px 18px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-right: 2px;
+}
+
+QTabBar::tab:selected {
+    color: #e8eaed;
+    border-bottom: 2px solid #5b8def;
+    background-color: transparent;
+}
+
+QTabBar::tab:hover:!selected {
+    color: #c5c9d0;
+    background-color: #1c1f24;
+}
+
+QStatusBar {
+    background-color: #121418;
+    border-top: 1px solid #2c3138;
+}
+
+QStatusBar QLabel {
+    color: #8b929c;
+}
+
+QStatusBar QPushButton {
+    border: none;
+    background: transparent;
+    color: #8b929c;
+    padding: 2px 10px;
+}
+
+QStatusBar QPushButton:hover {
+    color: #e8eaed;
+    background-color: #1c1f24;
+}
+
+QScrollBar:vertical {
+    background: transparent;
+    width: 10px;
+    margin: 0;
+}
+
+QScrollBar:horizontal {
+    background: transparent;
+    height: 10px;
+    margin: 0;
+}
+
+QScrollBar::handle:vertical,
+QScrollBar::handle:horizontal {
+    background-color: #3a404a;
+    border-radius: 4px;
+    min-height: 24px;
+}
+
+QScrollBar::handle:vertical:hover,
+QScrollBar::handle:horizontal:hover {
+    background-color: #525966;
+}
+
+QScrollBar::add-line,
+QScrollBar::sub-line {
+    height: 0;
+    width: 0;
+}
+
+QScrollBar::add-page,
+QScrollBar::sub-page {
+    background: none;
+}
+
+QToolTip {
+    background-color: #1c1f24;
+    color: #e8eaed;
+    border: 1px solid #2c3138;
+    border-radius: 4px;
+    padding: 4px 8px;
+}
+
+QSplitter::handle {
+    background-color: #2c3138;
+}
+
+QSplitter::handle:hover {
+    background-color: #5b8def;
+}
+
+QProgressBar {
+    background-color: #121418;
+    border: 1px solid #2c3138;
+    border-radius: 3px;
+    text-align: center;
+    color: #8b929c;
+}
+
+QProgressBar::chunk {
+    background-color: #5b8def;
+    border-radius: 2px;
+}
+
+QListWidget#AccountList {
+    background-color: #121418;
+    border: 1px solid #2c3138;
+    border-radius: 6px;
+    padding: 6px;
+    outline: none;
+}
+
+QListWidget#AccountList::item {
+    background-color: #1c1f24;
+    border-radius: 6px;
+    border: 1px solid transparent;
+    margin: 2px 0;
+}
+
+QListWidget#AccountList::item:hover {
+    background-color: #23272e;
+    border-color: #2c3138;
+}
+
+QListWidget#AccountList::item:selected {
+    background-color: #1e2a3e;
+    border-color: #5b8def;
+}
+
+QLabel#AccountCardName {
+    color: #e8eaed;
+    background: transparent;
+}
+
+QLabel#AccountCardEmail {
+    color: #8b929c;
+    background: transparent;
+}
+
+QFrame#Hairline {
+    color: #2c3138;
+    background-color: #2c3138;
+    max-width: 1px;
+}
+
+QLineEdit#UserConfigValue {
+    color: #e8eaed;
+}
+
+QLineEdit#DefaultConfigValue {
+    color: #8b929c;
+}

@@ -1,5 +1,5 @@
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QBrush, QTextCursor
+from PySide6.QtGui import QPainter, QColor, QPen, QFont, QBrush, QTextCursor, QWheelEvent
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QTextEdit,
@@ -68,6 +68,27 @@ class BallIcon(QWidget):
         p.drawText(cx - r, cy - r, r + r, r + r, Qt.AlignCenter, str(self.index))
 
 
+class _CardLogTextEdit(QTextEdit):
+    """日志区滚轮仅滚动自身；到顶/底时不把事件传给外层任务球列表。"""
+
+    def wheelEvent(self, event: QWheelEvent):
+        sb = self.verticalScrollBar()
+        if sb.maximum() <= sb.minimum():
+            event.ignore()
+            return
+
+        delta = event.angleDelta().y()
+        if delta > 0 and sb.value() <= sb.minimum():
+            event.accept()
+            return
+        if delta < 0 and sb.value() >= sb.maximum():
+            event.accept()
+            return
+
+        super().wheelEvent(event)
+        event.accept()
+
+
 class TaskBallCard(QWidget):
     """水平分栏卡：左侧固定球列 + 右侧日志区"""
 
@@ -94,6 +115,7 @@ class TaskBallCard(QWidget):
         self._target_type = (target_type or "").strip() or None
         self._status = None
         self._expanded = True
+        self._auto_scroll_logs = True
         self.events: list[LogEvent] = []
 
         layout = QHBoxLayout(self)
@@ -153,10 +175,11 @@ class TaskBallCard(QWidget):
         bl = QVBoxLayout(self._body)
         bl.setContentsMargins(0, 0, 0, 0)
 
-        self.log_text = QTextEdit()
+        self.log_text = _CardLogTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.setObjectName("CardLog")
         bl.addWidget(self.log_text)
+        self.log_text.verticalScrollBar().valueChanged.connect(self._on_log_scroll)
 
         ca.addWidget(self._header)
         ca.addWidget(self._body)
@@ -222,18 +245,41 @@ class TaskBallCard(QWidget):
         self._ball.set_color(color)
         self._status_label.setText(value)
 
+    AUTO_SCROLL_THRESHOLD = 24
+
+    def _on_log_scroll(self, value: int):
+        sb = self.log_text.verticalScrollBar()
+        self._auto_scroll_logs = sb.maximum() - value <= self.AUTO_SCROLL_THRESHOLD
+
+    def _apply_log_scroll(self, prev_value: int | None = None):
+        sb = self.log_text.verticalScrollBar()
+        if self._auto_scroll_logs:
+            sb.setValue(sb.maximum())
+        elif prev_value is not None:
+            sb.setValue(prev_value)
+
     def add_event(self, event: LogEvent):
         self.events.append(event)
         self._render_event(event)
 
+    @staticmethod
+    def _is_light_theme() -> bool:
+        try:
+            from core.config.config import config
+            return config.ui_theme != "dark"
+        except Exception:
+            return True
+
     def _color_for_level(self, level: LogLevel) -> str:
+        light = self._is_light_theme()
         if level == LogLevel.ERROR:
-            return "#e8554d"
-        elif level == LogLevel.WARNING:
-            return "#f0ad4e"
-        elif level == LogLevel.DEBUG:
-            return "#888888"
-        return "#d4d4d4"
+            return "#c44b4b" if light else "#e8554d"
+        if level == LogLevel.WARNING:
+            return "#a87410" if light else "#f0ad4e"
+        if level == LogLevel.DEBUG:
+            return "#7a776f" if light else "#888888"
+        # INFO / 默认：亮色用深灰，暗色用浅灰
+        return "#3a3834" if light else "#c8ccd2"
 
     def _tag_for_level(self, level: LogLevel) -> str:
         if level == LogLevel.ERROR:
@@ -251,13 +297,16 @@ class TaskBallCard(QWidget):
         msg = event.message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         line = f'<span style="color:{color}">[{ts}] [{tag}] {msg}</span><br>'
+        sb = self.log_text.verticalScrollBar()
+        prev = sb.value()
         cursor = self.log_text.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.insertHtml(line)
-        sb = self.log_text.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        self._apply_log_scroll(prev)
 
     def load_all_logs(self):
+        sb = self.log_text.verticalScrollBar()
+        prev = sb.value()
         self.log_text.clear()
         html_parts = []
         for ev in self.events:
@@ -267,5 +316,9 @@ class TaskBallCard(QWidget):
             msg = ev.message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             html_parts.append(f'<span style="color:{color}">[{ts}] [{tag}] {msg}</span><br>')
         self.log_text.setHtml("".join(html_parts))
-        sb = self.log_text.verticalScrollBar()
-        sb.setValue(sb.maximum())
+        self._apply_log_scroll(prev)
+
+    def refresh_log_theme(self):
+        """主题切换后按当前主题色重绘已有日志。"""
+        if self.events:
+            self.load_all_logs()

@@ -1,0 +1,13 @@
+{
+  "id": "synthetic_minimal",
+  "title": "生成器合规最小 FSM（可过 validate）",
+  "tags": ["fsm", "synthetic", "validate"],
+  "source_dir": "",
+  "ref_script": "golden.py",
+  "explanation_file": "explanation.txt",
+  "expect_few_shot": ["unknown_routing"],
+  "expect_template": null,
+  "must_contain": ["async def do_work", "UserBrowser", "_img", "STATES", "STATE_TIMEOUT", "note_state"],
+  "must_not_contain": ["use_color_check"],
+  "run_validator": true
+}

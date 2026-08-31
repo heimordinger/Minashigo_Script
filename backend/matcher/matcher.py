@@ -6,6 +6,9 @@ import base64
 import cv2
 import numpy as np
 
+# 全局最低候选分：抑制 ORB 回退 ~0.5 的弱误匹配
+MIN_CANDIDATE_SCORE = 0.8
+
 
 class Matcher:
     def __init__(self):
@@ -40,9 +43,16 @@ class Matcher:
             min_dist: int = 20,
             max_count: Optional[int] = None,
             use_orb: bool = True,
+            pixel_tol: float = 8.0,
     ):
 
         t = threshold if threshold is not None else 0.9
+        # 像素匹配本身就要求很严，不再抬到全局地板，避免掩盖用户设定
+        mtype_preview = (match_type or "").lower() if match_type else ""
+        if mtype_preview in ("pixel", "pixel_multi"):
+            effective_t = t
+        else:
+            effective_t = max(t, MIN_CANDIDATE_SCORE)
 
         # ---------- load frame ----------
         full_frame = self._to_bgr(target)
@@ -87,7 +97,7 @@ class Matcher:
             results += self._template_multi_scale_match(
                 frame_gray,
                 templ_gray,
-                threshold=t,
+                threshold=effective_t,
                 offset=(x1, y1),
                 use_color_check=use_color_check,
                 frame_color=frame,
@@ -96,7 +106,9 @@ class Matcher:
             )
 
             if use_orb:
-                results += self._orb_match(frame, templ, t)
+                results += self._orb_match(
+                    frame, templ, effective_t, offset=(x1, y1)
+                )
 
             if not results:
                 return MatchResult(None, None, 0.0, False) if mtype == "image" else []
@@ -111,7 +123,42 @@ class Matcher:
 
             best = max(results, key=lambda r: r.score)
 
-            return MatchResult(int(best.x), int(best.y), float(best.score), best.score >= t)
+            return MatchResult(
+                int(best.x), int(best.y), float(best.score), best.score >= t
+            )
+
+        # =========================
+        # PIXEL MATCH（1:1 彩色差分，无多尺度 / 无 ORB）
+        # =========================
+        elif mtype in ("pixel", "pixel_multi"):
+            templ, _templ_gray = self._load_template_cached(template)
+            if templ.shape[0] > frame.shape[0] or templ.shape[1] > frame.shape[1]:
+                return [] if mtype == "pixel_multi" else MatchResult(None, None, 0.0, False)
+
+            results = self._pixel_match(
+                frame,
+                templ,
+                threshold=effective_t,
+                offset=(x1, y1),
+                pixel_tol=pixel_tol,
+                min_dist=min_dist,
+            )
+            if not results:
+                return MatchResult(None, None, 0.0, False) if mtype == "pixel" else []
+
+            if mtype == "pixel_multi":
+                out = [
+                    {"x": int(r.x), "y": int(r.y), "score": float(r.score)}
+                    for r in results
+                ]
+                if max_count:
+                    out = out[:max_count]
+                return out
+
+            best = max(results, key=lambda r: r.score)
+            return MatchResult(
+                int(best.x), int(best.y), float(best.score), best.score >= t
+            )
 
         # =========================
         # TEXT
@@ -137,6 +184,71 @@ class Matcher:
             return MatchResult(x + x1, y + y1, score, score >= t)
 
         raise ValueError("Unknown type")
+
+    # =========================
+    # PIXEL MATCH CORE
+    # =========================
+    def _pixel_match(
+            self,
+            frame_bgr,
+            templ_bgr,
+            threshold: float = 0.98,
+            offset=(0, 0),
+            pixel_tol: float = 8.0,
+            min_dist: int = 20,
+    ):
+        """
+        像素级匹配：模板不缩放，用彩色 TM_SQDIFF_NORMED 定位，
+        再用平均绝对差算相似度 score∈[0,1]（1=完全一致）。
+
+        pixel_tol: 单通道平均绝对差上限（0~255）；超过则丢弃该峰。
+        建议 threshold≥0.95；素材与运行帧分辨率/缩放须一致。
+        """
+        th, tw = templ_bgr.shape[:2]
+        fh, fw = frame_bgr.shape[:2]
+        if th > fh or tw > fw:
+            return []
+
+        # OpenCV 多通道 SQDIFF_NORMED：越小越像
+        sq = cv2.matchTemplate(frame_bgr, templ_bgr, cv2.TM_SQDIFF_NORMED)
+        # 转成「越高越好」
+        sim = 1.0 - sq
+
+        results = []
+        match_mask = np.ones_like(sim, dtype=bool)
+        while True:
+            masked = sim.copy()
+            masked[~match_mask] = -1.0
+            _, max_val, _, max_loc = cv2.minMaxLoc(masked)
+            if max_val < threshold:
+                break
+
+            x0, y0 = max_loc
+            patch = frame_bgr[y0:y0 + th, x0:x0 + tw]
+            mad = float(np.mean(np.abs(patch.astype(np.int16) - templ_bgr.astype(np.int16))))
+            # 用 MAD 重算最终分，比纯相关更贴「像素一致」
+            score = 1.0 - mad / 255.0
+            if score >= threshold and mad <= pixel_tol:
+                cx = x0 + tw // 2 + offset[0]
+                cy = y0 + th // 2 + offset[1]
+                results.append(MatchResult(cx, cy, float(score), True))
+                print(
+                    f"[_pixel_match] ({cx},{cy}) score={score:.4f} "
+                    f"mad={mad:.2f} tol={pixel_tol}"
+                )
+
+            # 屏蔽邻域，找下一峰
+            y_a = max(y0 - th // 2, 0)
+            x_a = max(x0 - tw // 2, 0)
+            y_b = min(y0 + th // 2, sim.shape[0])
+            x_b = min(x0 + tw // 2, sim.shape[1])
+            match_mask[y_a:y_b, x_a:x_b] = False
+
+            if len(results) >= 50:
+                break
+
+        print(f"[_pixel_match] 找到 {len(results)} 个候选")
+        return self._deduplicate(results, min_dist)
 
     # =========================
     # TEMPLATE MATCH CORE
@@ -224,7 +336,7 @@ class Matcher:
     # =========================
     # ORB MATCH
     # =========================
-    def _orb_match(self, frame, templ, threshold):
+    def _orb_match(self, frame, templ, threshold, offset=(0, 0)):
         kp1, des1 = self._get_orb_template(templ)
         kp2, des2 = self.orb.detectAndCompute(frame, None)
 
@@ -239,12 +351,15 @@ class Matcher:
         good = matches[:len(matches) // 2]
         pts = [kp2[m.trainIdx].pt for m in good]
 
-        x = int(np.mean([p[0] for p in pts]))
-        y = int(np.mean([p[1] for p in pts]))
+        x = int(np.mean([p[0] for p in pts])) + int(offset[0])
+        y = int(np.mean([p[1] for p in pts])) + int(offset[1])
 
         score = len(good) / len(matches)
 
-        return [MatchResult(x, y, float(score), score >= threshold)]
+        if score < threshold:
+            return []
+
+        return [MatchResult(x, y, float(score), True)]
 
     # =========================
     # CACHE

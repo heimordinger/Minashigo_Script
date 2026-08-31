@@ -6,5 +6,6 @@
   },
   "task": {
     "enable_daemon_task": true
-  }
+  },
+  "ui": {}
 }

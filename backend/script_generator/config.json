@@ -1,61 +1,544 @@
 {
   "providers": {
     "claude": {
-      "label": "Claude",
+      "label": "Claude (Anthropic)",
+      "api": "claude",
+      "supports_images": true,
       "models": [
         "claude-sonnet-5",
         "claude-opus-4-8",
+        "claude-opus-4-6",
+        "claude-sonnet-4-6",
         "claude-haiku-4-5-20251001",
         "claude-sonnet-4",
         "claude-3-5-sonnet-latest"
       ],
       "default_endpoint": "",
-      "hint": ""
+      "hint": "官方 Anthropic Messages API。中转站请填自定义端点。"
     },
     "openai": {
       "label": "OpenAI",
+      "api": "openai",
+      "supports_images": true,
       "models": [
+        "gpt-5",
+        "gpt-5-mini",
+        "gpt-4.1",
         "gpt-4o",
         "gpt-4o-mini",
+        "o4-mini",
+        "o3",
         "o3-mini",
         "o1",
         "gpt-4-turbo",
         "gpt-4"
       ],
-      "default_endpoint": "",
-      "hint": ""
+      "default_endpoint": "https://api.openai.com/v1",
+      "hint": "官方 OpenAI Chat Completions。Azure / 中转站请改自定义端点。"
     },
     "deepseek": {
       "label": "DeepSeek",
+      "api": "openai",
+      "supports_images": true,
       "models": [
         "deepseek-chat",
         "deepseek-reasoner",
         "deepseek-v4-flash",
-        "deepseek-v4"
+        "deepseek-v4",
+        "deepseek-v4-pro"
       ],
       "default_endpoint": "https://api.deepseek.com",
-      "hint": "⚠ DeepSeek does NOT support image input. References to images will fail."
+      "hint": "官方 https://api.deepseek.com。已按 OpenAI 兼容格式发图；不支持多模态的模型会报错。"
     },
     "google": {
-      "label": "Google",
+      "label": "Google Gemini",
+      "api": "google",
+      "supports_images": true,
       "models": [
-        "gemini-2.5-flash",
         "gemini-2.5-pro",
-        "gemini-2.0-flash"
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-1.5-pro"
       ],
       "default_endpoint": "https://generativelanguage.googleapis.com/v1beta",
-      "hint": ""
+      "hint": "走 Google Generative AI SDK。OpenAI 兼容地址请改用「自定义 OpenAI 兼容」并填 generativelanguage.googleapis.com/v1beta/openai/。"
     },
     "groq": {
       "label": "Groq",
+      "api": "openai",
+      "supports_images": true,
       "models": [
         "llama-4-scout-17b-16e-instruct",
+        "meta-llama/llama-4-maverick-17b-128e-instruct",
         "llama-3.3-70b-versatile",
-        "mixtral-8x7b-32768",
-        "qwen-2.5-coder-32b"
+        "openai/gpt-oss-120b",
+        "qwen/qwen3-32b",
+        "moonshotai/kimi-k2-instruct",
+        "mixtral-8x7b-32768"
       ],
       "default_endpoint": "https://api.groq.com/openai/v1",
-      "hint": "⚠ Most Groq models do NOT support image input."
+      "hint": "多数 Groq 文本模型不支持传图，识图请选带 vision 的模型。"
+    },
+    "qwen": {
+      "label": "通义千问 (阿里云百炼)",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "qwen-plus",
+        "qwen-max",
+        "qwen-turbo",
+        "qwen-plus-latest",
+        "qwen-max-latest",
+        "qwen3-coder-plus",
+        "qwen-vl-max",
+        "qwen-vl-plus",
+        "qwen3.5-plus",
+        "qwen3.5-flash"
+      ],
+      "default_endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "hint": "国内默认 dashscope.aliyuncs.com；国际站改为 https://dashscope-intl.aliyuncs.com/compatible-mode/v1。识图用 qwen-vl-*。"
+    },
+    "moonshot": {
+      "label": "Kimi (月之暗面)",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "kimi-k3",
+        "kimi-k2.6",
+        "kimi-k2.5",
+        "kimi-k2.7-code",
+        "kimi-latest",
+        "moonshot-v1-auto",
+        "moonshot-v1-32k",
+        "moonshot-v1-128k"
+      ],
+      "default_endpoint": "https://api.moonshot.cn/v1",
+      "hint": "国内 https://api.moonshot.cn/v1；国际站 https://api.moonshot.ai/v1。模型名以控制台为准。"
+    },
+    "zhipu": {
+      "label": "智谱 GLM",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "glm-5",
+        "glm-4.7",
+        "glm-4.6",
+        "glm-4.5",
+        "glm-4.5-air",
+        "glm-4-flash",
+        "glm-4v-plus",
+        "glm-4v"
+      ],
+      "default_endpoint": "https://open.bigmodel.cn/api/paas/v4",
+      "hint": "智谱开放平台 OpenAI 兼容接口。识图用 glm-4v / glm-4v-plus。"
+    },
+    "minimax": {
+      "label": "MiniMax",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "MiniMax-M2.5",
+        "MiniMax-M2",
+        "MiniMax-Text-01",
+        "MiniMax-VL-01",
+        "abab6.5s-chat"
+      ],
+      "default_endpoint": "https://api.minimax.chat/v1",
+      "hint": "国内 api.minimax.chat；国际站可试 https://api.minimax.io/v1。"
+    },
+    "doubao": {
+      "label": "豆包 / 火山方舟",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "doubao-seed-1-6-250615",
+        "doubao-1.5-pro-32k",
+        "doubao-1.5-lite-32k",
+        "doubao-1.5-vision-pro-32k",
+        "doubao-pro-32k"
+      ],
+      "default_endpoint": "https://ark.cn-beijing.volces.com/api/v3",
+      "hint": "模型名通常是方舟控制台创建的接入点 ID（ep-xxx），列表仅为常见公开名。"
+    },
+    "hunyuan": {
+      "label": "腾讯混元",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "hunyuan-turbos-latest",
+        "hunyuan-t1-latest",
+        "hunyuan-large",
+        "hunyuan-standard",
+        "hunyuan-lite",
+        "hunyuan-vision"
+      ],
+      "default_endpoint": "https://api.hunyuan.cloud.tencent.com/v1",
+      "hint": "腾讯混元 OpenAI 兼容接口。识图用 hunyuan-vision。"
+    },
+    "qianfan": {
+      "label": "百度千帆 ERNIE",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "ernie-4.5-turbo-128k",
+        "ernie-4.0-turbo-8k",
+        "ernie-4.5-8k-preview",
+        "ernie-5.0-thinking-preview",
+        "ernie-vl-8k"
+      ],
+      "default_endpoint": "https://qianfan.baidubce.com/v2",
+      "hint": "百度智能云千帆 V2 OpenAI 兼容接口。识图用 ernie-vl-*。"
+    },
+    "spark": {
+      "label": "讯飞星火",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "4.0Ultra",
+        "generalv3.5",
+        "max-32k",
+        "pro-128k",
+        "lite"
+      ],
+      "default_endpoint": "https://spark-api-open.xf-yun.com/v1",
+      "hint": "讯飞星火 HTTP OpenAI 兼容接口。模型名以控制台为准。"
+    },
+    "baichuan": {
+      "label": "百川智能",
+      "api": "openai",
+      "supports_images": false,
+      "models": [
+        "Baichuan4-Turbo",
+        "Baichuan4",
+        "Baichuan3-Turbo",
+        "Baichuan2-Turbo"
+      ],
+      "default_endpoint": "https://api.baichuan-ai.com/v1",
+      "hint": "百川 OpenAI 兼容接口。默认不按多模态发图。"
+    },
+    "yi": {
+      "label": "零一万物 Yi",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "yi-lightning",
+        "yi-large",
+        "yi-medium",
+        "yi-spark",
+        "yi-vision",
+        "yi-vision-v2"
+      ],
+      "default_endpoint": "https://api.lingyiwanwu.com/v1",
+      "hint": "零一万物 OpenAI 兼容接口。识图用 yi-vision*。"
+    },
+    "stepfun": {
+      "label": "阶跃星辰 StepFun",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "step-2-16k",
+        "step-1-256k",
+        "step-1-32k",
+        "step-1v-32k",
+        "step-1.5v-mini"
+      ],
+      "default_endpoint": "https://api.stepfun.com/v1",
+      "hint": "阶跃星辰 OpenAI 兼容接口。识图用 step-1v / step-1.5v。"
+    },
+    "sensenova": {
+      "label": "商汤日日新 SenseNova",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "SenseChat-5",
+        "SenseChat-Turbo",
+        "SenseChat-Vision"
+      ],
+      "default_endpoint": "https://api.sensenova.cn/compatible-mode/v1",
+      "hint": "商汤日日新 OpenAI 兼容模式。"
+    },
+    "ai360": {
+      "label": "360 智脑",
+      "api": "openai",
+      "supports_images": false,
+      "models": [
+        "360gpt2-pro",
+        "360gpt-turbo",
+        "360zhinao2-o1"
+      ],
+      "default_endpoint": "https://api.360.cn/v1",
+      "hint": "360 智脑 OpenAI 兼容接口。"
+    },
+    "siliconflow": {
+      "label": "硅基流动 SiliconFlow",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "deepseek-ai/DeepSeek-V3.2",
+        "deepseek-ai/DeepSeek-V3",
+        "Qwen/Qwen3-235B-A22B",
+        "Qwen/Qwen2.5-72B-Instruct",
+        "moonshotai/Kimi-K2-Instruct",
+        "THUDM/GLM-4.5-Air",
+        "Pro/Qwen/Qwen2.5-VL-72B-Instruct"
+      ],
+      "default_endpoint": "https://api.siliconflow.cn/v1",
+      "hint": "聚合多家开源模型，模型名形如 vendor/Model。识图请选 VL / Vision 型号。"
+    },
+    "infini": {
+      "label": "无问芯穹 Infini-AI",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "deepseek-v3",
+        "qwen2.5-72b-instruct",
+        "glm-4.5"
+      ],
+      "default_endpoint": "https://cloud.infini-ai.com/maas/v1",
+      "hint": "无问芯穹 MaaS OpenAI 兼容接口，模型名以控制台为准。"
+    },
+    "openrouter": {
+      "label": "OpenRouter",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "anthropic/claude-sonnet-4.6",
+        "anthropic/claude-opus-4.6",
+        "openai/gpt-5",
+        "openai/gpt-4o",
+        "google/gemini-2.5-pro",
+        "deepseek/deepseek-chat",
+        "qwen/qwen3-coder",
+        "x-ai/grok-4.6",
+        "meta-llama/llama-4-maverick"
+      ],
+      "default_endpoint": "https://openrouter.ai/api/v1",
+      "hint": "一次 Key 可路由多家模型，模型名必须带厂商前缀，如 anthropic/claude-sonnet-4.6。",
+      "extra_headers": {
+        "HTTP-Referer": "https://github.com/",
+        "X-Title": "Minashigo Script Generator"
+      }
+    },
+    "together": {
+      "label": "Together AI",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8",
+        "meta-llama/Llama-3.3-70B-Instruct-Turbo",
+        "deepseek-ai/DeepSeek-V3",
+        "Qwen/Qwen2.5-72B-Instruct-Turbo",
+        "mistralai/Mixtral-8x22B-Instruct-v0.1"
+      ],
+      "default_endpoint": "https://api.together.xyz/v1",
+      "hint": "Together 托管开源模型，模型名以控制台为准。"
+    },
+    "fireworks": {
+      "label": "Fireworks AI",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "accounts/fireworks/models/llama-v3p3-70b-instruct",
+        "accounts/fireworks/models/deepseek-v3",
+        "accounts/fireworks/models/qwen2p5-72b-instruct",
+        "accounts/fireworks/models/llama4-maverick-instruct-basic"
+      ],
+      "default_endpoint": "https://api.fireworks.ai/inference/v1",
+      "hint": "Fireworks 模型 ID 通常为 accounts/fireworks/models/...。"
+    },
+    "mistral": {
+      "label": "Mistral",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "mistral-large-latest",
+        "mistral-medium-latest",
+        "mistral-small-latest",
+        "codestral-latest",
+        "pixtral-large-latest",
+        "pixtral-12b-2409"
+      ],
+      "default_endpoint": "https://api.mistral.ai/v1",
+      "hint": "识图用 pixtral-*。"
+    },
+    "xai": {
+      "label": "xAI Grok",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "grok-4.6",
+        "grok-4.5",
+        "grok-4",
+        "grok-3",
+        "grok-3-mini",
+        "grok-4-1-fast-non-reasoning",
+        "grok-2-vision-1212"
+      ],
+      "default_endpoint": "https://api.x.ai/v1",
+      "hint": "xAI OpenAI 兼容 Chat Completions。模型 ID 用点号，如 grok-4.6。"
+    },
+    "nvidia": {
+      "label": "NVIDIA NIM / Build",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "meta/llama-3.3-70b-instruct",
+        "meta/llama-4-maverick-17b-128e-instruct",
+        "deepseek-ai/deepseek-r1",
+        "qwen/qwen2.5-coder-32b-instruct",
+        "google/gemma-3-27b-it"
+      ],
+      "default_endpoint": "https://integrate.api.nvidia.com/v1",
+      "hint": "NVIDIA API Catalog / NIM OpenAI 兼容接口。"
+    },
+    "deepinfra": {
+      "label": "DeepInfra",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "meta-llama/Llama-3.3-70B-Instruct",
+        "deepseek-ai/DeepSeek-V3",
+        "Qwen/Qwen2.5-72B-Instruct",
+        "google/gemma-3-27b-it"
+      ],
+      "default_endpoint": "https://api.deepinfra.com/v1/openai",
+      "hint": "DeepInfra OpenAI 兼容推理接口。"
+    },
+    "novita": {
+      "label": "Novita AI",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "deepseek/deepseek-v3-0324",
+        "meta-llama/llama-3.3-70b-instruct",
+        "qwen/qwen2.5-72b-instruct",
+        "minimaxai/minimax-m1-80k"
+      ],
+      "default_endpoint": "https://api.novita.ai/v3/openai",
+      "hint": "Novita OpenAI 兼容接口。"
+    },
+    "cerebras": {
+      "label": "Cerebras",
+      "api": "openai",
+      "supports_images": false,
+      "models": [
+        "llama-3.3-70b",
+        "llama3.1-8b",
+        "qwen-3-32b",
+        "gpt-oss-120b"
+      ],
+      "default_endpoint": "https://api.cerebras.ai/v1",
+      "hint": "Cerebras 极速文本推理，默认不传图。"
+    },
+    "sambanova": {
+      "label": "SambaNova",
+      "api": "openai",
+      "supports_images": false,
+      "models": [
+        "Meta-Llama-3.3-70B-Instruct",
+        "DeepSeek-R1",
+        "Qwen2.5-72B-Instruct"
+      ],
+      "default_endpoint": "https://api.sambanova.ai/v1",
+      "hint": "SambaNova Cloud OpenAI 兼容接口。"
+    },
+    "perplexity": {
+      "label": "Perplexity",
+      "api": "openai",
+      "supports_images": false,
+      "models": [
+        "sonar-pro",
+        "sonar",
+        "sonar-reasoning-pro",
+        "sonar-reasoning"
+      ],
+      "default_endpoint": "https://api.perplexity.ai",
+      "hint": "联网搜索向模型，不太适合纯写代码；需要检索时再用。"
+    },
+    "huggingface": {
+      "label": "Hugging Face Router",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "Qwen/Qwen2.5-72B-Instruct",
+        "meta-llama/Llama-3.3-70B-Instruct",
+        "deepseek-ai/DeepSeek-V3",
+        "moonshotai/Kimi-K2-Instruct"
+      ],
+      "default_endpoint": "https://router.huggingface.co/v1",
+      "hint": "Hugging Face Inference Router，模型名用 Hub repo id。"
+    },
+    "github": {
+      "label": "GitHub Models",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "gpt-4o",
+        "gpt-4o-mini",
+        "openai/gpt-4.1",
+        "deepseek/DeepSeek-V3-0324",
+        "meta/Llama-3.3-70B-Instruct"
+      ],
+      "default_endpoint": "https://models.github.ai/inference",
+      "hint": "GitHub Models，Key 为 GitHub token。模型名以 github.com/marketplace/models 为准。"
+    },
+    "hyperbolic": {
+      "label": "Hyperbolic",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "meta-llama/Llama-3.3-70B-Instruct",
+        "deepseek-ai/DeepSeek-V3",
+        "Qwen/Qwen2.5-72B-Instruct"
+      ],
+      "default_endpoint": "https://api.hyperbolic.xyz/v1",
+      "hint": "Hyperbolic OpenAI 兼容推理接口。"
+    },
+    "lambda": {
+      "label": "Lambda AI",
+      "api": "openai",
+      "supports_images": false,
+      "models": [
+        "llama3.3-70b-instruct-fp8",
+        "llama3.1-70b-instruct-fp8",
+        "deepseek-llama3.3-70b"
+      ],
+      "default_endpoint": "https://api.lambdalabs.com/v1",
+      "hint": "Lambda Inference API。"
+    },
+    "ollama": {
+      "label": "Ollama (本地)",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "llama3.3",
+        "qwen2.5-coder",
+        "qwen2.5-vl",
+        "deepseek-r1",
+        "mistral",
+        "llava"
+      ],
+      "default_endpoint": "http://127.0.0.1:11434/v1",
+      "hint": "需本机已启动 Ollama。API Key 可填 ollama。识图用 llava / qwen2.5-vl。"
+    },
+    "lmstudio": {
+      "label": "LM Studio (本地)",
+      "api": "openai",
+      "supports_images": true,
+      "models": [
+        "local-model"
+      ],
+      "default_endpoint": "http://127.0.0.1:1234/v1",
+      "hint": "需在 LM Studio 开启本地服务器。模型名以已加载模型为准，API Key 可随意填写。"
+    },
+    "custom": {
+      "label": "自定义 OpenAI 兼容",
+      "api": "openai",
+      "supports_images": true,
+      "models": [],
+      "default_endpoint": "",
+      "hint": "任意 OpenAI 兼容中转/网关。必须填写自定义端点，并手动输入模型名。"
     }
   },
   "defaults": {
@@ -66,7 +549,20 @@
     "api_timeout": 300,
     "use_langgraph": true,
     "enable_plan": true,
-    "max_fix_retries": 2
+    "max_fix_retries": 3,
+    "codegen_free_mode": true,
+    "codegen_free_max_fix_retries": 5,
+    "codegen_img_identifiers_only": true,
+    "revise_continue_chat": true,
+    "revise_surgical": true,
+    "revise_tools": true,
+    "revise_text_tools": true,
+    "revise_tool_assist": {
+      "enabled": true,
+      "prefer_provider": "qwen",
+      "prefer_model": "qwen3.5-flash",
+      "reuse_vision_key": true
+    }
   },
   "available_scripts": [
     {
@@ -81,28 +577,22 @@
     }
   ],
   "rules": [
-    "At the end of each state, check if the scene identifier is still visible. If not, return the 'unknown' state name in Chinese: return '未知'",
-    "In unknown_state, use asyncio.gather to match ALL scene identifiers concurrently. When a scene id matches, return the corresponding BUSINESS state name from the plan scene_map (e.g. rank -> 主界面, 出击_logo -> 出击界面). NEVER return '未知' or None after a successful match. Only when NO identifier matches: sleep 1.5-2.5s and return None.",
-    "Always check the return value of click_image",
-    "Always use _img() to build image paths. Do NOT hardcode string paths directly.",
-    "IMG_DIR must use the exact assignment from the Source Image Folder section (IMG_DIR = $IMG_DIR_LINE). NEVER use the placeholder IMG_PATH / 'game' / 'script' when a real folder is provided. Only reference image filenames that exist in that folder.",
-    "do_work must be typed: async def do_work(browser: UserBrowser): (or UserWindow / Union). Bare do_work(browser) without annotation is invalid.",
-    "Each state handler must call browser.script_log() to log key actions (enter/click/transition). Without logs, runtime failures cannot be diagnosed.",
-    "Do NOT use use_color_check (small icons lack enough color info)",
-    "Only use methods listed in the API section. Do NOT invent methods like get_window_size, get_element, etc.",
-    "Do NOT use global variables. Use function return values for flow control",
-    "Output ONLY the Python code. No explanations, no markdown outside the code.",
-    "--- Scene routing (CRITICAL) ---\nunknown_state maps identifiers to states. Wrong pattern (FORBIDDEN):\n  if r: return '未知'  # after a successful match\nCorrect pattern:\n  cs = {'主界面': _img('rank'), '出击界面': _img('出击_logo'), ...}\n  for n, r in zip(cs.keys(), rs):\n      if r: return n\n  await browser.b_sleep(1.5, 2.5); return None",
-    "--- Multi-task state tables ---\nEach TASK_*_STATES must include navigation states required by that task (e.g. 房间领体力 needs 未知/返回主界面/主界面/房间领体力; 竞技场/爬塔/每日 need 未知/返回出击界面/出击界面/<task>). Do NOT share one 出击界面 handler that clicks jjc+ta+meiri+room. Give each task its own entry handler that only clicks that task's entry button.",
-    "--- Image threshold classification ---\nImages fall into two types with different thresholds:\n(a) Scene identifier / large screenshots (used in unknown_state to determine current screen) → nav_threshold. Prefer cropping a small distinctive region (title text, fixed icon) rather than using the full screenshot, because large images are more susceptible to noise from animations, text changes, and lighting effects.\n(b) Buttons / small icons (used in click_image) → threshold (or icon_threshold for tiny buttons that blend with the background (heuristic: use icon_threshold when the button is smaller than ~40x40 px, or when its color closely matches the surrounding UI, e.g. flat toggle icons; if unsure, default to threshold)).\nIf a specific image consistently fails to match or triggers false positives, re-crop a smaller / more focused region instead of blindly raising or lowering the threshold number.\nNote: pianyi only adjusts the click point AFTER a successful match; it does NOT fix match accuracy.",
-    "--- Post-click transition pattern ---\nAny click that triggers a scene transition MUST follow this pattern:\n  if await browser.click_image(_img('button')):\n      browser.script_log('clicked, waiting for next scene')\n      ok = await browser.wait_image(_img('next_scene_id'), timeout=<STATE_TIMEOUT of current state>)\n      if not ok:\n          browser.script_log('transition timeout -> unknown')\n          return '未知'\n      return 'next_scene'\nBefore the target scene identifier is confirmed visible, do NOT perform any 'identifier disappeared -> unknown' detection within the same handler invocation. Frame data during loading transitions is unreliable.",
-    "--- Reuse before rewrite ---\nOnly import available_scripts when the explanation domain matches the module (e.g. do NOT use scripts.孤儿.* for DeepOne daily flows). If the explanation specifies a concrete click (offset on jjc_结算), implement that inline. Every imported symbol MUST appear in a real import/from-import. Never call a helper that is not imported.",
-    "--- Exception handling in run_task ---\nDo NOT wrap the whole loop in bare 'except Exception' that always sets state_name='未知'. That hides NameError/ImportError and causes stagnation. Prefer: no broad catch; or only catch TimeoutError/RuntimeError from waits and then return '__task_failed__' or go to 未知 once with a log. Never swallow NameError/ImportError/SyntaxError.",
-    "--- Spec keywords ---\nIf the explanation says 'y最大' / '最大y', use match_image_multi and click the match with maximum y. If it says threshold 0.99 or 匹配度要高, use that threshold. If it says continuous N seconds of a image, loop match for N seconds before acting — do not replace with a single sleep.",
-    "--- Chinese punctuation guard ---\nDuring generation, ensure the code body (excluding string literals and comments) contains NO Chinese punctuation characters (，。“”：；！？、（）etc.). These cause SyntaxErrors. Chinese characters in string literals and comments are fine; only punctuation outside strings must be clean.",
-    "--- Structure check before finalizing ---\nBefore finalizing, verify:\n(a) Every browser.xxx() call exactly matches one of the methods in the API list. If a capability is missing, implement it by combining existing methods.\n(b) No module-level mutable global state (stop_requested, running, etc.).\n(c) Before writing the final line, mentally verify do_work(), STATES and STATE_TIMEOUT are all present and non-empty. Do NOT stop output before these are complete. (The caller will also verify after receiving the code.)",
-    "--- No-progress / goal reached ---\nIf the goal of a state is already satisfied (e.g. already on 主界面 while the task is '返回主界面'), return '__exit__' or '任务完成' immediately. Do NOT return the same state name again — that causes an infinite busy loop. In the main loop / run_task, call browser.note_state(state_name) every iteration so the runtime can detect state stagnation. Runtime also detects repeated identical click failures / successful-match loops; do not rely on sleep-count watchdogs.",
-    "--- Loading duration ---\nNetwork loading can take 3+ minutes. The 'unknown' state has a long timeout (180s) to wait out loading screens. Do NOT shorten it. Action states keep shorter timeouts (30s). When in 'unknown', sleep 1.5-2.5s between retries instead of busy-looping."
+    "AUTHORITY (CRITICAL): Script explanation (user) weight > Rules > few-shot > template. On conflict follow explanation (@helper = return that state name). Prefer fewer local codegen patches; never rewrite '__exit__' / '__task_failed__'.",
+    "Scene-first architecture (CRITICAL): (1) unknown_state = scene layer ONLY: asyncio.gather ALL scene-id images from explanation/scene_map → return business SCENE name or None; NO clicks, NEVER return '未知'. (2) STATES handlers = behavior layer (task steps, @helpers): do clicks/waits; do NOT use scene names as self-loop handlers (e.g. 主界面 handler that only match rank → return '主界面'). (3) do_work: on timeout/recovery call unknown_state BEFORE business handler to re-identify scene; map scene→step when step is '未知'. (4) Scene-changing click → wait_image(next scene id). Follow few-shot scene_first / unknown_routing.",
+    "Return types (CRITICAL): match_image -> MatchResult object (.x/.y) or falsy (usually `if hit:`). match_image_multi -> list[dict] with keys 'x','y','score' — use m['x'] or m['y'] NEVER m.x/m.y. Axis: follow introduction (e.g. jjc_段位「x最大」→ max(matches, key=lambda m: m['x'])). click_image is for single-template buttons only. Follow few-shot match_multi_dict.",
+    "Hub entry self-loop (CRITICAL): if TASK_* maps 出击界面/主界面 to an entry handler (not go_sortie/go_home), that handler must NOT return its own hub key after only match_image of the hub id — click this task entry (jjc/ta/room) and return the next business state. return None to retry is OK. Follow few-shot multi_task_dispatch.",
+    "Scene routing (CRITICAL): unknown_state is the ONLY place that maps id images → scene names. Include every hub/sub-screen id (rank, *_logo). On match return scene key — NEVER return '未知'. On no match: sleep 1.5-2.5s and return None. Business handlers may return '未知' when expected scene id disappears. Follow few-shot unknown_routing / scene_first.",
+    "Helper entry (CRITICAL): multi-task run_task SHOULD start at 返回出击界面 when that key exists (jjc/塔); room-only tables may start at 未知. Spec '@返回主界面' / '@返回出击界面' means return that exact state name (must be in the task table) — do NOT invent a private branch. 返回出击界面: match 出击_logo → '出击界面'; click 出击.png miss → return '返回主界面' (出击 only absent in room). 返回主界面 fail → '未知' (never None). Follow few-shot multi_task_dispatch / goal_exit.",
+    "Always check click_image return value. Scene-changing clicks MUST wait_image for the next scene id; on fail return '未知'. single_fsm: timeout=STATE_TIMEOUT.get(...); multi_task shared handlers: either TASK_*_TIMEOUT.get(...) or define STATE_TIMEOUT={} then STATE_TIMEOUT.update(each TASK_*_TIMEOUT). Do not treat mid-loading id flicker as gone. Follow few-shot post_click_wait.",
+    "Frame freshness: runtime invalidates after click/b_sleep and ensure_frame before match; TaskController requests ~10Hz while do_work runs (release on exit). Optional await browser.request_fps(hz) / release_fps(key) — max of demands, hard_cap 60, idle=0 capture. update_frame() is optional force-refresh. Follow few-shot update_frame_refresh.",
+    "Always use _img('stem') for image refs (no hardcoded paths). IMG_DIR must be exactly $IMG_DIR_LINE. Use identifier stems from the script explanation / 图片说明; folder filenames may differ and are aligned locally after generation — do NOT skip _img() because a file is missing from the folder listing.",
+    "do_work must be typed: async def do_work(browser: UserBrowser): (or UserWindow / Union).",
+    "Call browser.script_log on key actions. Call browser.note_state(state_name) every main-loop / run_task iteration.",
+    "Only use API methods listed above. Do NOT invent methods. Do NOT use use_color_check.",
+    "No module-level mutable globals for flow control. Output ONLY Python code (no markdown/prose outside the code).",
+    "Multi-task: each TASK_*_STATES includes its own navigation + a single entry click for that task. Do NOT share one 出击界面 handler that clicks every entry. Prefer run_task. Follow few-shot multi_task_dispatch.",
+    "Thresholds: scene identifiers → nav_threshold; buttons → threshold (icon_threshold for tiny / low-contrast icons). Prefer re-crop over tweaking numbers. Honor spec keywords (max-y, high threshold, continuous N seconds). Follow few-shot threshold_usage.",
+    "If BUSINESS goal of the current FSM/run_task is met → return '__exit__' (ends this task only in multi_task). Navigation helpers (返回主界面/返回出击界面) that succeed MUST return the business state name (e.g. '主界面'), NEVER '__exit__'. Do not confuse 本步骤结束 with 本任务完成. Follow few-shot goal_exit. No bare except Exception that forces '未知'. No Chinese punctuation outside strings/comments. Before finishing: API calls valid, do_work / STATES / STATE_TIMEOUT present and non-empty. Only import available_scripts when the domain matches."
   ],
-  "system_prompt_template": "You are a Minashigo automation script generator. Follow the structure and rules strictly.\n\n## Available API (only these methods, do NOT invent others)\n\nmatch_image(path, threshold=$THRESHOLD) -> False or match object with x, y, max_val\nmatch_image_multi(path, threshold=$THRESHOLD) -> list of {x,y,score} (pick max y when needed)\nclick_image(path, pianyi=(0,0), threshold=$THRESHOLD) -> bool\nwait_image(path, timeout=3) -> bool\nb_sleep(0.3, 0.6) -> random sleep (interruptible)\nupdate_frame() -> refresh screenshot, clear match cache\nscript_log(msg) -> output log message\nnote_state(name) -> report current FSM state each loop (enables stuck detection)\nnote_progress() -> optional manual progress mark\n\n## Reusable Scripts (import, do NOT rewrite)\n\nThe following scripts already exist. Import them instead of rewriting the logic:\n\n$AVAILABLE_SCRIPTS\n\n## Image Path Convention\n\nThe selected source image folder is IMG_DIR (see code below).\nAll _img('xxx') calls resolve to IMG_DIR / 'xxx.png'.\nDo NOT hardcode any other paths.\n\n## Source Image Folder (USE THIS, do NOT modify)\n$SOURCE_DIR\n\n## Template Structure (follow strictly)\n\n```python\nimport asyncio\nfrom dataclasses import dataclass\nfrom pathlib import Path\nfrom typing import Optional\nfrom backend.browser.user_browser import UserBrowser\nfrom core.path import IMG_PATH\n\nIMG_DIR = $IMG_DIR_LINE\n\n@dataclass\nclass Config:\n    img_dir: Path = IMG_DIR\n    threshold: float = $THRESHOLD\n    nav_threshold: float = $NAV_THRESHOLD\n    icon_threshold: float = $ICON_THRESHOLD\n    use_polling_cache: bool = True\n    total_timeout: float = 600.0\nCFG = Config()\n\ndef _img(name: str) -> Path:\n    return CFG.img_dir / (name if name.endswith('.png') else name + '.png')\n\nStateName = Optional[str]\n\nGUARDS = []\ndef register_guard(img_path, pianyi=(0,0), desc=\"\"): GUARDS.append((img_path, pianyi, desc))\nasync def check_guards(browser) -> bool:\n    for img_path, pianyi, desc in GUARDS:\n        if await browser.click_image(img_path, pianyi=pianyi, threshold=CFG.threshold):\n            await browser.b_sleep(0.3, 0.8); return True\n    return False\n\nasync def unknown_state(browser) -> StateName:\n    \"\"\"Concurrent scene detection — keys MUST be business state names (NOT image names).\"\"\"\n    # CRITICAL: on match success return the state name key, NEVER return \"未知\"\n    cs = {\"主界面\": _img('rank'), \"出击界面\": _img('出击_logo'), \"房间领体力\": _img('room_logo')}\n    rs = await asyncio.gather(*[browser.match_image(p, threshold=CFG.nav_threshold) for p in cs.values()])\n    for n, r in zip(cs.keys(), rs):\n        if r:\n            return n  # matched id -> business state\n    await browser.b_sleep(1.5, 2.5)  # no id matched: wait loading\n    return None\n\nasync def example_state(browser) -> StateName:\n    browser.script_log(f\"[example_state]\")\n    if await browser.click_image(_img('button')):\n        browser.script_log(f\"  clicked button, going to next\")\n        await browser.b_sleep(0.5, 1.0); return \"next\"\n    # Scene identifier check uses nav_threshold\n    if not await browser.match_image(_img('scene_id'), threshold=CFG.nav_threshold):\n        browser.script_log(f\"  scene identifier gone -> unknown\")\n        return \"\\u672a\\u77e5\"\n    return None\n\nSTATES = {\"\\u672a\\u77e5\": unknown_state, \"state_a\": example_state}\nSTATE_TIMEOUT = {\"\\u672a\\u77e5\": 8, \"state_a\": 30}\n\nasync def do_work(browser: UserBrowser):\n    if CFG.use_polling_cache: browser.use_polling_temp_cache = True\n    total_start = asyncio.get_event_loop().time()\n    state_name = await unknown_state(browser) or \"\\u672a\\u77e5\"\n    se_time = asyncio.get_event_loop().time()\n    while True:\n        try:\n            if asyncio.get_event_loop().time() - total_start > CFG.total_timeout: break\n            browser.note_state(state_name)\n            await browser.update_frame()\n            if await check_guards(browser): continue\n            now = asyncio.get_event_loop().time()\n            if now - se_time > STATE_TIMEOUT.get(state_name, 30):\n                state_name = await unknown_state(browser) or \"\\u672a\\u77e5\"; se_time = now; continue\n            handler = STATES.get(state_name)\n            if handler is None: state_name = \"\\u672a\\u77e5\"; se_time = now; continue\n            nxt = await handler(browser)\n            if nxt == \"__exit__\": break\n            if nxt and nxt != state_name: state_name = nxt; se_time = now\n            await browser.b_sleep(0.05, 0.15)\n        except (TimeoutError, RuntimeError) as e:\n            browser.script_log(f\"[ERROR] {type(e).__name__}: {e}\")\n            state_name = \"\\u672a\\u77e5\"; se_time = asyncio.get_event_loop().time()\n        # Do NOT bare-except Exception (hides NameError/ImportError)\n```\n\n```python\n# Helper: run a single task state machine\n# Each task provides its own STATES and STATE_TIMEOUT.\n# Reuses the same main-loop logic without module-level globals.\n# NOTE: order matches the single-task do_work() above — update_frame() BEFORE check_guards(),\n# since check_guards() clicks based on the current frame and must not act on stale data.\nasync def run_task(browser, task_name: str, states: dict, timeouts: dict):\n    state_name = \"未知\"\n    se_time = asyncio.get_event_loop().time()\n    start = se_time\n    while True:\n        try:\n            if asyncio.get_event_loop().time() - start > CFG.total_timeout:\n                return \"__task_failed__\"\n            browser.note_state(state_name)\n            await browser.update_frame()\n            if await check_guards(browser): continue\n            now = asyncio.get_event_loop().time()\n            if now - se_time > timeouts.get(state_name, 180):\n                return \"__task_failed__\"\n            handler = states.get(state_name)\n            if handler is None:\n                return \"__task_failed__\"\n            nxt = await handler(browser)\n            if nxt == \"__exit__\": return \"__done__\"\n            if nxt == \"__task_failed__\": return \"__task_failed__\"\n            if nxt and nxt != state_name:\n                state_name = nxt; se_time = now\n            await browser.b_sleep(0.05, 0.15)\n        except (TimeoutError, RuntimeError) as e:\n            browser.script_log(f\"[{task_name}] recoverable: {e}\")\n            return \"__task_failed__\"\n        # Do NOT bare-except Exception then force 未知 (causes stagnation)\n```\n\n\n## Multi-Task Orchestration (when the script involves multiple sequential tasks)\n\nIMPORTANT: This section is ONLY for scripts that need MULTIPLE sequential tasks.\nIf the script involves only ONE task (a single state machine), use the single-task do_work() from the Template Structure above as-is — do NOT add run_task() or any multi-task patterns.\nIf the script involves MULTIPLE tasks, do NOT use the single-task do_work() loop. Instead, use the run_task() helper shown below.\nThe final output must contain exactly ONE do_work() function — never both.\n\nUse the run_task() helper above. Each task provides its own STATES and STATE_TIMEOUT dictionaries.\n\n```python\nTASK1_STATES = {\"未知\": unknown_state, \"step_a\": state_a, \"step_b\": state_b}\nTASK1_TIMEOUT = {\"未知\": 8, \"step_a\": 30, \"step_b\": 30}\n\nTASK2_STATES = {\"未知\": unknown_state, ...}\nTASK2_TIMEOUT = {\"未知\": 8, ...}\n\nasync def do_work(browser):\n    if CFG.use_polling_cache: browser.use_polling_temp_cache = True\n    tasks = [(\"room\", TASK1_STATES, TASK1_TIMEOUT), (\"arena\", TASK2_STATES, TASK2_TIMEOUT)]\n    for name, st, to in tasks:\n        for attempt in range(3):\n            result = await run_task(browser, name, st, to)\n            if result == \"__task_failed__\":\n                browser.script_log(f\"[{name}] failed (attempt {attempt+1}/3), retrying...\")\n                await browser.b_sleep(1.0, 2.0)\n                continue\n            browser.script_log(f\"[{name}] done\")\n            break\n        else:\n            browser.script_log(f\"[{name}] failed after 3 attempts, aborting\")\n            break\n```\n\nRules:\n1. Each task defines its own STATES and STATE_TIMEOUT as module-level dicts (or locals inside do_work).\n2. The final state of each task must return \"__exit__\" when the task is complete.\n3. Before a task starts, always call unknown_state first to confirm the game is in the expected scene.\n4. On failure (repeated timeout), run_task returns \"__task_failed__\". The outer dispatcher MUST handle it explicitly: retry, skip with warning, or abort.\n5. Each TASK_*_STATES must include that task's navigation states (e.g. 返回主界面 or 返回出击界面). unknown_state must return business state names on id match.\n6. Do not share one 出击界面 handler that clicks every entry button; each task only clicks its own entry.\n\n## Rules (MUST follow)\n\n$RULES"
+  "system_prompt_template": "You are a Minashigo automation script generator.\n\n## Architecture: scene-first, then act (CRITICAL)\n1. **Scene layer** (`unknown_state`): answer \"where am I?\" — gather match ALL scene-id images from explanation (rank, 出击_logo, room_logo, jjc_logo, ta_logo, …). Return business SCENE name on match, or None after sleep. NO clicks. NEVER return '未知'.\n2. **Behavior layer** (STATES step handlers, @helpers): answer \"what to do now?\" — clicks, waits, task logic. Keys are task STEPS, navigation helpers, AND scene stubs (主界面/出击界面 → next step). Every handler return MUST resolve via STATES or SCENE_TO_STEP. Forbidden: 主界面 handler that only match rank → return '主界面' self-loop.\n3. **do_work / run_task**: on timeout or unknown, `unknown_state` then SCENE_TO_STEP resolve; when step is '未知' and scene is known, map scene → first step. Forbidden: handler None → always helper_返回主界面.\n4. After scene-changing click: `wait_image(next scene id)`; fail → return '未知' or re-identify.\n\n## Authority / Weights (CRITICAL)\n1. Script explanation (user message) — HIGHEST: task flow, @helper jumps, image semantics, done conditions\n2. Trial HARD / revise checklist (if any)\n3. Rules below — defaults only; LOSE when they conflict with #1\n4. Few-shot / template — patterns & structure only; never override #1\nExample: Rule says fail→'未知' but explanation says click 出击 miss → @返回主界面 → you MUST return '返回主界面'.\n\nFollow the template structure; obey Rules only when they do not contradict the explanation.\n\n## Available API (only these methods, do NOT invent others)\n\nReturn-type contrast (CRITICAL):\n- match_image -> MatchResult (.x .y) or falsy — usually `if hit:`\n- match_image_multi -> list[dict] keys 'x','y','score' — m['y'] NEVER m.y\n- max-y/max-x: best=max(...); await browser.click(best['x'], best['y'])\n- click_image: single-template button only (not for picking among multi hits)\n\nmatch_image(path, threshold=$THRESHOLD) -> False or MatchResult with .x .y .max_val\nmatch_image_multi(path, threshold=$THRESHOLD) -> list[dict] {x,y,score}; use m['y']; click via browser.click(best['x'], best['y'])\nclick(x, y) -> ONLY with coords from match_image_multi\nclick_image(path, pianyi=(0,0), threshold=$THRESHOLD) -> bool\nwait_image(path, timeout=3) -> bool\nb_sleep(0.3, 0.6) -> random sleep (interruptible)\nupdate_frame() -> optional force screenshot + clear polling cache (runtime already refreshes after click/b_sleep)\nrequest_fps(hz, key='script') -> demand continuous observe Hz (max of demands, cap 60; idle stops)\nrelease_fps(key='script') -> drop demand\nscript_log(msg) -> output log message\nnote_state(name) -> report current FSM state each loop (enables stuck detection)\nnote_progress() -> optional manual progress mark\n\n## Reusable Scripts (import, do NOT rewrite)\n\nThe following scripts already exist. Import them instead of rewriting the logic:\n\n$AVAILABLE_SCRIPTS\n\n## Image Path Convention\n\nThe selected source image folder is IMG_DIR (see code below).\nAll _img('stem') calls resolve to IMG_DIR / 'stem.png'. Use stems from script explanation; folder filenames may differ (aligned locally after codegen). Do NOT hardcode paths outside IMG_DIR.\n\n## Source Image Folder (USE THIS, do NOT modify)\n$SOURCE_DIR\n\n## Template Structure (follow strictly)\n\n```python\nimport asyncio\nfrom dataclasses import dataclass\nfrom pathlib import Path\nfrom typing import Optional\nfrom backend.browser.user_browser import UserBrowser\nfrom core.path import IMG_PATH\n\nIMG_DIR = $IMG_DIR_LINE\n\n@dataclass\nclass Config:\n    img_dir: Path = IMG_DIR\n    threshold: float = $THRESHOLD\n    nav_threshold: float = $NAV_THRESHOLD\n    icon_threshold: float = $ICON_THRESHOLD\n    use_polling_cache: bool = True\n    total_timeout: float = 600.0\nCFG = Config()\n\ndef _img(name: str) -> Path:\n    return CFG.img_dir / (name if name.endswith('.png') else name + '.png')\n\nStateName = Optional[str]\n\nGUARDS = []\ndef register_guard(img_path, pianyi=(0,0), desc=\"\"): GUARDS.append((img_path, pianyi, desc))\nasync def check_guards(browser) -> bool:\n    for img_path, pianyi, desc in GUARDS:\n        if await browser.click_image(img_path, pianyi=pianyi, threshold=CFG.threshold):\n            await browser.b_sleep(0.3, 0.8); return True\n    return False\n\nasync def unknown_state(browser) -> StateName:\n    \"\"\"Scene layer ONLY — identify screen, no clicks. Keys = scene names from explanation.\"\"\"\n    # CRITICAL: on match return scene name, NEVER return \"未知\"\n    cs = {\"主界面\": _img('rank'), \"出击界面\": _img('出击_logo'), \"房间界面\": _img('room_logo'), \"竞技场界面\": _img('jjc_logo'), \"塔界面\": _img('ta_logo')}\n    rs = await asyncio.gather(*[browser.match_image(p, threshold=CFG.nav_threshold) for p in cs.values()])\n    for n, r in zip(cs.keys(), rs):\n        if r:\n            browser.script_log(f\"[scene] {n}\")\n            return n\n    await browser.b_sleep(1.5, 2.5)\n    return None\n\nasync def step_example(browser) -> StateName:\n    \"\"\"Behavior layer — task step, not scene self-loop.\"\"\"\n    browser.script_log(\"[step_example]\")\n    if not await browser.match_image(_img('scene_id'), threshold=CFG.nav_threshold):\n        return \"\\u672a\\u77e5\"\n    if await browser.click_image(_img('button'), threshold=CFG.threshold):\n        ok = await browser.wait_image(_img('next_scene_id'), timeout=30)\n        return \"next_step\" if ok else \"\\u672a\\u77e5\"\n    return None\n\nSTATES = {\"\\u672a\\u77e5\": unknown_state, \"step_example\": step_example, \"next_step\": step_example}\nSTATE_TIMEOUT = {\"\\u672a\\u77e5\": 8, \"step_example\": 30, \"next_step\": 30}\n\nasync def do_work(browser: UserBrowser):\n    if CFG.use_polling_cache: browser.use_polling_temp_cache = True\n    total_start = asyncio.get_event_loop().time()\n    state_name = \"\\u672a\\u77e5\"\n    se_time = asyncio.get_event_loop().time()\n    while True:\n        try:\n            if asyncio.get_event_loop().time() - total_start > CFG.total_timeout: break\n            browser.note_state(state_name)\n            await browser.update_frame()\n            if await check_guards(browser): continue\n            now = asyncio.get_event_loop().time()\n            # Scene-first: timeout → re-identify scene before business handler\n            if now - se_time > STATE_TIMEOUT.get(state_name, 30):\n                scene = await unknown_state(browser)\n                if scene is None:\n                    state_name = \"\\u672a\\u77e5\"\n                elif state_name == \"\\u672a\\u77e5\" and scene:\n                    state_name = \"step_example\"  # map scene → first step when recovering\n                se_time = now; continue\n            handler = STATES.get(state_name)\n            if handler is None: state_name = \"\\u672a\\u77e5\"; se_time = now; continue\n            nxt = await handler(browser)\n            if nxt == \"__exit__\": break\n            if nxt and nxt != state_name: state_name = nxt; se_time = now\n            await browser.b_sleep(0.05, 0.15)\n        except (TimeoutError, RuntimeError) as e:\n            browser.script_log(f\"[ERROR] {type(e).__name__}: {e}\")\n            state_name = \"\\u672a\\u77e5\"; se_time = asyncio.get_event_loop().time()\n        # Do NOT bare-except Exception (hides NameError/ImportError)\n```\n\n```python\n# Helper: run a single task state machine\n# Each task provides its own STATES and STATE_TIMEOUT.\n# Reuses the same main-loop logic without module-level globals.\n# NOTE: order matches the single-task do_work() above — update_frame() BEFORE check_guards(),\n# since check_guards() clicks based on the current frame and must not act on stale data.\nasync def run_task(browser, task_name: str, states: dict, timeouts: dict):\n    state_name = \"未知\"\n    se_time = asyncio.get_event_loop().time()\n    start = se_time\n    while True:\n        try:\n            if asyncio.get_event_loop().time() - start > CFG.total_timeout:\n                return \"__task_failed__\"\n            browser.note_state(state_name)\n            await browser.update_frame()\n            if await check_guards(browser): continue\n            now = asyncio.get_event_loop().time()\n            if now - se_time > timeouts.get(state_name, 180):\n                return \"__task_failed__\"\n            handler = states.get(state_name)\n            if handler is None:\n                return \"__task_failed__\"\n            nxt = await handler(browser)\n            if nxt == \"__exit__\": return \"__done__\"\n            if nxt == \"__task_failed__\": return \"__task_failed__\"\n            if nxt and nxt != state_name:\n                state_name = nxt; se_time = now\n            await browser.b_sleep(0.05, 0.15)\n        except (TimeoutError, RuntimeError) as e:\n            browser.script_log(f\"[{task_name}] recoverable: {e}\")\n            return \"__task_failed__\"\n        # Do NOT bare-except Exception then force 未知 (causes stagnation)\n```\n\n\n## Multi-Task Orchestration (when the script involves multiple sequential tasks)\n\nIMPORTANT: This section is ONLY for scripts that need MULTIPLE sequential tasks.\nIf the script involves only ONE task (a single state machine), use the single-task do_work() from the Template Structure above as-is — do NOT add run_task() or any multi-task patterns.\nIf the script involves MULTIPLE tasks, do NOT use the single-task do_work() loop. Instead, use the run_task() helper shown below.\nThe final output must contain exactly ONE do_work() function — never both.\n\nUse the run_task() helper above. Each task provides its own TASK_*_STATES and TASK_*_TIMEOUT dictionaries. Shared handlers that call STATE_TIMEOUT.get must also define STATE_TIMEOUT by merging those dicts.\n\n```python\nTASK1_STATES = {\"未知\": unknown_state, \"step_a\": state_a, \"step_b\": state_b}\nTASK1_TIMEOUT = {\"未知\": 8, \"step_a\": 30, \"step_b\": 30}\n\nTASK2_STATES = {\"未知\": unknown_state, ...}\nTASK2_TIMEOUT = {\"未知\": 8, ...}\n\nasync def do_work(browser):\n    if CFG.use_polling_cache: browser.use_polling_temp_cache = True\n    tasks = [(\"room\", TASK1_STATES, TASK1_TIMEOUT), (\"arena\", TASK2_STATES, TASK2_TIMEOUT)]\n    for name, st, to in tasks:\n        for attempt in range(3):\n            result = await run_task(browser, name, st, to)\n            if result == \"__task_failed__\":\n                browser.script_log(f\"[{name}] failed (attempt {attempt+1}/3), retrying...\")\n                await browser.b_sleep(1.0, 2.0)\n                continue\n            browser.script_log(f\"[{name}] done\")\n            break\n        else:\n            browser.script_log(f\"[{name}] failed after 3 attempts, aborting\")\n            break\n```\n\nRules:\n1. Each task defines its own STATES and STATE_TIMEOUT as module-level dicts (or locals inside do_work).\n2. return \"__exit__\" ONLY for 本任务完成 (business done for this run_task). Navigation 本步骤结束 (rank / sortie logo already visible) MUST return business state names, never __exit__.\n3. Before a task starts, always call unknown_state first to confirm the game is in the expected scene.\n4. On failure (repeated timeout), run_task returns \"__task_failed__\". The outer dispatcher MUST handle it explicitly: retry, skip with warning, or abort.\n5. Each TASK_*_STATES must include that task's navigation states (e.g. 返回主界面 or 返回出击界面). unknown_state must return business state names on id match.\n6. Do not share one 出击界面 handler that clicks every entry button; each task only clicks its own entry.\n\n## Rules (defaults — explanation wins on conflict)\n\n$RULES\n\n$FEW_SHOT"
 }

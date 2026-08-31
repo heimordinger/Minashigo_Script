@@ -11,7 +11,13 @@ _DEFAULT_CONFIG = {
     },
     "task": {
         "enable_daemon_task": True
-    }
+    },
+    "ui": {
+        "theme": "light",  # light | dark
+    },
+    "loading": {
+        "topmost": True,
+    },
 }
 
 
@@ -161,7 +167,18 @@ class Config:
     def enable_daemon_task(self) -> bool:
         return bool(self.get("task.enable_daemon_task"))
 
+    @property
+    def ui_theme(self) -> str:
+        val = (self.get("ui.theme") or "light")
+        val = str(val).strip().lower()
+        return val if val in ("light", "dark") else "light"
+
     def _validate(self, key_path: str, value):
+        if key_path == "ui.theme":
+            if value not in ("light", "dark"):
+                raise ValueError("主题必须是: light, dark")
+            return
+
         if key_path == "browser.browser_path":
             p = Path(value)
 
