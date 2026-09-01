@@ -597,6 +597,13 @@ class Controller(QObject):
         self._log_listeners.append(fn)
 
     def emit_log(self, *, account: str, message: str, level, source):
+        try:
+            from core.demo_mode import is_demo_mode, mask_sensitive
+
+            if is_demo_mode():
+                message = mask_sensitive(message)
+        except Exception:
+            pass
         event = LogEvent(
             account=account,
             level=level,

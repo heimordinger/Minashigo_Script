@@ -1,0 +1,14 @@
+{
+  "编队-01": {
+    "email": "user01@example.com",
+    "password": "example-password"
+  },
+  "编队-02": {
+    "email": "user02@example.com",
+    "password": "example-password"
+  },
+  "编队-03": {
+    "email": "user03@example.com",
+    "password": "example-password"
+  }
+}

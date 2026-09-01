@@ -7,6 +7,7 @@ import numpy as np
 
 from .utils import get_port
 from backend.matcher.matcher import matcher
+from core.demo_mode import demo_browser_data_dir, is_demo_mode
 from core.path import PROJECT_ROOT
 
 from .mixins import (
@@ -54,11 +55,17 @@ class Browser(
 
         self.port = port if port is not None else get_port()
 
-        self.user_data_dir = (
+        if is_demo_mode():
+            self.user_data_dir = demo_browser_data_dir(
+                account["name"],
+                project_root=PROJECT_ROOT,
+            )
+        else:
+            self.user_data_dir = (
                 PROJECT_ROOT /
                 Path("browser_data")
                 / account["name"]
-        )
+            )
         self.user_data_dir.mkdir(parents=True, exist_ok=True)
 
         self._closed = False

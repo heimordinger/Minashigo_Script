@@ -9,6 +9,8 @@ from PySide6.QtWidgets import (
 )
 
 from core.config.config import config, _DEFAULT_CONFIG
+from core.demo_mode import demo_settings_paths, is_demo_mode
+from core.path import PROJECT_ROOT
 from gui.widgets.AboutWidget import AboutWidget
 
 
@@ -149,26 +151,39 @@ class SettingsPanel(QWidget):
         )
 
     def _load_config(self):
-        browser_cfg = config.data.get("browser", {})
-        default_cfg = _DEFAULT_CONFIG["browser"]
-        user_val = browser_cfg.get("browser_path")
-        default_val = default_cfg["browser_path"]
-
-        if user_val:
-            self.browser_path_edit.setText(user_val)
-            self._set_style(self.browser_path_edit, True)
-        else:
-            self.browser_path_edit.setText(default_val)
+        if is_demo_mode():
+            browser_path, data_dir = demo_settings_paths(project_root=PROJECT_ROOT)
+            self.browser_path_edit.setText(browser_path)
             self._set_style(self.browser_path_edit, False)
-        user_val = browser_cfg.get("browser_data_dir")
-        default_val = default_cfg["browser_data_dir"]
-
-        if user_val:
-            self.user_data_edit.setText(user_val)
-            self._set_style(self.user_data_edit, True)
-        else:
-            self.user_data_edit.setText(default_val)
+            self.user_data_edit.setText(data_dir)
             self._set_style(self.user_data_edit, False)
+            self.browser_browse_btn.setEnabled(False)
+            self.user_data_btn.setEnabled(False)
+            self.reset_btn.setEnabled(False)
+        else:
+            self.browser_browse_btn.setEnabled(True)
+            self.user_data_btn.setEnabled(True)
+            self.reset_btn.setEnabled(True)
+            browser_cfg = config.data.get("browser", {})
+            default_cfg = _DEFAULT_CONFIG["browser"]
+            user_val = browser_cfg.get("browser_path")
+            default_val = default_cfg["browser_path"]
+
+            if user_val:
+                self.browser_path_edit.setText(user_val)
+                self._set_style(self.browser_path_edit, True)
+            else:
+                self.browser_path_edit.setText(default_val)
+                self._set_style(self.browser_path_edit, False)
+            user_val = browser_cfg.get("browser_data_dir")
+            default_val = default_cfg["browser_data_dir"]
+
+            if user_val:
+                self.user_data_edit.setText(user_val)
+                self._set_style(self.user_data_edit, True)
+            else:
+                self.user_data_edit.setText(default_val)
+                self._set_style(self.user_data_edit, False)
 
         # 加载动画置顶设置
         loading_cfg = config.data.get("loading", {})
@@ -221,6 +236,13 @@ class SettingsPanel(QWidget):
         self._set_style(self.browser_path_edit, False)
 
     def _save_config(self):
+        if is_demo_mode():
+            QMessageBox.information(
+                self,
+                "演示模式",
+                "演示模式下不保存浏览器路径；可切换主题预览，但不会写入配置。",
+            )
+            return
         path = self.browser_path_edit.text().strip()
         user_data = self.user_data_edit.text().strip()
         theme = self.theme_combo.currentData() or "light"

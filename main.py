@@ -62,6 +62,12 @@ def main():
     def ts(msg):
         print(f"[{time.time()-_t0:7.3f}] {msg}")
 
+    # 演示模式使用独立锁，可与正常实例并存（截图时勿同时跑正式任务）
+    demo = (os.getenv("MINASHIGO_DEMO") or "").strip().lower() in ("1", "true", "yes", "on")
+    global _LOCK_FILE
+    if demo:
+        _LOCK_FILE = os.path.join(tempfile.gettempdir(), "minashigo_script.demo.lock")
+
     if is_already_running():
         print("[Main] 程序已经在运行中，退出...")
         input("按任意键退出...")
@@ -69,6 +75,11 @@ def main():
 
     atexit.register(_cleanup_lock)
     ts("启动主程序...")
+    if demo:
+        from core.demo_mode import demo_startup_banner
+        banner = demo_startup_banner()
+        if banner:
+            print(banner)
 
     from PySide6.QtWidgets import QApplication
     from PySide6.QtGui import QIcon

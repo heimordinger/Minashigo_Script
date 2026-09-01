@@ -6,6 +6,7 @@ import threading
 from pathlib import Path
 
 from controller.ctrl import Controller
+from core.demo_mode import demo_accounts, is_demo_mode
 from core.logging.events import LogLevel, LogSource
 from gui.state.UIState import UIState
 from core.path import json_path, SCRIPTS_PATH, PROJECT_ROOT
@@ -20,6 +21,9 @@ class FacadeImpl:
         self.taskflow_processes: dict[str, subprocess.Popen] = {}
 
     def _load_accounts(self) -> list[dict]:
+        if is_demo_mode():
+            return demo_accounts()
+
         path = Path(json_path, "accounts.json")
 
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -54,6 +58,8 @@ class FacadeImpl:
         return self.state.current_account
 
     def add_account(self, account: dict) -> bool:
+        if is_demo_mode():
+            return False
         if any(a["name"] == account["name"] for a in self.state.accounts):
             return False
 
@@ -78,14 +84,21 @@ class FacadeImpl:
         self.controller.sync_taskflow_target(account)
 
     def update_account(self, index: int, account: dict):
+        if is_demo_mode():
+            return
         self.state.accounts[index] = account
         self.save_accounts()
 
     def delete_account(self, index: int):
+        if is_demo_mode():
+            return
         self.state.accounts.pop(index)
         self.save_accounts()
 
     def save_accounts(self):
+        if is_demo_mode():
+            return
+
         path = Path(json_path, "accounts.json")
 
         path.parent.mkdir(parents=True, exist_ok=True)

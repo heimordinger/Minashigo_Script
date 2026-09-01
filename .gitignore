@@ -1,4 +1,4 @@
-# ========== IDE / Editor ==========
+﻿# ========== IDE / Editor ==========
 .idea/
 .vscode/
 
@@ -26,6 +26,7 @@ dist/
 # ========== Runtime data ==========
 runtime/
 browser_data/
+browser_data_demo/
 screenshot/
 python/
 docs/

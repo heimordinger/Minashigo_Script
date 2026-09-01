@@ -63,7 +63,9 @@ class MainWindow(QWidget):
         font.setPointSize(13)
         self.setFont(font)
 
-        self.setWindowTitle(f"Minashigo_Script-{APP_VERSION}")
+        from core.demo_mode import demo_window_title_suffix
+
+        self.setWindowTitle(f"Minashigo_Script-{APP_VERSION}{demo_window_title_suffix()}")
         self.setWindowIcon(QIcon(str(ICON_PATH)))
         self.resize(900, 600)
         self.setObjectName("MainWindow")

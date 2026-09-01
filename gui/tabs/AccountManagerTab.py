@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.path import ICON_PATH
+from core.demo_mode import demo_block_mutation, is_demo_mode
 
 
 class AccountManagerTab(QWidget):
@@ -31,8 +32,18 @@ class AccountManagerTab(QWidget):
         header.setSectionResizeMode(QHeaderView.Fixed)
 
         layout = QVBoxLayout(self)
+        if is_demo_mode():
+            hint = QLabel(
+                "演示模式：下方为示例账号，不会读写 json/accounts.json。"
+                "运行 tools\\run_demo.bat 进入此模式。"
+            )
+            hint.setObjectName("DemoModeHint")
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
+            self.add_btn.setEnabled(False)
         layout.addWidget(self.table)
-        layout.addWidget(self.add_btn)
+        if not is_demo_mode():
+            layout.addWidget(self.add_btn)
 
         self.load_accounts()
         self.resize_columns()
@@ -53,9 +64,14 @@ class AccountManagerTab(QWidget):
 
             toggle_btn = QPushButton("◉")
             toggle_btn.setFixedSize(50, 28)
+            if is_demo_mode():
+                toggle_btn.setEnabled(False)
 
             edit_btn = QPushButton("编辑")
             del_btn = QPushButton("删除")
+            if is_demo_mode():
+                edit_btn.setEnabled(False)
+                del_btn.setEnabled(False)
 
             toggle_btn.clicked.connect(
                 lambda _, r=row, b=toggle_btn: self.toggle_password(r, b)
@@ -74,6 +90,8 @@ class AccountManagerTab(QWidget):
             self.table.setCellWidget(row, 3, widget)
 
     def add_account(self):
+        if demo_block_mutation(parent=self):
+            return
         existing_names = {acc["name"] for acc in self.facade.list_accounts()}
 
         dialog = AccountDialog(parent=self, existing_names=existing_names)
@@ -88,6 +106,8 @@ class AccountManagerTab(QWidget):
         self.accounts_changed.emit()
 
     def edit_account(self, row):
+        if demo_block_mutation(parent=self):
+            return
         accounts = self.facade.list_accounts()
         acc = accounts[row]
 
@@ -109,6 +129,8 @@ class AccountManagerTab(QWidget):
         self.accounts_changed.emit()
 
     def delete_account(self, row):
+        if demo_block_mutation(parent=self):
+            return
         self.facade.delete_account(row)
         self.load_accounts()
         self.accounts_changed.emit()
@@ -142,6 +164,8 @@ class AccountManagerTab(QWidget):
             pass
 
     def toggle_password(self, row, btn):
+        if is_demo_mode():
+            return
         item = self.table.item(row, 2)
         if not item:
             return

@@ -1,102 +1,141 @@
 # Minashigo Script
 
-基于图像识别的页游自动化框架，支持浏览器和桌面窗口双模式控制。内置 AI Script Generator，可根据自然语言描述自动生成自动化脚本。
+基于图像识别的页游 / 桌面自动化框架，支持浏览器与原生窗口双模式控制。内置 AI Script Generator，可根据自然语言描述生成 Python 自动化脚本。
+
+[![GitHub](https://img.shields.io/badge/GitHub-heimordinger%2FMinashigo__Script-181717?logo=github)](https://github.com/heimordinger/Minashigo_Script)
+![Version](https://img.shields.io/badge/version-v1.2.1-blue)
+![Python](https://img.shields.io/badge/Python-3.11-3776AB?logo=python&logoColor=white)
+![Qt](https://img.shields.io/badge/GUI-PySide6-41CD52)
+
+## 界面预览
+
+主界面（演示模式账号列表）：
+
+![主界面](assets/showcase/01_main.png)
+
+账号工作台（浏览器目标 + 脚本运行日志）：
+
+![账号工作台](assets/showcase/02_account_panel.png)
 
 ## 功能
 
-- **🤖 AI 脚本生成**：配置 LLM API（Claude / GPT / DeepSeek），写一段文字描述 + 提供截图，自动生成可执行的 Python 脚本
-- **🎮 双模式控制**：浏览器自动化（Playwright）或桌面窗口控制（Win32 API）
-- **🔍 图像匹配**：OpenCV 多尺度模板匹配 + ORB 特征匹配，支持多实例贪婪匹配
-- **📜 自研 FSM 脚本引擎**：有限状态机 + GlobalGuard 守卫模式，状态独立、弹窗统一处理
-- **🔧 可视化工作流**：内置 TaskFlow 节点编辑器，无需编程即可编排流程
-- **🛡️ 看门狗保护**：5 分钟无操作自动终止，防止脚本卡死
-- **🔔 托盘通知**：任务完成/异常时系统托盘弹窗提醒
-- **👥 多账号管理**：多账号独立配置、独立浏览器实例
+- **AI 脚本生成**：配置 LLM API，结合文字描述与截图，生成可执行的 Python 脚本
+- **双模式控制**：浏览器自动化（Playwright）或桌面窗口控制（Win32）
+- **图像匹配**：OpenCV 多尺度模板匹配、多实例匹配、可选颜色校验；热点 ROI 收缩搜索区
+- **FSM 脚本引擎**：有限状态机 + 全局守卫，长流程按状态拆分，弹窗统一处理
+- **伪录制复盘**：运行过程写入时间线与关键帧，`summary` 输出耗时分类及黑屏 / 有效耗时
+- **TaskFlow**：可视化节点编排，无需手写代码即可串联流程
+- **看门狗**：长时间无进展自动终止，避免脚本卡死
+- **多账号**：多账号独立配置与独立浏览器实例
 
 ## 快速开始
 
-### 方式一：下载 Releases（推荐）
+### 下载 Releases（推荐）
 
 从 [Releases](https://github.com/heimordinger/Minashigo_Script/releases) 下载最新 zip，解压后运行 `Minashigo_Script.exe`。
 
-### 方式二：源码运行
+### 源码运行
 
 ```bash
-# 1. 安装依赖
 pip install -r requirements.txt
-
-# 2. 安装 Playwright 浏览器
 playwright install chromium
-
-# 3. 运行
 python main.py
 ```
 
 ## 使用
 
-### 账号管理
-1. 启动后进入「账号管理」tab 添加账号
-2. 切回「开始」tab 选择账号并点击「开始」
+### 账号与任务
 
-### 脚本目标选择
-- **浏览器模式**：点击「启动浏览器」→ 自动打开控制表盘
-- **窗口模式**：点击「选择窗口」→ 选取已打开的桌面窗口
+1. 在「账号管理」添加账号
+2. 在「开始」页选择账号并启动
+3. **浏览器模式**：启动 Chromium 后选择脚本执行
+4. **窗口模式**：「选择窗口」绑定目标 HWND 后执行脚本
 
-### TaskFlow 工作流
-1. 启动后在账号界面点击「TaskFlow」按钮
-2. 在可视化编辑器中拖拽节点编排流程图
-3. 支持：点击、图片匹配、条件判断、循环、计数器等
+### TaskFlow
 
-### AI 脚本生成（Script Generator）
-1. 进入「脚本生成」tab
-2. 选择 AI 提供商并填写 API Key
-3. 编写或加载脚本描述（`.txt`）
-4. 提供参考截图（可选）
-5. 点击「生成脚本」→ AI 自动生成完整脚本
-6. 支持流式输出（逐字显示）、token 消耗统计、一键保存
+1. 在账号界面打开 TaskFlow
+2. 拖拽节点编排流程（点击、匹配、条件、循环等）
+
+### Script Generator
+
+1. 进入「脚本生成」，配置 AI 提供商与 API Key
+2. 编写或加载脚本描述（`.txt`），可选上传参考截图
+3. 生成脚本并保存到 `scripts/`
+
+### 调试与复盘
+
+- 异常结束时可查看 `screenshots/daily_stop/` 归档帧
+- 开启伪录制后，会话输出在 `screenshots/pseudo_record/`（`timeline.jsonl`、`summary.txt`、`frames/`）
+- 匹配调试窗口可查看模板命中位置与分数
+
+### 演示模式（截图 / 展示）
+
+不加载真实 `json/accounts.json`，使用示例账号（`编队-01` 等），浏览器配置写入 `browser_data_demo/`，日志邮箱自动打码。
+
+```bash
+# Windows
+tools\run_demo.bat
+
+# 或手动
+set MINASHIGO_DEMO=1
+python main.py
+```
+
+示例账号定义见 `core/demo_mode.py` 与 `json/accounts.demo.json`。
 
 ## 项目结构
 
 ```
 Minashigo_Script/
 ├── main.py                     # 入口
-├── core/                       # 核心框架（启动、路径、TaskFlow、HTTP API）
-├── controller/                 # 控制层（主控 / 任务调度）
-├── gui/                        # 图形界面（窗口、面板、Tab、控件）
+├── core/                       # 启动、路径、配置、TaskFlow API
+├── controller/                 # 主控与任务调度
+├── gui/                        # PySide6 界面
 ├── backend/
-│   ├── browser/                # Playwright 浏览器控制
-│   ├── automation/             # Win32 窗口控制 + 卡死守卫
-│   ├── matcher/                # 图像匹配引擎
-│   ├── script_generator/       # AI 脚本生成（agent / LangGraph）
-│   └── quick_script/           # 快速脚本录制与 YOLO 检测
-├── taskflow/                   # 可视化工作流编辑器与节点
-├── script_spec/                # 脚本说明规格与编辑器
-├── scripts/                    # 用户脚本（Deep One / 孤儿 / 通用等）
-├── assets/                     # 图片资源
-├── tests/                      # 测试与调试脚本
-└── models/                     # OCR 等模型（自动下载，不入库）
+│   ├── browser/                # Playwright、游戏区截帧
+│   ├── automation/             # 窗口控制、帧观察、伪录制、卡死守卫
+│   ├── matcher/                # 图像匹配、热点 ROI
+│   └── script_generator/       # AI 生成、语料、修订
+├── taskflow/                   # 可视化工作流
+├── script_spec/                # 脚本说明编辑器
+├── scripts/                    # 业务脚本（Deep One / 孤儿等）
+├── assets/                     # 模板图片等资源
+└── models/                     # OCR 等模型（运行时下载）
 ```
+
+## 脚本示例
+
+| 脚本 | 说明 |
+|------|------|
+| `scripts/Deep One/DO登录_v2.py` | 网页导航、DMM 登录、游戏内 FSM 登录 |
+| `scripts/Deep One/DO日常_v1.py` | 日常任务（礼物、任务奖励、JJC、塔等） |
+| `scripts/Deep One/DO推本_v2.py` | 推本流程 |
+
+脚本目录下每个游戏通常配有 `assets/images/` 中对应的模板图与说明文件。
 
 ## 构建
 
 ```bash
-# 打包 exe
-python build.py
-
-# 打包发布 zip
-python compress_zip.py
+python build.py          # 打包 exe
+python compress_zip.py   # 打包发布 zip
 ```
 
 ## 技术栈
 
-- **GUI**: PySide6 (Qt)
-- **浏览器自动化**: Playwright
-- **桌面控制**: Win32 API (ctypes)
-- **图像匹配**: OpenCV（多尺度模板匹配、ORB 特征匹配、多实例贪婪匹配）
-- **AI 提供商**: Anthropic Claude / OpenAI / DeepSeek / Google Gemini / Groq
-- **OCR**: Tesseract
-- **工作流**: LiteGraph（自建 TaskFlow 编辑器）
-- **凭据存储**: keyring（系统级加密）
+| 类别 | 技术 |
+|------|------|
+| GUI | PySide6 |
+| 浏览器 | Playwright |
+| 桌面 | Win32 (ctypes) |
+| 视觉 | OpenCV |
+| AI | LangGraph / LangChain Core |
+| OCR | Tesseract |
+| 凭据 | keyring |
+
+## 说明
+
+- 个人学习与自动化实践项目，请遵守目标网站服务条款及当地法律
+- 账号、Cookie、`browser_data/`、本地截图等运行时数据默认不提交到仓库
 
 ## 许可证
 
