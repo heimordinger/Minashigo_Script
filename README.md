@@ -113,13 +113,6 @@ Minashigo_Script/
 
 脚本目录下每个游戏通常配有 `assets/images/` 中对应的模板图与说明文件。
 
-## 构建
-
-```bash
-python build.py          # 打包 exe
-python compress_zip.py   # 打包发布 zip
-```
-
 ## 技术栈
 
 | 类别 | 技术 |
