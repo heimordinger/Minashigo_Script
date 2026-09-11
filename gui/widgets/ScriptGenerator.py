@@ -2594,6 +2594,14 @@ class ScriptGenerator(QWidget):
             self._explanation.setPlainText(text)
             self._explanation_text = text
             self._update_expl_path_label()
+            # 介绍一般与素材同目录：自动导入父文件夹图片
+            parent = path.parent
+            if parent.is_dir() and (
+                self._source_dir is None
+                or Path(self._source_dir).resolve() != parent.resolve()
+                or not self._image_entries
+            ):
+                self._import_folder_images(parent, recursive=True)
         except Exception as e:
             QMessageBox.warning(self, "读取失败", str(e))
         finally:
@@ -2609,23 +2617,11 @@ class ScriptGenerator(QWidget):
         for p in dlg.selected_paths:
             self._append_image(Path(p))
 
-    def _add_folder(self):
-        from gui.widgets.ResourcePicker import ResourcePickerDialog
-        dlg = ResourcePickerDialog(self, mode="folders", root_path=str(IMG_PATH))
-        if dlg.exec() != QDialog.Accepted or not dlg.selected_path:
-            return
-        root = Path(dlg.selected_path)
-        # 脚本生成素材默认含全部子目录（与白名单 / 识图一致）
-        recursive = True if dlg.recursive is None else bool(dlg.recursive)
+    def _import_folder_images(self, root: Path, *, recursive: bool = True) -> int:
+        # 扫描并导入素材夹图片；跳过 . 开头目录
+        root = Path(root)
         self._source_dir = root
-        self._maybe_bind_expl_file(root)
         self._on_image_mode_changed()
-        if self._explanation.toPlainText().strip():
-            try:
-                self._persist_explanation()
-            except Exception as e:
-                print(f"[ScriptGenerator] 绑定介绍后保存失败: {e}")
-
         self._image_entries.clear()
         it = root.rglob("*") if recursive else root.iterdir()
         count = 0
@@ -2638,16 +2634,33 @@ class ScriptGenerator(QWidget):
                 parts = f.parts
             if any(part.startswith(".") for part in parts):
                 continue
-                self._append_image(f)
-                count += 1
+            self._append_image(f)
+            count += 1
+        self._update_img_label()
+        return count
+
+    def _add_folder(self):
+        from gui.widgets.ResourcePicker import ResourcePickerDialog
+        dlg = ResourcePickerDialog(self, mode="folders", root_path=str(IMG_PATH))
+        if dlg.exec() != QDialog.Accepted or not dlg.selected_path:
+            return
+        root = Path(dlg.selected_path)
+        # 脚本生成素材默认含全部子目录（与白名单 / 识图一致）
+        recursive = True if dlg.recursive is None else bool(dlg.recursive)
+        self._maybe_bind_expl_file(root)
+        if self._explanation.toPlainText().strip():
+            try:
+                self._persist_explanation()
+            except Exception as e:
+                print(f"[ScriptGenerator] 绑定介绍后保存失败: {e}")
+
+        count = self._import_folder_images(root, recursive=recursive)
         if count == 0:
             QMessageBox.information(
                 self,
                 "无图片",
                 f"文件夹内{'（含子文件夹）' if recursive else ''}未找到图片文件",
             )
-        else:
-            self._update_img_label()
 
     def _append_image(self, path: Path):
         for e in self._image_entries:
