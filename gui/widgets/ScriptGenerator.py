@@ -8,27 +8,132 @@ import asyncio
 import re
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, Qt, QTimer
+from PySide6.QtGui import (
+    QFont, QPixmap, QKeySequence, QShortcut, QTextCursor, QTextDocument, QDesktopServices,
+)
+from PySide6.QtCore import QThread, Signal, Qt, QTimer, QUrl
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QFormLayout,
     QLineEdit, QComboBox, QPushButton, QCheckBox, QTextEdit,
     QLabel, QFileDialog, QSpinBox, QTabWidget, QSplitter,
-    QMessageBox, QGroupBox, QProgressBar, QStyle,
+    QMessageBox, QGroupBox, QProgressBar, QStyle, QFrame,
     QApplication, QDialog, QScrollArea, QDialogButtonBox, QProgressDialog,
-    QInputDialog,
+    QInputDialog, QListWidget, QListWidgetItem, QSizePolicy,
 )
-from PySide6.QtGui import QFont, QPixmap, QKeySequence, QShortcut, QTextCursor, QTextDocument
 
 from gui.widgets.GenTrajectory import GenTrajectory
+from gui.widgets.TrialHud import TrialHud
 from backend.script_generator.agent import generate_script, test_connection
 from core.path import IMG_PATH, SCRIPTS_PATH
 
 # 试运行写入 scripts/_trial/，由 TaskController 按 scripts._trial.* 加载
 _TRIAL_REL = "_trial/_gen_trial.py"
 _TRIAL_DIR = SCRIPTS_PATH / "_trial"
+_OPTIMIZE_PAGE_SIZE = 20
 _INTRO_FILENAMES = ("脚本介绍.txt", "脚本解释.txt")
 _KEYRING_SERVICE = "Minashigo_ScriptGenerator"
 _DEFAULT_PROFILE = "默认"
+
+
+class _BounceDots(QWidget):
+    """忙碌时三个小圆点交错上下跳动（波浪相位）。"""
+
+    # 高度档：0 底 → 1 中 → 2 顶 → 1 中；各点相位错开
+    _WAVE = (0, 1, 2, 1)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("AgentBounceDots")
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(3)
+        self._dots: list[QLabel] = []
+        for _ in range(3):
+            d = QLabel("●")
+            d.setObjectName("AgentBounceDot")
+            d.setFixedSize(9, 16)
+            d.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom)
+            lay.addWidget(d)
+            self._dots.append(d)
+        self._phase = 0
+        self._timer = QTimer(self)
+        self._timer.setInterval(110)
+        self._timer.timeout.connect(self._tick)
+        self.setFixedWidth(34)
+        self.setFixedHeight(18)
+        self._apply_idle()
+
+    def start(self):
+        if not self._timer.isActive():
+            self._timer.start()
+        self._tick()
+
+    def stop(self):
+        self._timer.stop()
+        self._apply_idle()
+
+    def _apply_idle(self):
+        for d in self._dots:
+            d.setStyleSheet(
+                "color:#9a958c;padding-top:5px;padding-bottom:0px;background:transparent;"
+            )
+
+    def _style_for_level(self, level: int) -> str:
+        # level 越高越靠上
+        top = max(0, 6 - level * 3)
+        bottom = 6 - top
+        if level >= 2:
+            color = "#3b6fd8"
+        elif level == 1:
+            color = "#5b8def"
+        else:
+            color = "#93b4f0"
+        return (
+            f"color:{color};padding-top:{top}px;padding-bottom:{bottom}px;"
+            "background:transparent;"
+        )
+
+    def _tick(self):
+        n = len(self._WAVE)
+        self._phase = (self._phase + 1) % n
+        for i, d in enumerate(self._dots):
+            # 交错：第 i 个点相位落后 i 步，形成波浪
+            level = self._WAVE[(self._phase - i) % n]
+            d.setStyleSheet(self._style_for_level(level))
+
+
+class _NoWheelComboBox(QComboBox):
+    """滚轮不改变选项，避免滚动页面时误改下拉框。"""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class _NoWheelSpinBox(QSpinBox):
+    """滚轮不改变数值，避免滚动页面时误改。"""
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+# Agent 阶段 → 进度条大致位置（仅提示用）
+_STAGE_PROGRESS = {
+    "plan": 12,
+    "think": 18,
+    "diagnose": 22,
+    "generate": 28,
+    "task": 42,
+    "merge": 58,
+    "validate": 72,
+    "fix": 82,
+    "revise": 55,
+    "revise_gap": 78,
+    "review": 88,
+    "optimize": 35,
+    "vision": 48,
+    "stop_vision": 50,
+    "vision_decide": 52,
+}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -605,6 +710,36 @@ class ReviseWorker(QThread):
         finally:
             loop.close()
 
+
+class OptimizeWorker(QThread):
+    finished = Signal(str, str, object)  # code, change_summary, meta
+    partial = Signal(str)
+    status = Signal(str)
+    artifact = Signal(str, str)
+    token_info = Signal(int, int)
+    error = Signal(str)
+
+    def __init__(self, params: dict):
+        super().__init__()
+        self.params = params
+
+    def run(self):
+        _reload_generator_modules()
+        from backend.script_generator.optimize import optimize_script as _optimize
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            self.params["on_partial"] = lambda text: self.partial.emit(text)
+            self.params["on_status"] = lambda msg: self.status.emit(msg)
+            self.params["on_artifact"] = lambda kind, payload: self.artifact.emit(kind, payload)
+            code, summary, inp, out, meta = loop.run_until_complete(_optimize(**self.params))
+            self.token_info.emit(inp, out)
+            self.finished.emit(code, summary or "", meta or {})
+        except Exception as e:
+            self.error.emit(str(e))
+        finally:
+            loop.close()
+
 # ═══════════════════════════════════════════════════════════════
 # 主面板
 # ═══════════════════════════════════════════════════════════════
@@ -626,9 +761,20 @@ class ScriptGenerator(QWidget):
         self._expl_save_timer.timeout.connect(self._autosave_explanation)
         self._generated_code: str = ""
         self._stream_buf: str = ""
+        self._gen_ctx: dict = {}  # 生成管线校验上下文（plan/free/source_dir）
         self._explanation_text: str = ""
         self._worker: GenerateWorker | None = None
         self._revise_worker: ReviseWorker | None = None
+        self._optimize_worker: OptimizeWorker | None = None
+        self._optimize_code: str = ""
+        self._optimize_script_path: Path | None = None
+        self._optimize_script_files: list[Path] = []
+        self._optimize_page = 0
+        self._optimize_folder = ""
+        self._optimize_log_lines: list[str] = []
+        self._pre_optimize_trial_log: str = ""
+        self._pre_optimize_record_dir: str = ""
+        self._awaiting_reliability_retrial: bool = False
         self._facade = None
         self._trial_running = False
         self._trial_account_name: str = ""
@@ -636,12 +782,21 @@ class ScriptGenerator(QWidget):
         self._last_trial_frame = None
         self._stop_frame_path: str = ""
         self._last_revise_summary: str = ""
+        self._last_revise_error: str = ""
         self._last_diagnosis_json: str = ""
         self._chat_session: dict | None = None
         self._last_inp_tokens = 0
         self._last_out_tokens = 0
         self._trial_blocked = False
         self._trial_block_reason = ""
+        self._busy_banner_base = ""
+        self._agent_busy = False
+        self._agent_status_base = ""
+        self._agent_busy_started = 0.0
+        self._holding_prev_live_code = False
+        self._agent_elapsed_timer = QTimer(self)
+        self._agent_elapsed_timer.setInterval(1000)
+        self._agent_elapsed_timer.timeout.connect(self._tick_agent_elapsed)
         from backend.script_generator.session_archive import SessionArchive
         self._archive = SessionArchive()
         self._settings_path = Path.home() / ".minashigo" / "script_gen_config.json"
@@ -688,6 +843,7 @@ class ScriptGenerator(QWidget):
     TAB_INPUT = 1
     TAB_GEN = 2
     TAB_TRIAL = 3
+    TAB_OPTIMIZE = 4
 
     @staticmethod
     def _wrap_scroll(inner: QWidget) -> QScrollArea:
@@ -700,16 +856,20 @@ class ScriptGenerator(QWidget):
     def _build_ui(self):
         outer = QVBoxLayout(self)
         outer.setContentsMargins(12, 8, 12, 10)
-        outer.setSpacing(8)
+        outer.setSpacing(6)
+
+        outer.addWidget(self._build_agent_strip())
 
         self._tabs = QTabWidget()
         self._tabs.setObjectName("ScriptGenTabs")
-        outer.addWidget(self._tabs)
+        outer.addWidget(self._tabs, 1)
 
         self._tabs.addTab(self._wrap_scroll(self._build_page_api()), "1. API 配置")
         self._tabs.addTab(self._wrap_scroll(self._build_page_input()), "2. 描述与素材")
         self._tabs.addTab(self._build_page_generate(), "3. 生成")
         self._tabs.addTab(self._build_page_trial(), "4. 试运行")
+        self._tabs.addTab(self._wrap_scroll(self._build_page_optimize()), "5. 脚本优化")
+        self._tabs.currentChanged.connect(self._on_tab_changed)
 
         # 提供商列表要在控件建完后初始化（先屏蔽信号，避免 addItems 触发保存冲掉已有配置）
         self._providers_config = self._load_providers_config()
@@ -722,6 +882,71 @@ class ScriptGenerator(QWidget):
         self._load_settings()
         self._apply_provider_hint()
         self._update_trial_availability()
+        self._set_agent_idle("就绪 · 配置 API 后开始生成")
+
+    def _build_agent_strip(self) -> QWidget:
+        """跨 Tab 常驻：当前阶段 / 进度 / token / 取消 / 归档。"""
+        strip = QFrame()
+        strip.setObjectName("AgentRunStrip")
+        strip.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        lay = QHBoxLayout(strip)
+        lay.setContentsMargins(10, 6, 10, 6)
+        lay.setSpacing(10)
+
+        self._agent_dots = _BounceDots()
+        self._agent_dot = self._agent_dots  # 兼容旧属性名（busy/success 走 start/stop）
+        lay.addWidget(self._agent_dots)
+
+        self._agent_phase = QLabel("Agent")
+        pf = QFont()
+        pf.setBold(True)
+        pf.setPointSize(11)
+        self._agent_phase.setFont(pf)
+        self._agent_phase.setObjectName("AgentRunPhase")
+        lay.addWidget(self._agent_phase)
+
+        self._agent_status = QLabel("就绪")
+        self._agent_status.setObjectName("MutedLabel")
+        self._agent_status.setWordWrap(False)
+        lay.addWidget(self._agent_status, 1)
+
+        self._progress = QProgressBar()
+        self._progress.setObjectName("ScriptGenProgress")
+        self._progress.setRange(0, 0)
+        self._progress.setTextVisible(False)
+        self._progress.setFixedHeight(6)
+        self._progress.setMinimumWidth(100)
+        self._progress.setMaximumWidth(180)
+        self._progress.hide()
+        lay.addWidget(self._progress)
+
+        self._token_label = QLabel("")
+        self._token_label.setObjectName("MutedLabel")
+        lay.addWidget(self._token_label)
+
+        self._strip_cancel_btn = QPushButton("取消")
+        self._strip_cancel_btn.setObjectName("GhostButton")
+        self._strip_cancel_btn.setEnabled(False)
+        self._strip_cancel_btn.setFixedHeight(26)
+        self._strip_cancel_btn.clicked.connect(self._cancel_generate)
+        lay.addWidget(self._strip_cancel_btn)
+
+        self._archive_btn = QPushButton("打开归档")
+        self._archive_btn.setObjectName("GhostButton")
+        self._archive_btn.setToolTip("打开本次会话材料目录（代码 / 轨迹 / 日志）")
+        self._archive_btn.setFixedHeight(26)
+        self._archive_btn.clicked.connect(self._open_session_archive)
+        lay.addWidget(self._archive_btn)
+
+        self._goto_traj_btn = QPushButton("轨迹")
+        self._goto_traj_btn.setObjectName("GhostButton")
+        self._goto_traj_btn.setToolTip("跳到生成页查看 Agent 轨迹与实时代码")
+        self._goto_traj_btn.setFixedHeight(26)
+        self._goto_traj_btn.clicked.connect(lambda: self._tabs.setCurrentIndex(self.TAB_GEN))
+        lay.addWidget(self._goto_traj_btn)
+
+        self._agent_busy = False
+        return strip
 
     def _build_page_api(self) -> QWidget:
         page = QWidget()
@@ -740,7 +965,7 @@ class ScriptGenerator(QWidget):
         _pl.setWordWrap(True)
         g_prof.addWidget(_pl)
         prow = QHBoxLayout()
-        self._profile_combo = QComboBox()
+        self._profile_combo = _NoWheelComboBox()
         self._profile_combo.setMinimumWidth(180)
         self._profile_combo.setToolTip(
             "当前启用的 API 配置方案。\n"
@@ -786,7 +1011,7 @@ class ScriptGenerator(QWidget):
         )
         f.addRow("自定义端点:", self._endpoint)
 
-        self._provider = QComboBox()
+        self._provider = _NoWheelComboBox()
         self._provider.setMaxVisibleItems(24)
         self._provider.setToolTip(
             "选择 AI 服务商。必须与 API Key 来源一致。\n"
@@ -804,7 +1029,7 @@ class ScriptGenerator(QWidget):
         )
         f.addRow("API Key:", self._api_key)
 
-        self._model = QComboBox()
+        self._model = _NoWheelComboBox()
         self._model.setEditable(True)
         self._model.setToolTip(
             "具体使用哪一个 AI 模型。可从列表选择，也可手动输入模型名。\n"
@@ -812,7 +1037,7 @@ class ScriptGenerator(QWidget):
         )
         f.addRow("模型:", self._model)
 
-        self._max_tokens = QSpinBox()
+        self._max_tokens = _NoWheelSpinBox()
         self._max_tokens.setRange(0, 128000)
         self._max_tokens.setSingleStep(1024)
         self._max_tokens.setSpecialValueText("无上限")
@@ -872,7 +1097,7 @@ class ScriptGenerator(QWidget):
         self._vision_endpoint.setToolTip("识图模型的自定义 API 端点。切换提供商时会填入官方默认地址。")
         vf.addRow("自定义端点:", self._vision_endpoint)
 
-        self._vision_provider = QComboBox()
+        self._vision_provider = _NoWheelComboBox()
         self._vision_provider.setMaxVisibleItems(24)
         self._vision_provider.setToolTip(
             "识图用的提供商，请选支持图片输入的模型（Claude / GPT-4o / Qwen-VL / GLM-4V 等）。"
@@ -885,7 +1110,7 @@ class ScriptGenerator(QWidget):
         self._vision_api_key.setToolTip("识图模型的 API Key，可与上方主模型共用同一把。")
         vf.addRow("API Key:", self._vision_api_key)
 
-        self._vision_model = QComboBox()
+        self._vision_model = _NoWheelComboBox()
         self._vision_model.setEditable(True)
         self._vision_model.setToolTip("具备识图能力的模型名，例如 gpt-4o、claude-sonnet-4。")
         vf.addRow("模型:", self._vision_model)
@@ -984,7 +1209,8 @@ class ScriptGenerator(QWidget):
             "生成端放宽：关闭 Rules / plan / IR；仍注入结构范式 few-shot。\n"
             "生成时不校验素材文件是否存在；写入试运行文件时自动脚本检查（含素材）。\n"
             "成品结构校验加严；失败可自动修复（默认最多 3 轮）。\n"
-            "仍跳过本地 codegen patch。勾选会写入 config.json defaults.codegen_free_mode。"
+            "生成/修订仍会运行结构类本地 patch（不注入业务控制流）。\n"
+            "勾选会写入 config.json defaults.codegen_free_mode。"
         )
         self._free_mode_cb.setChecked(self._default_codegen_free_mode())
         self._free_mode_cb.toggled.connect(self._on_free_mode_toggled)
@@ -994,7 +1220,7 @@ class ScriptGenerator(QWidget):
 
         mode_row = QHBoxLayout()
         mode_row.addWidget(QLabel("识图方式:"))
-        self._image_mode = QComboBox()
+        self._image_mode = _NoWheelComboBox()
         self._image_mode.addItem("主模型直接发图", "direct")
         self._image_mode.addItem("辅助识图（先描述再生成）", "assist")
         self._image_mode.setToolTip(
@@ -1063,7 +1289,7 @@ class ScriptGenerator(QWidget):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 4, 4, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
         gen_row = QHBoxLayout()
         self._generate_btn = QPushButton("生成脚本")
@@ -1084,22 +1310,62 @@ class ScriptGenerator(QWidget):
         self._rerevise_btn.setEnabled(False)
         self._rerevise_btn.clicked.connect(self._on_rerevise)
         gen_row.addWidget(self._rerevise_btn)
-
-        self._progress = QProgressBar()
-        self._progress.setObjectName("ScriptGenProgress")
-        self._progress.setRange(0, 0)
-        self._progress.setTextVisible(False)
-        self._progress.setFixedHeight(6)
-        self._progress.hide()
-        gen_row.addWidget(self._progress, 1)
-
-        self._token_label = QLabel("")
-        self._token_label.setObjectName("MutedLabel")
-        gen_row.addWidget(self._token_label)
+        gen_row.addStretch(1)
         layout.addLayout(gen_row)
 
+        split = QSplitter(Qt.Orientation.Horizontal)
+        split.setObjectName("AgentWorkspaceSplit")
+        split.setChildrenCollapsible(False)
+        split.setHandleWidth(6)
+
+        left = QWidget()
+        left_lay = QVBoxLayout(left)
+        left_lay.setContentsMargins(0, 0, 0, 0)
+        left_lay.setSpacing(4)
+        self._gen_result_banner = QLabel("")
+        self._gen_result_banner.setObjectName("GenResultBanner")
+        self._gen_result_banner.setWordWrap(True)
+        self._gen_result_banner.hide()
+        left_lay.addWidget(self._gen_result_banner)
         self._trajectory = GenTrajectory()
-        layout.addWidget(self._trajectory, 1)
+        left_lay.addWidget(self._trajectory, 1)
+        split.addWidget(left)
+
+        right = QWidget()
+        right_lay = QVBoxLayout(right)
+        right_lay.setContentsMargins(0, 0, 0, 0)
+        right_lay.setSpacing(4)
+        code_head = QHBoxLayout()
+        code_title = QLabel("实时代码")
+        ctf = QFont()
+        ctf.setBold(True)
+        code_title.setFont(ctf)
+        code_head.addWidget(code_title)
+        self._live_code_hint = QLabel("流式输出会显示在这里")
+        self._live_code_hint.setObjectName("MutedLabel")
+        code_head.addWidget(self._live_code_hint, 1)
+        right_lay.addLayout(code_head)
+
+        self._live_code = QTextEdit()
+        self._live_code.setObjectName("AgentLiveCode")
+        self._live_code.setReadOnly(True)
+        self._live_code.setFont(QFont("Consolas", 9))
+        self._live_code.setPlaceholderText(
+            "生成时这里会实时滚动代码。\n"
+            "修订 / 优化等待阶段会暂显上一版，开始写代码后会替换为新内容。"
+        )
+        self._live_code.setMinimumWidth(280)
+        right_lay.addWidget(self._live_code, 1)
+        split.addWidget(right)
+
+        split.setStretchFactor(0, 45)
+        split.setStretchFactor(1, 55)
+        split.setSizes([360, 440])
+        layout.addWidget(split, 1)
+
+        self._live_code_timer = QTimer(self)
+        self._live_code_timer.setSingleShot(True)
+        self._live_code_timer.timeout.connect(self._flush_live_code)
 
         act_row = QHBoxLayout()
         self._view_code_btn = QPushButton("查看完整代码")
@@ -1122,7 +1388,9 @@ class ScriptGenerator(QWidget):
         act_row.addStretch()
         to_trial = QPushButton("去试运行 →")
         to_trial.setObjectName("PrimaryButton")
+        to_trial.setToolTip("生成已完成时可点此进入试运行验证脚本")
         to_trial.clicked.connect(lambda: self._tabs.setCurrentIndex(self.TAB_TRIAL))
+        self._to_trial_btn = to_trial
         act_row.addWidget(to_trial)
         layout.addLayout(act_row)
         return page
@@ -1131,7 +1399,7 @@ class ScriptGenerator(QWidget):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(4, 4, 4, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(8)
 
         tip = QLabel(
             "从已启动账号里选一个试跑。生成后请对齐 _img 标识与素材文件名；"
@@ -1147,9 +1415,31 @@ class ScriptGenerator(QWidget):
         self._trial_hint.setStyleSheet("color:#b8891a;")
         layout.addWidget(self._trial_hint)
 
+        # 试跑阶段芯片
+        chip_row = QHBoxLayout()
+        chip_row.setSpacing(6)
+        self._trial_chips: dict[str, QLabel] = {}
+        for key, label in (
+            ("write", "写入"),
+            ("run", "运行"),
+            ("frame", "停帧"),
+            ("feas", "可行性"),
+        ):
+            chip = QLabel(label)
+            chip.setObjectName("TrialStageChip")
+            chip.setProperty("stage", "idle")
+            chip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            chip.setFixedHeight(22)
+            chip.setMinimumWidth(52)
+            self._trial_chips[key] = chip
+            chip_row.addWidget(chip)
+        chip_row.addStretch(1)
+        layout.addLayout(chip_row)
+        self._refresh_trial_chip_styles()
+
         acc_row = QHBoxLayout()
         acc_row.addWidget(QLabel("账号:"))
-        self._account_combo = QComboBox()
+        self._account_combo = _NoWheelComboBox()
         self._account_combo.setMinimumWidth(180)
         self._account_combo.setToolTip("仅列出已启动浏览器或已绑定窗口的账号")
         acc_row.addWidget(self._account_combo, 1)
@@ -1167,6 +1457,14 @@ class ScriptGenerator(QWidget):
         self._stop_trial_btn.clicked.connect(self._on_stop_trial)
         acc_row.addWidget(self._stop_trial_btn)
         layout.addLayout(acc_row)
+
+        # 试运行 Live HUD：状态点 / 当前状态 / 最近动作 / 计时 / L1 结论
+        self._trial_hud = TrialHud()
+        layout.addWidget(self._trial_hud)
+
+        mid = QSplitter(Qt.Orientation.Horizontal)
+        mid.setChildrenCollapsible(False)
+        mid.setHandleWidth(6)
 
         splitter = QSplitter(Qt.Orientation.Vertical)
         splitter.setChildrenCollapsible(False)
@@ -1220,7 +1518,27 @@ class ScriptGenerator(QWidget):
         splitter.setStretchFactor(0, 3)
         splitter.setStretchFactor(1, 2)
         splitter.setSizes([240, 160])
-        layout.addWidget(splitter, 1)
+        mid.addWidget(splitter)
+
+        frame_panel = QWidget()
+        frame_panel.setMinimumWidth(160)
+        frame_panel.setMaximumWidth(260)
+        fl = QVBoxLayout(frame_panel)
+        fl.setContentsMargins(4, 0, 0, 0)
+        fl.setSpacing(4)
+        fl.addWidget(QLabel("Agent 所见（停帧）"))
+        self._trial_frame_lbl = QLabel("试跑结束或停止后\n显示画面缩略图")
+        self._trial_frame_lbl.setObjectName("TrialFramePreview")
+        self._trial_frame_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._trial_frame_lbl.setMinimumHeight(120)
+        self._trial_frame_lbl.setWordWrap(True)
+        self._trial_frame_lbl.setScaledContents(False)
+        fl.addWidget(self._trial_frame_lbl, 1)
+        mid.addWidget(frame_panel)
+        mid.setStretchFactor(0, 4)
+        mid.setStretchFactor(1, 1)
+        mid.setSizes([520, 180])
+        layout.addWidget(mid, 1)
 
         rev_row = QHBoxLayout()
         back_btn = QPushButton("← 回生成页")
@@ -1237,7 +1555,160 @@ class ScriptGenerator(QWidget):
         self._confirm_btn.setEnabled(False)
         self._confirm_btn.clicked.connect(self._on_confirm_done)
         rev_row.addWidget(self._confirm_btn)
+        to_opt = QPushButton("去脚本优化 →")
+        to_opt.clicked.connect(lambda: self._tabs.setCurrentIndex(self.TAB_OPTIMIZE))
+        rev_row.addWidget(to_opt)
         layout.addLayout(rev_row)
+        return page
+
+    def _build_page_optimize(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 0)
+        layout.setSpacing(6)
+
+        tip = QLabel(
+            "选脚本 → 写优化方向/反馈 → 开始优化。"
+            "账号与试跑均为可选；改完后再去「试运行」验证。"
+            "试运行会自动开伪录制；确认保存时再去掉。"
+        )
+        tip.setWordWrap(True)
+        tip.setObjectName("MutedLabel")
+        tip.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        layout.addWidget(tip)
+
+        self._optimize_hint = QLabel("")
+        self._optimize_hint.setWordWrap(True)
+        self._optimize_hint.setObjectName("MutedLabel")
+        self._optimize_hint.setStyleSheet("color:#b8891a;")
+        self._optimize_hint.setSizePolicy(
+            QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum
+        )
+        layout.addWidget(self._optimize_hint)
+
+        browse = QGroupBox("脚本库（分页）")
+        browse.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
+        bl = QVBoxLayout(browse)
+        bl.setSpacing(4)
+        filt = QHBoxLayout()
+        filt.addWidget(QLabel("目录:"))
+        self._optimize_folder_combo = _NoWheelComboBox()
+        self._optimize_folder_combo.setMinimumWidth(140)
+        self._optimize_folder_combo.currentIndexChanged.connect(self._on_optimize_folder_changed)
+        filt.addWidget(self._optimize_folder_combo)
+        filt.addWidget(QLabel("搜索:"))
+        self._optimize_search = QLineEdit()
+        self._optimize_search.setPlaceholderText("文件名或路径关键词…")
+        self._optimize_search.returnPressed.connect(self._refresh_optimize_script_list)
+        filt.addWidget(self._optimize_search, 1)
+        refresh_scripts = QPushButton("刷新列表")
+        refresh_scripts.clicked.connect(self._refresh_optimize_script_list)
+        filt.addWidget(refresh_scripts)
+        bl.addLayout(filt)
+
+        self._optimize_script_list = QListWidget()
+        self._optimize_script_list.setMinimumHeight(48)
+        self._optimize_script_list.setMaximumHeight(120)
+        self._optimize_script_list.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred
+        )
+        self._optimize_script_list.itemClicked.connect(self._on_optimize_script_activated)
+        bl.addWidget(self._optimize_script_list, 0)
+
+        pager = QHBoxLayout()
+        self._optimize_prev_btn = QPushButton("上一页")
+        self._optimize_prev_btn.clicked.connect(lambda: self._optimize_change_page(-1))
+        pager.addWidget(self._optimize_prev_btn)
+        self._optimize_page_label = QLabel("第 1/1 页")
+        self._optimize_page_label.setObjectName("MutedLabel")
+        pager.addWidget(self._optimize_page_label)
+        self._optimize_next_btn = QPushButton("下一页")
+        self._optimize_next_btn.clicked.connect(lambda: self._optimize_change_page(1))
+        pager.addWidget(self._optimize_next_btn)
+        pager.addStretch()
+        load_btn = QPushButton("加载选中")
+        load_btn.clicked.connect(self._on_optimize_load_selected)
+        pager.addWidget(load_btn)
+        pick_btn = QPushButton("浏览…")
+        pick_btn.clicked.connect(self._on_optimize_pick_file)
+        pager.addWidget(pick_btn)
+        bl.addLayout(pager)
+        layout.addWidget(browse)
+
+        loaded_row = QHBoxLayout()
+        loaded_row.addWidget(QLabel("当前脚本:"))
+        self._optimize_path_label = QLabel("（未加载）")
+        self._optimize_path_label.setObjectName("MutedLabel")
+        self._optimize_path_label.setWordWrap(False)
+        self._optimize_path_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        loaded_row.addWidget(self._optimize_path_label, 1)
+        self._optimize_save_btn = QPushButton("保存到文件")
+        self._optimize_save_btn.setEnabled(False)
+        self._optimize_save_btn.clicked.connect(self._on_optimize_save)
+        loaded_row.addWidget(self._optimize_save_btn)
+        layout.addLayout(loaded_row)
+
+        # 反馈 + 日志可拖拽分配高度，避免固定最小高度把窗口顶死
+        split = QSplitter(Qt.Orientation.Vertical)
+        split.setChildrenCollapsible(True)
+
+        fb_box = QGroupBox("优化方向 / 反馈（可选）")
+        fb_lay = QVBoxLayout(fb_box)
+        fb_lay.setContentsMargins(6, 6, 6, 6)
+        self._optimize_feedback = QTextEdit()
+        self._optimize_feedback.setAcceptRichText(False)
+        self._optimize_feedback.setPlaceholderText(
+            "写希望怎么改，例如：登录等待过长、某状态匹配太勤、减少黑屏空转匹配…\n"
+            "留空则按伪录制/通用性能规则优化。"
+        )
+        self._optimize_feedback.setMinimumHeight(40)
+        self._optimize_feedback.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        fb_lay.addWidget(self._optimize_feedback)
+        split.addWidget(fb_box)
+
+        log_box = QGroupBox("优化日志")
+        log_lay = QVBoxLayout(log_box)
+        log_lay.setContentsMargins(6, 6, 6, 6)
+        self._optimize_log = QTextEdit()
+        self._optimize_log.setReadOnly(True)
+        self._optimize_log.setFont(QFont("Consolas", 9))
+        self._optimize_log.setPlaceholderText("优化日志与边界评估…")
+        self._optimize_log.setMinimumHeight(40)
+        self._optimize_log.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
+        log_lay.addWidget(self._optimize_log)
+        split.addWidget(log_box)
+        split.setStretchFactor(0, 1)
+        split.setStretchFactor(1, 1)
+        split.setSizes([120, 100])
+        layout.addWidget(split, 1)
+
+        act = QHBoxLayout()
+        view_btn = QPushButton("查看代码")
+        view_btn.clicked.connect(self._view_optimize_code)
+        act.addWidget(view_btn)
+        to_trial = QPushButton("去试运行")
+        to_trial.setToolTip("可选：优化后再选账号试跑验证")
+        to_trial.clicked.connect(self._on_optimize_go_trial)
+        act.addWidget(to_trial)
+        act.addStretch()
+        self._optimize_btn = QPushButton("开始优化")
+        self._optimize_btn.setObjectName("PrimaryButton")
+        self._optimize_btn.setEnabled(False)
+        self._optimize_btn.setToolTip(
+            "按上方反馈与（若有）伪录制做 AI 修订。\n"
+            "无需账号；试跑可在改完后单独进行。"
+        )
+        self._optimize_btn.clicked.connect(self._on_optimize)
+        act.addWidget(self._optimize_btn)
+        layout.addLayout(act)
+
+        self._init_optimize_folder_combo()
         return page
 
     # ── 持久化存储（多方案）──
@@ -1500,10 +1971,10 @@ class ScriptGenerator(QWidget):
         self._profile_combo.blockSignals(False)
 
     def _store_profile_keys(self, profile: str, *, payload: dict | None = None) -> None:
-            try:
-                import keyring
-            except ImportError:
-                print("[ScriptGenerator] 未安装 keyring，API key 不会持久化。安装: pip install keyring")
+        try:
+            import keyring
+        except ImportError:
+            print("[ScriptGenerator] 未安装 keyring，API key 不会持久化。安装: pip install keyring")
             return
         api_key = self._api_key.text().strip()
         if api_key:
@@ -1553,7 +2024,7 @@ class ScriptGenerator(QWidget):
             if api_key:
                 self._api_key.setText(api_key)
             if not use_vision:
-            return
+                return
             vision_key = keyring.get_password(
                 _KEYRING_SERVICE, self._keyring_slot(profile, "vision_api_key"),
             )
@@ -1574,7 +2045,7 @@ class ScriptGenerator(QWidget):
                     keyring.delete_password(
                         _KEYRING_SERVICE, self._keyring_slot(profile, kind),
                     )
-        except Exception:
+                except Exception:
                     pass
         except ImportError:
             pass
@@ -1590,7 +2061,7 @@ class ScriptGenerator(QWidget):
         provider = str(data.get("provider") or "").strip()
         if provider:
             self._set_combo_provider(self._provider, provider)
-        self._refresh_models()
+            self._refresh_models()
         else:
             blank = self._provider.findData("")
             if blank >= 0:
@@ -1886,7 +2357,7 @@ class ScriptGenerator(QWidget):
             self._model.addItems(models)
         self._endpoint.setText(info.get("default_endpoint", "") or "")
         if self._model.count():
-        self._model.setCurrentIndex(0)
+            self._model.setCurrentIndex(0)
 
     def _refresh_vision_models(self):
         self._vision_model.clear()
@@ -2004,6 +2475,9 @@ class ScriptGenerator(QWidget):
         self._test_status.setText(
             f"测试中… {params['provider']} / {params['model']}"
         )
+        # 勿把上次生成失败的顶栏状态误当成当前连接结果
+        if hasattr(self, "_set_agent_status_text"):
+            self._set_agent_status_text(f"连接测试中 · {params['model']}")
 
         self._test_worker = ConnectionTestWorker(params)
         self._test_worker.finished.connect(self._on_test_finished)
@@ -2072,6 +2546,8 @@ class ScriptGenerator(QWidget):
                 f"连接成功 · {provider}/{model} · {result.get('latency_ms', 0)} ms"
                 f"{tok} · 回复: {reply}"
             )
+            if hasattr(self, "_set_agent_idle"):
+                self._set_agent_idle(f"连接正常 · {model}")
             QMessageBox.information(
                 self,
                 "连接测试成功",
@@ -2139,7 +2615,8 @@ class ScriptGenerator(QWidget):
         if dlg.exec() != QDialog.Accepted or not dlg.selected_path:
             return
         root = Path(dlg.selected_path)
-        recursive = dlg.recursive
+        # 脚本生成素材默认含全部子目录（与白名单 / 识图一致）
+        recursive = True if dlg.recursive is None else bool(dlg.recursive)
         self._source_dir = root
         self._maybe_bind_expl_file(root)
         self._on_image_mode_changed()
@@ -2149,14 +2626,28 @@ class ScriptGenerator(QWidget):
             except Exception as e:
                 print(f"[ScriptGenerator] 绑定介绍后保存失败: {e}")
 
+        self._image_entries.clear()
         it = root.rglob("*") if recursive else root.iterdir()
         count = 0
-        for f in sorted(it):
-            if f.is_file() and f.suffix.lower() in self.IMG_EXTENSIONS:
+        for f in sorted(it, key=lambda p: str(p).lower()):
+            if not f.is_file() or f.suffix.lower() not in self.IMG_EXTENSIONS:
+                continue
+            try:
+                parts = f.relative_to(root).parts
+            except ValueError:
+                parts = f.parts
+            if any(part.startswith(".") for part in parts):
+                continue
                 self._append_image(f)
                 count += 1
         if count == 0:
-            QMessageBox.information(self, "无图片", f"文件夹内{'（含子文件夹）' if recursive else ''}未找到图片文件")
+            QMessageBox.information(
+                self,
+                "无图片",
+                f"文件夹内{'（含子文件夹）' if recursive else ''}未找到图片文件",
+            )
+        else:
+            self._update_img_label()
 
     def _append_image(self, path: Path):
         for e in self._image_entries:
@@ -2200,6 +2691,7 @@ class ScriptGenerator(QWidget):
         if not api_key:
             QMessageBox.warning(self, "缺少 API Key", "请先填写 API Key")
             return
+        self._gen_ctx = {}  # 新一轮生成，丢弃上一轮上下文
 
         expl_text = self._explanation.toPlainText().strip()
         if not expl_text:
@@ -2215,6 +2707,15 @@ class ScriptGenerator(QWidget):
                 "运行时会出现「图片不存在」。",
             )
             return
+        # 生成前按素材夹递归重扫，确保识图/白名单含子目录图
+        try:
+            from backend.script_generator.agent import list_source_image_paths
+            disk = list_source_image_paths(str(self._source_dir))
+            if disk:
+                self._image_entries = [{"path": p, "desc": ""} for p in disk]
+                self._update_img_label()
+        except Exception as e:
+            print(f"[ScriptGenerator] 递归扫描素材失败: {e}")
         if not self._image_entries:
             QMessageBox.warning(
                 self,
@@ -2269,13 +2770,15 @@ class ScriptGenerator(QWidget):
 
         self._generate_btn.setEnabled(False)
         self._cancel_btn.setEnabled(True)
-        self._progress.show()
+        self._holding_prev_live_code = False
+        self._set_agent_busy("生成", "开始生成…", indeterminate=True)
         self._token_label.setText("")
         self._stream_buf = ""
+        self._set_live_code("")
         self._view_code_btn.setEnabled(False)
         self._tabs.setCurrentIndex(self.TAB_GEN)
         self._archive.begin("generate")
-        self._trajectory.begin_run("开始生成")
+        self._trajectory.begin_run("开始生成", fresh=True)
         self._last_revise_summary = ""
         self._last_diagnosis_json = ""
         self._chat_session = None
@@ -2296,8 +2799,22 @@ class ScriptGenerator(QWidget):
             self._last_inp_tokens = int(inp or 0)
             self._last_out_tokens = int(out or 0)
             self._token_label.setText(f"↕ {inp} 入 / {out} 出")
+            if hasattr(self, "_agent_status") and self._agent_busy:
+                # 保持相位文案，仅刷新 token（已在 label）
+                pass
 
     def _on_artifact(self, kind: str, payload: str):
+        if kind == "gen_ctx":
+            # 生成管线的校验上下文（plan/free/source_dir）：归档与试运行沿用同一套
+            try:
+                import json as _json
+
+                data = _json.loads(payload or "{}")
+                if isinstance(data, dict):
+                    self._gen_ctx = data
+            except Exception as e:
+                print(f"[ScriptGenerator] gen_ctx 解析失败: {e}")
+            return
         if kind == "plan":
             # 计划正文并入轨迹「规划」步骤，不再单独占一块面板
             text = (payload or "").strip()
@@ -2388,6 +2905,7 @@ class ScriptGenerator(QWidget):
             "fix": "Fix",
             "revise": "Revise",
             "review": "Review",
+            "optimize": "Optimize",
             "diagnose": "Think",
             "vision_decide": "Think",
             "stop_vision": "Vision",
@@ -2398,18 +2916,317 @@ class ScriptGenerator(QWidget):
         self._trajectory.update_step(
             key, kind, title, status=status, body=body,
         )
+        # 顶栏进度
+        pct = _STAGE_PROGRESS.get(prefix)
+        if pct is not None and status == "running":
+            self._set_agent_progress(pct)
+        if title:
+            self._set_agent_status_text(title)
 
     def _on_status(self, msg: str):
         if hasattr(self, "_trajectory"):
             self._trajectory.set_status_hint(msg or "")
+        if msg:
+            self._set_agent_status_text(msg)
 
     def _on_partial(self, text: str):
         if not hasattr(self, "_stream_buf"):
+            self._stream_buf = ""
+        if getattr(self, "_holding_prev_live_code", False):
+            # 开始真正输出时再替换「上一版」，避免长时间空白
+            self._holding_prev_live_code = False
             self._stream_buf = ""
         self._stream_buf += text or ""
         # 流式过程中也可打开查看（看当前缓冲）
         if self._stream_buf.strip():
             self._view_code_btn.setEnabled(True)
+            if hasattr(self, "_live_code_hint"):
+                n = len(self._stream_buf)
+                self._live_code_hint.setText(f"流式写入中 · {n:,} 字符")
+        self._schedule_live_code_refresh()
+
+    def _schedule_live_code_refresh(self):
+        if not hasattr(self, "_live_code_timer"):
+            return
+        if not self._live_code_timer.isActive():
+            self._live_code_timer.start(90)
+
+    def _flush_live_code(self):
+        if not hasattr(self, "_live_code"):
+            return
+        if getattr(self, "_holding_prev_live_code", False):
+            return
+        buf = getattr(self, "_stream_buf", "") or ""
+        if self._live_code.toPlainText() == buf:
+            return
+        self._live_code.setPlainText(buf)
+        cursor = self._live_code.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self._live_code.setTextCursor(cursor)
+
+    def _set_live_code(self, text: str):
+        if not hasattr(self, "_live_code"):
+            return
+        t = text or ""
+        self._holding_prev_live_code = False
+        self._live_code.setPlainText(t)
+        if hasattr(self, "_live_code_hint"):
+            if t.strip():
+                self._live_code_hint.setText(f"{len(t):,} 字符")
+            else:
+                self._live_code_hint.setText("流式输出会显示在这里")
+
+    def _keep_prev_live_code(self, *, phase: str) -> None:
+        """修订/优化开始时保留上一版代码，避免右侧变黑像卡住。"""
+        prev = (self._generated_code or "").strip()
+        self._stream_buf = ""
+        if not prev:
+            self._holding_prev_live_code = False
+            self._set_live_code("")
+            self._view_code_btn.setEnabled(False)
+            self._save_btn.setEnabled(False)
+            self._copy_btn.setEnabled(False)
+            return
+        self._holding_prev_live_code = True
+        # 不调用 _set_live_code，以免清掉 holding 标记
+        if hasattr(self, "_live_code") and not (self._live_code.toPlainText() or "").strip():
+            self._live_code.setPlainText(self._generated_code)
+        if hasattr(self, "_live_code_hint"):
+            label = {"修订": "修订中", "优化": "优化中"}.get(phase, "处理中")
+            self._live_code_hint.setText(
+                f"{label}… · 暂显上一版（{len(prev):,} 字符），写出后替换"
+            )
+        self._view_code_btn.setEnabled(True)
+        self._save_btn.setEnabled(True)
+        self._copy_btn.setEnabled(True)
+
+    def _format_elapsed(self, seconds: float) -> str:
+        s = max(0, int(seconds))
+        if s < 60:
+            return f"已 {s} 秒"
+        return f"已 {s // 60} 分 {s % 60:02d} 秒"
+
+    def _tick_agent_elapsed(self):
+        if not getattr(self, "_agent_busy", False):
+            return
+        import time
+        started = float(getattr(self, "_agent_busy_started", 0) or 0)
+        if started <= 0:
+            return
+        base = (getattr(self, "_agent_status_base", "") or "").strip() or "进行中"
+        elapsed = self._format_elapsed(time.monotonic() - started)
+        # 省略号循环：生成中. / .. / ...
+        n_dots = (int((time.monotonic() - started) * 2) % 3) + 1
+        dots = "." * n_dots
+        self._render_agent_status(f"{base}{dots} · {elapsed}")
+        banner_base = (getattr(self, "_busy_banner_base", "") or "").strip()
+        if banner_base and hasattr(self, "_gen_result_banner"):
+            self._gen_result_banner.setText(f"{banner_base}{dots}")
+
+    def _render_agent_status(self, text: str):
+        if hasattr(self, "_agent_status"):
+            t = (text or "").replace("\n", " ").strip()
+            if len(t) > 110:
+                t = t[:109] + "…"
+            self._agent_status.setText(t or "…")
+
+    def _set_busy_banner(self, text: str):
+        if not hasattr(self, "_gen_result_banner"):
+            return
+        base = (text or "").rstrip(".…· ")
+        self._busy_banner_base = base
+        self._gen_result_banner.setText(base + "…")
+        self._gen_result_banner.setProperty("ok", False)
+        self._gen_result_banner.setProperty("busy", True)
+        self._gen_result_banner.setProperty("warn", False)
+        self._gen_result_banner.style().unpolish(self._gen_result_banner)
+        self._gen_result_banner.style().polish(self._gen_result_banner)
+        self._gen_result_banner.show()
+
+    def _set_warn_banner(self, text: str):
+        if not hasattr(self, "_gen_result_banner"):
+            return
+        self._busy_banner_base = ""
+        self._gen_result_banner.setText(text)
+        self._gen_result_banner.setProperty("ok", False)
+        self._gen_result_banner.setProperty("busy", False)
+        self._gen_result_banner.setProperty("warn", True)
+        self._gen_result_banner.style().unpolish(self._gen_result_banner)
+        self._gen_result_banner.style().polish(self._gen_result_banner)
+        self._gen_result_banner.show()
+
+    def _set_ok_banner(self, text: str):
+        if not hasattr(self, "_gen_result_banner"):
+            return
+        self._busy_banner_base = ""
+        self._gen_result_banner.setText(text)
+        self._gen_result_banner.setProperty("ok", True)
+        self._gen_result_banner.setProperty("busy", False)
+        self._gen_result_banner.setProperty("warn", False)
+        self._gen_result_banner.style().unpolish(self._gen_result_banner)
+        self._gen_result_banner.style().polish(self._gen_result_banner)
+        self._gen_result_banner.show()
+
+    def _set_agent_busy(self, phase: str, status: str, *, indeterminate: bool = True):
+        import time
+
+        self._agent_busy = True
+        self._agent_busy_started = time.monotonic()
+        if hasattr(self, "_agent_phase"):
+            self._agent_phase.setText(phase or "Agent")
+        # 状态正文不加「并非卡住」；省略号由计时器动画补上
+        clean = (status or "").strip().rstrip(".…")
+        self._set_agent_status_text(clean or f"{phase}中")
+        if hasattr(self, "_agent_dots"):
+            self._agent_dots.start()
+        elif hasattr(self, "_agent_dot") and hasattr(self._agent_dot, "setProperty"):
+            self._agent_dot.setProperty("busy", True)
+            self._agent_dot.setProperty("success", False)
+            self._agent_dot.style().unpolish(self._agent_dot)
+            self._agent_dot.style().polish(self._agent_dot)
+        busy_tips = {
+            "生成": "生成中",
+            "修订": "修订中 · 辅助工具处理中，右侧暂显上一版",
+            "优化": "优化中 · 分析改写中，右侧暂显上一版",
+        }
+        self._set_busy_banner(busy_tips.get(phase, f"{phase}中"))
+        if hasattr(self, "_to_trial_btn"):
+            self._to_trial_btn.setProperty("ready", False)
+            self._to_trial_btn.setText("去试运行 →")
+            self._to_trial_btn.style().unpolish(self._to_trial_btn)
+            self._to_trial_btn.style().polish(self._to_trial_btn)
+        if hasattr(self, "_progress"):
+            self._progress.show()
+            if indeterminate:
+                self._progress.setRange(0, 0)
+            else:
+                self._progress.setRange(0, 100)
+                self._progress.setValue(5)
+        if hasattr(self, "_agent_elapsed_timer"):
+            self._agent_elapsed_timer.start()
+            self._tick_agent_elapsed()
+        for btn in (getattr(self, "_cancel_btn", None), getattr(self, "_strip_cancel_btn", None)):
+            if btn is not None:
+                btn.setEnabled(True)
+
+    def _set_agent_idle(self, status: str = "就绪", *, success: bool = False):
+        self._agent_busy = False
+        self._busy_banner_base = ""
+        if hasattr(self, "_agent_elapsed_timer"):
+            self._agent_elapsed_timer.stop()
+        if hasattr(self, "_agent_phase"):
+            self._agent_phase.setText("Agent")
+        self._agent_status_base = ""
+        self._set_agent_status_text(status)
+        if hasattr(self, "_agent_dots"):
+            self._agent_dots.stop()
+        elif hasattr(self, "_agent_dot") and hasattr(self._agent_dot, "setProperty"):
+            self._agent_dot.setProperty("busy", False)
+            self._agent_dot.setProperty("success", bool(success))
+            self._agent_dot.style().unpolish(self._agent_dot)
+            self._agent_dot.style().polish(self._agent_dot)
+        if hasattr(self, "_progress"):
+            self._progress.hide()
+            self._progress.setRange(0, 0)
+        # 失败/取消时收起「进行中」蓝条；成功由 _set_ok_banner 覆盖
+        if not success and hasattr(self, "_gen_result_banner"):
+            busy = self._gen_result_banner.property("busy")
+            if busy in (True, "true"):
+                self._gen_result_banner.hide()
+                self._gen_result_banner.clear()
+                self._gen_result_banner.setProperty("busy", False)
+        for btn in (getattr(self, "_cancel_btn", None), getattr(self, "_strip_cancel_btn", None)):
+            if btn is not None:
+                btn.setEnabled(False)
+
+    def _set_agent_status_text(self, text: str):
+        t = (text or "").replace("\n", " ").strip()
+        if getattr(self, "_agent_busy", False):
+            self._agent_status_base = t
+            import time
+            started = float(getattr(self, "_agent_busy_started", 0) or 0)
+            if started > 0:
+                elapsed = self._format_elapsed(time.monotonic() - started)
+                self._render_agent_status(f"{t} · {elapsed}" if t else elapsed)
+                return
+        self._render_agent_status(t or "…")
+
+    def _set_agent_progress(self, pct: int):
+        if not hasattr(self, "_progress"):
+            return
+        self._progress.show()
+        if self._progress.maximum() == 0:
+            self._progress.setRange(0, 100)
+        self._progress.setValue(max(0, min(100, int(pct))))
+
+    def _open_session_archive(self):
+        d = None
+        if getattr(self, "_archive", None) is not None:
+            d = self._archive.session_dir
+        if d is None or not Path(d).is_dir():
+            # 打开 sessions 根目录
+            try:
+                from backend.script_generator.session_archive import SESSIONS_ROOT
+                root = SESSIONS_ROOT
+                root.mkdir(parents=True, exist_ok=True)
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(root)))
+                QMessageBox.information(
+                    self,
+                    "会话归档",
+                    "当前还没有本次会话目录。\n已打开归档根目录，生成/试跑后会写入子文件夹。",
+                )
+            except Exception as e:
+                QMessageBox.warning(self, "无法打开归档", str(e))
+            return
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(d)))
+
+    def _refresh_trial_chip_styles(self):
+        chips = getattr(self, "_trial_chips", None) or {}
+        for chip in chips.values():
+            chip.style().unpolish(chip)
+            chip.style().polish(chip)
+
+    def _set_trial_chip(self, key: str, stage: str):
+        chips = getattr(self, "_trial_chips", None) or {}
+        chip = chips.get(key)
+        if chip is None:
+            return
+        chip.setProperty("stage", stage)
+        self._refresh_trial_chip_styles()
+
+    def _update_trial_frame_preview(self):
+        lbl = getattr(self, "_trial_frame_lbl", None)
+        if lbl is None:
+            return
+        frame = self._last_trial_frame
+        if frame is None:
+            lbl.setPixmap(QPixmap())
+            lbl.setText("试跑结束或停止后\n显示画面缩略图")
+            return
+        try:
+            import numpy as np
+            from PySide6.QtGui import QImage
+
+            arr = np.asarray(frame)
+            if arr.ndim != 3 or arr.shape[2] < 3:
+                lbl.setText("画面格式无法预览")
+                return
+            # BGR → RGB
+            rgb = arr[:, :, :3][:, :, ::-1].copy()
+            h, w, _ = rgb.shape
+            qimg = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888)
+            pix = QPixmap.fromImage(qimg.copy())
+            scaled = pix.scaled(
+                lbl.width() or 200,
+                lbl.height() or 160,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            lbl.setText("")
+            lbl.setPixmap(scaled)
+            self._set_trial_chip("frame", "done")
+        except Exception as e:
+            lbl.setText(f"预览失败\n{e}")
 
     def _current_code_text(self) -> str:
         code = (self._generated_code or "").strip()
@@ -2430,6 +3247,7 @@ class ScriptGenerator(QWidget):
         text = code if code.endswith("\n") else (code + "\n" if code else "")
         self._generated_code = text
         self._stream_buf = text
+        self._set_live_code(text)
         self._view_code_btn.setEnabled(bool(text.strip()))
         self._save_btn.setEnabled(bool(text.strip()))
         self._copy_btn.setEnabled(bool(text.strip()))
@@ -2476,9 +3294,41 @@ class ScriptGenerator(QWidget):
         except Exception:
             pass
 
+    def _reset_trial_surface_after_new_code(self) -> None:
+        """重新生成/写入新代码后，清掉上一轮试跑的红条/日志，避免误以为仍失败。"""
+        try:
+            self._trial_log_lines.clear()
+            if hasattr(self, "_trial_log"):
+                self._trial_log.clear()
+        except Exception:
+            pass
+        if getattr(self, "_trial_hud", None) is not None:
+            try:
+                self._trial_hud.reset("")
+            except Exception:
+                pass
+        for key in ("write", "run", "frame", "feas"):
+            try:
+                self._set_trial_chip(key, "idle")
+            except Exception:
+                pass
+        # 上一轮自动填的「修复本地校验」在本次已通过时清掉，避免误导再修订
+        if not self._trial_blocked and hasattr(self, "_feedback"):
+            fb = self._feedback.toPlainText().strip()
+            if fb.startswith("修复本地校验错误"):
+                self._feedback.clear()
+                self._set_feedback_stale(False)
+        if self._trial_blocked:
+            self._append_trial_log(
+                f"[脚本检查] 未通过：{self._trial_block_reason or '见上方提示'}"
+            )
+        else:
+            self._append_trial_log("[脚本检查] 通过 · 可点「试运行」")
+
     def _on_success(self, code: str):
         self._generated_code = code
         self._stream_buf = code or ""
+        self._set_live_code(code or "")
         self._view_code_btn.setEnabled(True)
         self._save_btn.setEnabled(True)
         self._copy_btn.setEnabled(True)
@@ -2486,14 +3336,122 @@ class ScriptGenerator(QWidget):
         self._confirm_btn.setEnabled(True)
         self._generate_btn.setEnabled(True)
         self._cancel_btn.setEnabled(False)
-        self._progress.hide()
+
+        n_chars = len(code or "")
+        tok = ""
+        if hasattr(self, "_token_label"):
+            tok = (self._token_label.text() or "").strip()
+        summary_bits = [f"脚本约 {n_chars:,} 字符"]
+        if tok and "入" in tok:
+            summary_bits.append(tok.replace("↑ ", "").strip())
+        src = ""
+        if getattr(self, "_source_dir", None):
+            src = Path(self._source_dir).name
+        if src:
+            summary_bits.append(f"素材「{src}」")
+        summary = " · ".join(summary_bits)
+
         self._sync_trial_code()
+        self._reset_trial_surface_after_new_code()
+        blocked = bool(self._trial_blocked)
+        reason = (self._trial_block_reason or "脚本检查未通过").strip()
+        if blocked:
+            summary += f"\n本地校验未过，暂不可试运行：{reason}"
+            self._set_agent_idle(f"已生成 · 校验未过不可试运行", success=False)
+            if hasattr(self, "_live_code_hint"):
+                self._live_code_hint.setText(
+                    f"已生成 · {n_chars:,} 字符 · 校验未过，请修订或改代码"
+                )
+            self._set_warn_banner(
+                f"生成完成但不可试运行　　{reason}　　可点「根据反馈修订」"
+            )
+            if hasattr(self, "_to_trial_btn"):
+                self._to_trial_btn.setProperty("ready", False)
+                self._to_trial_btn.style().unpolish(self._to_trial_btn)
+                self._to_trial_btn.style().polish(self._to_trial_btn)
+                self._to_trial_btn.setText("去试运行 →（先修校验）")
+            # 自动带上校验错误，方便一键修订
+            if hasattr(self, "_feedback") and not self._feedback.toPlainText().strip():
+                errs = []
+                # reason is first error; pull from last validate via re-run is heavy — use reason
+                self._feedback.setPlainText(f"修复本地校验错误：{reason}")
+            self._trajectory.succeed_run("生成完成（校验未过）", summary=summary)
+        else:
+            summary += "\n结构校验已通过。建议：保存到文件 → 去试运行验证匹配与流程。"
+            self._set_agent_idle("✓ 脚本已就绪 · 可去试运行", success=True)
+            if hasattr(self, "_live_code_hint"):
+                self._live_code_hint.setText(f"已生成 · {n_chars:,} 字符 · 可保存或试运行")
+            self._set_ok_banner(
+                f"✓ 生成成功　　{summary_bits[0]}"
+                + "　　下一步：点右下角「去试运行 →」"
+            )
+            if hasattr(self, "_to_trial_btn"):
+                self._to_trial_btn.setProperty("ready", True)
+                self._to_trial_btn.style().unpolish(self._to_trial_btn)
+                self._to_trial_btn.style().polish(self._to_trial_btn)
+                self._to_trial_btn.setText("去试运行 → 验证脚本")
+            self._trajectory.succeed_run("生成成功", summary=summary)
+
         self._update_trial_availability()
-        self._trajectory.succeed_run("生成完成")
-        self._flash_taskbar("脚本已生成")
+        self._flash_taskbar("脚本已生成" if not blocked else "脚本已生成但校验未过")
         self._archive_generate_done(code)
         if getattr(self, "_vision_refresh_cb", None) and self._vision_refresh_cb.isChecked():
             self._vision_refresh_cb.setChecked(False)
+
+    def _on_error(self, msg: str):
+        translated = self._translate_error(msg)
+        self._generate_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(False)
+        reason = (translated.split("\n", 1)[0] or "生成失败").strip()
+        self._set_agent_idle(f"生成失败 · {reason}")
+        self._restore_code_preview_after_agent_fail()
+        self._update_trial_availability()
+        self._trajectory.fail_run(reason)
+        # 失败也落盘：便于复盘半截/膨胀代码（此前只归档成功结果）
+        try:
+            self._archive_generate_failed(translated)
+        except Exception as e:
+            print(f"[ScriptGenerator] 归档生成失败信息出错: {e}")
+        QMessageBox.critical(self, "生成失败", translated)
+
+    def _archive_generate_failed(self, error_msg: str):
+        code = (getattr(self, "_stream_buf", "") or self._generated_code or "").strip()
+        if self._archive.session_dir is None:
+            self._archive.begin("generate", reuse=False)
+        if code:
+            self._archive.write_text("code_failed.py", code if code.endswith("\n") else code + "\n")
+            self._set_live_code(code)
+            self._view_code_btn.setEnabled(True)
+            self._save_btn.setEnabled(True)
+            self._copy_btn.setEnabled(True)
+            # 允许用户拿失败稿去试运行页手工修订
+            self._generated_code = code if code.endswith("\n") else code + "\n"
+        self._archive.write_text("generate_error.txt", error_msg or "")
+        self._archive.write_json("trajectory.json", self._archive_trajectory())
+        expl = ""
+        if hasattr(self, "_explanation"):
+            expl = self._explanation.toPlainText()
+        if expl.strip():
+            self._archive.write_text("explanation.txt", expl)
+        self._archive.merge_meta({
+            **self._archive_meta(),
+            "last_event": "generate_failed",
+            "failed_code_chars": len(code),
+        })
+        self._archive.append_event(
+            "generate_failed",
+            error=(error_msg or "")[:800],
+            code_chars=len(code),
+        )
+        d = self._archive.session_dir
+        if d:
+            self._trajectory.update_step(
+                "archive",
+                "Info",
+                "已归档失败稿",
+                status="done",
+                body=str(d),
+            )
 
     def _archive_meta(self) -> dict:
         return {
@@ -2580,6 +3538,11 @@ class ScriptGenerator(QWidget):
             self._last_trial_frame = frame.copy() if hasattr(frame, "copy") else frame
         except Exception:
             self._last_trial_frame = frame
+        # 试跑中也刷缩略图（弱实时）；结束时再定格
+        try:
+            self._update_trial_frame_preview()
+        except Exception:
+            pass
         # 试跑结束/停止后异步截图到达时，补写停帧文件
         if not self._trial_running:
             try:
@@ -2589,14 +3552,54 @@ class ScriptGenerator(QWidget):
 
     def _archive_generate_done(self, code: str):
         try:
-            from backend.script_generator.agent import validate_script_local
+            from backend.script_generator.agent import (
+                apply_codegen_patches,
+                validate_script_local,
+            )
+
             expl = self._explanation.toPlainText()
+            ctx = getattr(self, "_gen_ctx", {}) or {}
+            plan = ctx.get("plan_struct") or None
+            free = ctx.get("free_mode")
+            if not isinstance(free, bool):
+                free = bool(self._free_mode_cb.isChecked())
+            src = str(ctx.get("source_dir") or self._source_dir or "")
+            # 与管线同参数再跑一次确定性补丁：legacy/异常路径漏补的在此兜住，
+            # 归档错误 = 补丁后的真实残差，不再出现「管线过、UI 拦」。
+            patched, notes = apply_codegen_patches(
+                code,
+                source_dir=src,
+                plan=plan,
+                explanation=expl,
+                free_mode=free,
+            )
+            if patched.strip() and self._code_compiles(patched):
+                if patched != code:
+                    self._append_trial_log(
+                        f"[归档] 生成后本地补全 {len(notes)} 项（含: "
+                        + "; ".join(notes[:3]) + "）"
+                    )
+                code = patched
+                self._generated_code = patched
+                self._stream_buf = patched
             errs = validate_script_local(
                 code,
+                plan=plan,
                 explanation=expl,
-                source_dir=str(self._source_dir or ""),
-                free_mode=bool(self._free_mode_cb.isChecked()),
+                source_dir=src,
+                free_mode=free,
             )
+            if errs:
+                self._trial_blocked = True
+                self._trial_block_reason = errs[0]
+                self._append_trial_log(
+                    f"[归档] 仍有 {len(errs)} 项校验残差（可点「重修订」带上错误修复）"
+                )
+                if not self._feedback.toPlainText().strip():
+                    self._feedback.setPlainText(
+                        "修复本地校验错误：\n"
+                        + "\n".join(f"- {e}" for e in errs[:8])
+                    )
             d = self._archive.snapshot_generate(
                 explanation=expl,
                 code=code,
@@ -2673,14 +3676,6 @@ class ScriptGenerator(QWidget):
         except Exception as e:
             print(f"[ScriptGenerator] 归档修订后失败: {e}")
 
-    def _on_error(self, msg: str):
-        translated = self._translate_error(msg)
-        self._generate_btn.setEnabled(True)
-        self._cancel_btn.setEnabled(False)
-        self._progress.hide()
-        self._trajectory.fail_run(translated)
-        QMessageBox.critical(self, "生成失败", translated)
-
     # ── 试运行 / 修订 ──
 
     def _update_trial_availability(self):
@@ -2688,6 +3683,8 @@ class ScriptGenerator(QWidget):
         has_facade = self._facade is not None
         has_feedback = bool(self._feedback.toPlainText().strip())
         revise_busy = self._revise_worker is not None and self._revise_worker.isRunning()
+        optimize_busy = self._optimize_worker is not None and self._optimize_worker.isRunning()
+        gen_busy = revise_busy or optimize_busy
         if not has_facade:
             self._trial_hint.setText(
                 "当前未连接主程序：可生成/保存，但无法试运行。"
@@ -2715,15 +3712,44 @@ class ScriptGenerator(QWidget):
         self._account_combo.setEnabled(has_facade)
         self._refresh_acc_btn.setEnabled(has_facade)
         if has_code:
-            self._revise_btn.setEnabled(not self._trial_running and not revise_busy)
+            self._revise_btn.setEnabled(not self._trial_running and not gen_busy)
             self._confirm_btn.setEnabled(not self._trial_running)
+        else:
+            self._revise_btn.setEnabled(False)
+            self._confirm_btn.setEnabled(False)
         if hasattr(self, "_rerevise_btn"):
-            self._rerevise_btn.setEnabled(
+            # 修订失败后常无反馈、也未必 trial_blocked；只要还有代码就应能重修订
+            can_rerevise = (
                 has_code
-                and (has_feedback or self._trial_blocked)
-                and not revise_busy
+                and not gen_busy
                 and not self._trial_running
+                and (
+                    has_feedback
+                    or self._trial_blocked
+                    or bool(getattr(self, "_last_revise_error", ""))
+                )
             )
+            self._rerevise_btn.setEnabled(can_rerevise)
+        self._update_optimize_availability()
+
+    def _update_optimize_availability(self):
+        if not hasattr(self, "_optimize_btn"):
+            return
+        has_code = bool((self._optimize_code or "").strip())
+        gen_busy = (
+            (self._revise_worker is not None and self._revise_worker.isRunning())
+            or (self._optimize_worker is not None and self._optimize_worker.isRunning())
+        )
+        self._optimize_btn.setEnabled(has_code and not gen_busy)
+        if hasattr(self, "_optimize_save_btn"):
+            self._optimize_save_btn.setEnabled(
+                has_code and self._optimize_script_path is not None
+            )
+        if hasattr(self, "_optimize_hint"):
+            if not has_code:
+                self._optimize_hint.setText("请从列表点选脚本（或「加载选中」）。")
+            else:
+                self._optimize_hint.setText("")
 
     def _account_ready(self, account: dict) -> bool:
         if not self._facade or not account:
@@ -2737,22 +3763,15 @@ class ScriptGenerator(QWidget):
             or name in getattr(ctrl, "_window_instances", {})
         )
 
-    def _refresh_accounts(self):
-        current = self._account_combo.currentData()
-        self._account_combo.clear()
+    def _fill_account_combo(self, combo: QComboBox, current: dict | None) -> None:
+        combo.clear()
         if self._facade is None:
-            self._account_combo.addItem("（无主程序）", None)
+            combo.addItem("（无主程序）", None)
             return
         accounts = list(self._facade.list_accounts() or [])
         ready_accounts = [acc for acc in accounts if self._account_ready(acc)]
         if not ready_accounts:
-            self._account_combo.addItem("（暂无已启动账号）", None)
-            if accounts:
-                self._trial_hint.setText(
-                    "列表里只显示已启动浏览器或已绑定窗口的账号。"
-                    "请先在「开始」页启动后再点「刷新账号」。"
-                )
-            self._trial_btn.setEnabled(False)
+            combo.addItem("（暂无已启动账号）", None)
             return
         for acc in ready_accounts:
             name = acc.get("name") or ""
@@ -2763,29 +3782,89 @@ class ScriptGenerator(QWidget):
             if name in getattr(ctrl, "_window_instances", {}):
                 kinds.append("窗口")
             suffix = " + ".join(kinds) if kinds else "已启动"
-            self._account_combo.addItem(f"{name}  · {suffix}", acc)
+            combo.addItem(f"{name}  · {suffix}", acc)
         if current:
-            for i in range(self._account_combo.count()):
-                data = self._account_combo.itemData(i)
+            for i in range(combo.count()):
+                data = combo.itemData(i)
                 if isinstance(data, dict) and data.get("name") == current.get("name"):
-                    self._account_combo.setCurrentIndex(i)
+                    combo.setCurrentIndex(i)
                     break
-        # 有就绪账号时清掉「暂无」提示（无主程序提示由 _update_trial_availability 处理）
-        if self._trial_hint.text().startswith("列表里只显示"):
+
+    def _refresh_accounts(self):
+        current = self._selected_account()
+        self._fill_account_combo(self._account_combo, current)
+        if self._facade is None:
+            self._update_trial_availability()
+            return
+        accounts = list(self._facade.list_accounts() or [])
+        ready_accounts = [acc for acc in accounts if self._account_ready(acc)]
+        if not ready_accounts and accounts:
+            self._trial_hint.setText(
+                "列表里只显示已启动浏览器或已绑定窗口的账号。"
+                "请先在「开始」页启动后再点「刷新账号」。"
+            )
+            self._trial_btn.setEnabled(False)
+        elif self._trial_hint.text().startswith("列表里只显示"):
             self._trial_hint.setText("")
         self._update_trial_availability()
 
+    def _trial_script_name_hint(self) -> str:
+        if self._optimize_script_path is not None:
+            return self._optimize_script_path.stem
+        name = (self._script_name.text().strip() if hasattr(self, "_script_name") else "") or ""
+        if name.lower().endswith(".py"):
+            name = name[:-3]
+        return name or "trial"
+
     def _write_trial_file(self) -> Path:
-        code = (self._generated_code or "").strip()
-        if not code:
+        raw = (self._generated_code or "").strip()
+        if not raw:
             raise RuntimeError("没有可试运行的代码")
+        from backend.script_generator.pseudo_codegen import inject_pseudo_record_for_trial
+
+        injected = inject_pseudo_record_for_trial(
+            raw, script_name=self._trial_script_name_hint()
+        )
+        mode = "injected"
+        chosen = injected
+        if not self._code_compiles(injected):
+            # 注入版语法损坏：回退原文，宁可没有伪录制也不能让试运行直接 SyntaxError
+            mode = "raw-fallback"
+            chosen = raw
+            self._append_trial_log("[试运行] ⚠ 伪录制注入版编译失败，已回退未注入版本")
+        if not self._code_compiles(chosen):
+            raise RuntimeError(
+                "试运行代码存在语法错误（原文编译失败）："
+                "请回生成页查看完整代码或点「重修订」后再试运行。"
+            )
         _TRIAL_DIR.mkdir(parents=True, exist_ok=True)
         init_py = _TRIAL_DIR / "__init__.py"
         if not init_py.exists():
             init_py.write_text("# trial package\n", encoding="utf-8")
         path = SCRIPTS_PATH / _TRIAL_REL
-        path.write_text(code, encoding="utf-8")
+        # 原子写：避免任务在写盘中途 import 到半截文件
+        import os as _os
+
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(chosen, encoding="utf-8")
+        _os.replace(tmp, path)
+        # 双归档：raw / injected 都留，事后可复现注入问题
+        if getattr(self, "_archive", None) is not None and self._archive.session_dir:
+            try:
+                self._archive.write_text("code_at_trial_raw.py", raw)
+                self._archive.write_text("code_at_trial_injected.py", chosen)
+            except Exception as e:
+                print(f"[ScriptGenerator] 归档试运行文件失败: {e}")
+        self._append_trial_log(f"[试运行] 写入模式: {mode}")
         return path
+
+    @staticmethod
+    def _code_compiles(code: str) -> bool:
+        try:
+            compile(code or "", "<trial>", "exec")
+            return True
+        except SyntaxError:
+            return False
 
     def _run_local_script_validate(self, *, log: bool = False) -> list[str]:
         """本地脚本检查：结构 + 素材（写入试运行文件后自动执行）。"""
@@ -2795,7 +3874,24 @@ class ScriptGenerator(QWidget):
             self._trial_block_reason = "无代码"
             self._update_trial_availability()
             return ["无代码"]
-        from backend.script_generator.agent import validate_script_local
+        from backend.script_generator.agent import (
+            patch_missing_handler_return_keys,
+            validate_script_local,
+        )
+
+        # 生成侧偶发漏补 return 目标键：试运行前再补一次，避免「生成成功却不能试跑」
+        patched, patch_notes = patch_missing_handler_return_keys(code)
+        if patch_notes and patched.strip() and patched != code:
+            self._generated_code = patched if patched.endswith("\n") else patched + "\n"
+            code = self._generated_code.strip()
+            try:
+                self._write_trial_file()
+            except Exception:
+                pass
+            if log:
+                preview = "；".join(patch_notes[:4])
+                more = f" 等{len(patch_notes)}处" if len(patch_notes) > 4 else ""
+                self._append_trial_log(f"[脚本检查] 已自动补状态路由：{preview}{more}")
 
         errs = validate_script_local(
             code,
@@ -2829,6 +3925,220 @@ class ScriptGenerator(QWidget):
         data = self._account_combo.currentData()
         return data if isinstance(data, dict) and data.get("name") else None
 
+    def _selected_opt_account(self) -> dict | None:
+        """优化页不再选账号；仅复用试运行页已选账号作伪录制匹配提示。"""
+        return self._selected_account()
+
+    def _on_tab_changed(self, index: int):
+        if index == self.TAB_TRIAL and (self._generated_code or "").strip():
+            # 回到试运行页时重检：避免「生成已修好但仍沿用上次拦截」
+            prev_blocked = bool(self._trial_blocked)
+            errs = self._run_local_script_validate(log=False)
+            if prev_blocked and not errs:
+                self._append_trial_log("[脚本检查] 重新检查已通过 · 可试运行")
+                if hasattr(self, "_feedback"):
+                    fb = self._feedback.toPlainText().strip()
+                    if fb.startswith("修复本地校验错误"):
+                        self._feedback.clear()
+                        self._set_feedback_stale(False)
+            elif errs and not prev_blocked:
+                self._append_trial_log(
+                    f"[脚本检查] 未通过：{errs[0]}"
+                )
+        if index == self.TAB_OPTIMIZE:
+            self._refresh_optimize_script_list()
+
+    def _init_optimize_folder_combo(self):
+        if not hasattr(self, "_optimize_folder_combo"):
+            return
+        self._optimize_folder_combo.blockSignals(True)
+        self._optimize_folder_combo.clear()
+        self._optimize_folder_combo.addItem("全部", "")
+        if SCRIPTS_PATH.is_dir():
+            for p in sorted(SCRIPTS_PATH.iterdir(), key=lambda x: x.name.lower()):
+                if p.is_dir() and p.name not in ("__pycache__",):
+                    self._optimize_folder_combo.addItem(p.name, p.name)
+        self._optimize_folder_combo.blockSignals(False)
+
+    def _collect_optimize_py_files(self) -> list[Path]:
+        root = SCRIPTS_PATH
+        if not root.is_dir():
+            return []
+        folder = (self._optimize_folder or "").strip()
+        search = (
+            self._optimize_search.text().strip().lower()
+            if hasattr(self, "_optimize_search")
+            else ""
+        )
+        base = root / folder if folder else root
+        if not base.is_dir():
+            return []
+        skip_parts = {"__pycache__"}
+        out: list[Path] = []
+        for p in sorted(base.rglob("*.py"), key=lambda x: str(x).lower()):
+            if any(part in skip_parts for part in p.parts):
+                continue
+            if p.name == "__init__.py":
+                continue
+            try:
+                rel = p.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if search and search not in rel.lower():
+                continue
+            out.append(p)
+        return out
+
+    def _refresh_optimize_script_list(self):
+        if not hasattr(self, "_optimize_script_list"):
+            return
+        self._optimize_script_files = self._collect_optimize_py_files()
+        total = len(self._optimize_script_files)
+        pages = max(1, (total + _OPTIMIZE_PAGE_SIZE - 1) // _OPTIMIZE_PAGE_SIZE)
+        if self._optimize_page >= pages:
+            self._optimize_page = max(0, pages - 1)
+        start = self._optimize_page * _OPTIMIZE_PAGE_SIZE
+        chunk = self._optimize_script_files[start : start + _OPTIMIZE_PAGE_SIZE]
+
+        self._optimize_script_list.clear()
+        root = SCRIPTS_PATH
+        for p in chunk:
+            try:
+                rel = p.relative_to(root).as_posix()
+            except ValueError:
+                rel = p.name
+            item = QListWidgetItem(rel)
+            item.setData(Qt.ItemDataRole.UserRole, str(p))
+            self._optimize_script_list.addItem(item)
+
+        self._optimize_page_label.setText(
+            f"第 {self._optimize_page + 1}/{pages} 页 · 共 {total} 个脚本"
+        )
+        self._optimize_prev_btn.setEnabled(self._optimize_page > 0)
+        self._optimize_next_btn.setEnabled(self._optimize_page < pages - 1)
+
+    def _optimize_change_page(self, delta: int):
+        self._optimize_page = max(0, self._optimize_page + int(delta))
+        self._refresh_optimize_script_list()
+
+    def _on_optimize_folder_changed(self):
+        data = self._optimize_folder_combo.currentData()
+        self._optimize_folder = str(data or "")
+        self._optimize_page = 0
+        self._refresh_optimize_script_list()
+
+    def _append_optimize_log(self, line: str):
+        if not line:
+            return
+        self._optimize_log_lines.append(line)
+        if hasattr(self, "_optimize_log"):
+            self._optimize_log.append(line)
+            self._optimize_log.moveCursor(QTextCursor.MoveOperation.End)
+
+    def _load_optimize_script(self, path: Path) -> bool:
+        path = Path(path)
+        if not path.is_file():
+            QMessageBox.warning(self, "文件不存在", str(path))
+            return False
+        # 点选同一文件不重复读盘
+        if (
+            self._optimize_script_path is not None
+            and path.resolve() == self._optimize_script_path.resolve()
+            and (self._optimize_code or "").strip()
+        ):
+            return True
+        try:
+            code = path.read_text(encoding="utf-8")
+        except Exception as e:
+            QMessageBox.warning(self, "读取失败", str(e))
+            return False
+        self._optimize_code = code
+        self._optimize_script_path = path
+        self._generated_code = code
+        self._stream_buf = code
+        try:
+            rel = path.relative_to(SCRIPTS_PATH).as_posix()
+        except ValueError:
+            rel = path.name
+        self._optimize_path_label.setText(rel)
+        self._script_name.setText(path.name)
+        self._append_optimize_log(f"[加载] {rel}（{len(code)} 字符）")
+        # 加载只读入内存；写入试跑临时文件 + 本地校验延后到「去试运行」
+        self._trial_blocked = False
+        self._trial_block_reason = ""
+        self._update_optimize_availability()
+        self._update_trial_availability()
+        return True
+
+    def _on_optimize_script_activated(self, item: QListWidgetItem):
+        raw = item.data(Qt.ItemDataRole.UserRole)
+        if raw:
+            self._load_optimize_script(Path(str(raw)))
+
+    def _on_optimize_load_selected(self):
+        item = self._optimize_script_list.currentItem()
+        if not item:
+            QMessageBox.information(self, "未选择", "请先在列表中选中脚本。")
+            return
+        raw = item.data(Qt.ItemDataRole.UserRole)
+        if raw:
+            self._load_optimize_script(Path(str(raw)))
+
+    def _on_optimize_pick_file(self):
+        start = str(SCRIPTS_PATH if SCRIPTS_PATH.is_dir() else Path.home())
+        path, _ = QFileDialog.getOpenFileName(
+            self, "选择 Python 脚本", start, "Python (*.py);;All (*.*)",
+        )
+        if path:
+            self._load_optimize_script(Path(path))
+
+    def _on_optimize_save(self):
+        code = (self._optimize_code or "").strip()
+        if not code:
+            QMessageBox.warning(self, "无代码", "没有可保存的内容。")
+            return
+        path = self._optimize_script_path
+        if path is None:
+            path_str, _ = QFileDialog.getSaveFileName(
+                self,
+                "保存脚本",
+                str(SCRIPTS_PATH / "my_script.py"),
+                "Python (*.py)",
+            )
+            if not path_str:
+                return
+            path = Path(path_str)
+        try:
+            path.write_text(code, encoding="utf-8")
+            self._optimize_script_path = path
+            self._append_optimize_log(f"[保存] {path}")
+            QMessageBox.information(self, "已保存", str(path))
+        except Exception as e:
+            QMessageBox.warning(self, "保存失败", str(e))
+
+    def _view_optimize_code(self):
+        code = (self._optimize_code or self._generated_code or "").strip()
+        if not code:
+            QMessageBox.information(self, "无代码", "请先加载脚本。")
+            return
+        dlg = FullCodeDialog(self, code=code, title="优化中的脚本")
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.applied_code is not None:
+            self._optimize_code = dlg.applied_code
+            self._generated_code = dlg.applied_code
+            self._stream_buf = dlg.applied_code
+            self._trial_blocked = False
+            self._trial_block_reason = ""
+            self._update_optimize_availability()
+            self._update_trial_availability()
+
+    def _on_optimize_go_trial(self):
+        if not (self._optimize_code or "").strip():
+            QMessageBox.information(self, "无代码", "请先加载脚本。")
+            return
+        self._generated_code = self._optimize_code
+        self._sync_trial_code()
+        self._tabs.setCurrentIndex(self.TAB_TRIAL)
+
     def _on_trial_run(self):
         if self._facade is None:
             QMessageBox.warning(self, "无法试运行", "请从主窗口打开脚本生成器后再试运行。")
@@ -2855,6 +4165,15 @@ class ScriptGenerator(QWidget):
             )
             self._refresh_accounts()
             return
+        # 试跑：按实际就绪目标写入 _target，避免生成脚本 UserBrowser 注解锁死浏览器
+        has_br = name in getattr(ctrl, "_browser_instances", {})
+        has_win = name in getattr(ctrl, "_window_instances", {})
+        if has_win and not has_br:
+            account["_target"] = "window"
+        elif has_br and not has_win:
+            account["_target"] = "browser"
+        elif has_win and account.get("_target") not in ("browser", "window"):
+            account["_target"] = "window"
         task_ctrl = getattr(ctrl, "_task_ctrls", {}).get(name)
         if task_ctrl is not None and getattr(task_ctrl, "_future", None):
             QMessageBox.warning(
@@ -2876,16 +4195,36 @@ class ScriptGenerator(QWidget):
         self._last_trial_frame = None
         self._stop_frame_path = ""
         self._tabs.setCurrentIndex(self.TAB_TRIAL)
+        self._set_trial_chip("write", "done")
+        self._set_trial_chip("run", "active")
+        self._set_trial_chip("frame", "idle")
+        self._set_trial_chip("feas", "idle")
+        if getattr(self, "_trial_hud", None) is not None:
+            self._trial_hud.start_run(name)
+        if hasattr(self, "_trial_frame_lbl"):
+            self._trial_frame_lbl.setPixmap(QPixmap())
+            self._trial_frame_lbl.setText("运行中…\n结束或停止后显示停帧")
+        self._set_agent_status_text(f"试运行 · {name}")
+        if hasattr(self, "_trajectory") and self._trajectory._steps:
+            self._trajectory.begin_phase(f"试运行 · {name}", kind="Trial")
         # 再试跑时反馈框若仍是上次内容 → 标成「陈旧」样式，提醒改写/清空
         if self._feedback.toPlainText().strip():
             self._set_feedback_stale(True)
         self._append_trial_log(f"[试运行] 临时文件: {path}")
         self._append_trial_log(f"[试运行] 账号: {name} · 模块: {_TRIAL_REL}")
+        self._append_trial_log(
+            "[试运行] 已自动开启伪录制（确认完成并保存时会从正式脚本去掉）"
+        )
+        self._set_trial_pseudo_env(True)
         self._update_trial_availability()
         try:
             self._facade.start_task(account, _TRIAL_REL)
         except Exception as e:
             self._trial_running = False
+            self._set_trial_pseudo_env(False)
+            hud = getattr(self, "_trial_hud", None)
+            if hud is not None:
+                hud.set_terminal("error")
             self._update_trial_availability()
             QMessageBox.critical(self, "试运行失败", str(e))
 
@@ -2916,6 +4255,9 @@ class ScriptGenerator(QWidget):
         level = getattr(event, "level", "")
         prefix = f"[{level}] " if level else ""
         self._append_trial_log(f"{prefix}{msg}")
+        hud = getattr(self, "_trial_hud", None)
+        if hud is not None:
+            hud.on_log_line(f"{prefix}{msg}")
 
     def _on_trial_state(self, event):
         if not self._trial_running:
@@ -2934,8 +4276,15 @@ class ScriptGenerator(QWidget):
             message = getattr(snap, "message", "") or ""
             if message:
                 self._append_trial_log(f"[状态] {message}")
+                hud = getattr(self, "_trial_hud", None)
+                if hud is not None:
+                    hud.on_log_line(f"[状态] {message}")
             if status in ("finished", "stopped", "error", "idle"):
                 self._trial_running = False
+                self._set_trial_pseudo_env(False)
+                hud = getattr(self, "_trial_hud", None)
+                if hud is not None:
+                    hud.set_terminal(status)
                 # 自然结束/停止结束时再确保有停帧
                 if not self._stop_frame_path:
                     self._cache_stop_frame_now(also_capture=True)
@@ -2944,7 +4293,15 @@ class ScriptGenerator(QWidget):
                     self._persist_stop_frame()
                 self._update_trial_availability()
                 self._append_trial_log(f"[试运行] 结束 ({status})")
+                self._set_trial_chip("run", "done")
+                self._update_trial_frame_preview()
                 self._archive_trial_end(status)
+                self._set_trial_chip("feas", "active")
+                self._report_trial_feasibility(status)
+                self._set_trial_chip("feas", "done")
+                self._set_agent_status_text(f"试运行结束 · {status}")
+                if hasattr(self, "_trajectory") and self._trajectory._steps:
+                    self._trajectory.succeed_run(f"试运行结束 ({status})")
         except Exception:
             pass
 
@@ -2955,6 +4312,240 @@ class ScriptGenerator(QWidget):
         self._tabs.setCurrentIndex(self.TAB_GEN)
         self._launch_revise(run_label="重修订")
 
+    def _on_optimize(self):
+        code = (self._optimize_code or self._generated_code or "").strip()
+        if not code:
+            QMessageBox.warning(self, "无代码", "请先从脚本库加载 .py 或生成脚本。")
+            return
+        api_key = self._api_key.text().strip()
+        model = self._model.currentText().strip()
+        if not api_key or not model:
+            QMessageBox.warning(self, "缺少配置", "请填写 API Key 和模型。")
+            return
+
+        self._generated_code = code
+        user_feedback = ""
+        if hasattr(self, "_optimize_feedback"):
+            user_feedback = self._optimize_feedback.toPlainText().strip()
+
+        from backend.script_generator.pseudo_analyze import find_latest_pseudo_record
+
+        script_hint = (
+            self._optimize_script_path.stem
+            if self._optimize_script_path
+            else (self._script_name.text().strip() or "_gen_trial")
+        )
+        # 账号仅用于匹配伪录制目录名，可为空
+        opt_acc = self._selected_opt_account()
+        account = (opt_acc or {}).get("name") or self._trial_account_name or ""
+        rec = find_latest_pseudo_record(script_hint=script_hint, account_hint=account)
+        if rec is None:
+            rec = find_latest_pseudo_record(script_hint=script_hint)
+
+        force = bool(user_feedback)
+        if rec is None and not user_feedback:
+            ok = QMessageBox.question(
+                self,
+                "未找到伪录制",
+                "未找到匹配的伪录制，且未填写优化方向。\n\n"
+                "仍仅按代码做保守优化？\n"
+                "（也可取消后先写优化方向再提交。）",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes,
+            )
+            if ok != QMessageBox.StandardButton.Yes:
+                return
+        elif rec is None and user_feedback:
+            self._append_optimize_log("[优化] 无伪录制，将按填写的优化方向修订")
+
+        try:
+            self._persist_explanation(self._explanation.toPlainText())
+        except Exception as e:
+            print(f"[ScriptGenerator] 优化前保存介绍失败: {e}")
+
+        if self._archive.session_dir is None:
+            self._archive.begin("optimize")
+
+        params = {
+            "provider": self._current_provider(),
+            "api_key": api_key,
+            "model": model,
+            "api_endpoint": self._endpoint.text().strip() or None,
+            "explanation_text": self._explanation.toPlainText(),
+            "current_code": code,
+            "source_dir": str(self._source_dir or ""),
+            "script_name_hint": script_hint,
+            "account_hint": account,
+            "user_feedback": user_feedback,
+            "trial_log": "\n".join(
+                (self._optimize_log_lines + self._trial_log_lines)[-200:]
+            ),
+            "pseudo_record_dir": str(rec) if rec else "",
+            "force": force,
+            "max_tokens": self._max_tokens.value() if hasattr(self, "_max_tokens") else None,
+        }
+
+        self._generate_btn.setEnabled(False)
+        self._revise_btn.setEnabled(False)
+        if hasattr(self, "_optimize_btn"):
+            self._optimize_btn.setEnabled(False)
+        if hasattr(self, "_rerevise_btn"):
+            self._rerevise_btn.setEnabled(False)
+        self._cancel_btn.setEnabled(True)
+        self._set_agent_busy("优化", "分析伪录制 / 边界评估…", indeterminate=True)
+        self._keep_prev_live_code(phase="优化")
+        self._token_label.setText("")
+        self._tabs.setCurrentIndex(self.TAB_GEN)
+        self._trajectory.begin_run("脚本优化", fresh=False)
+        if self._archive.session_dir:
+            self._archive.append_event(
+                "optimize_begin",
+                script_hint=script_hint,
+                has_feedback=bool(user_feedback),
+            )
+        if user_feedback:
+            self._append_optimize_log("[优化方向]\n" + user_feedback[:500])
+
+        # 保存优化前试跑日志，供再试跑后做可靠性对比
+        self._pre_optimize_trial_log = "\n".join(self._trial_log_lines)
+        self._awaiting_reliability_retrial = False
+        self._pre_optimize_record_dir = ""
+        try:
+            from backend.script_generator.pseudo_analyze import find_latest_pseudo_record
+
+            hint = ""
+            if self._optimize_script_path:
+                hint = self._optimize_script_path.stem
+            rec = find_latest_pseudo_record(script_hint=hint)
+            if rec:
+                self._pre_optimize_record_dir = str(rec)
+        except Exception:
+            pass
+
+        self._optimize_worker = OptimizeWorker(params)
+        self._optimize_worker.finished.connect(self._on_optimize_success)
+        self._optimize_worker.partial.connect(self._on_partial)
+        self._optimize_worker.status.connect(self._on_status)
+        self._optimize_worker.artifact.connect(self._on_artifact)
+        self._optimize_worker.token_info.connect(self._on_token_info)
+        self._optimize_worker.error.connect(self._on_optimize_error)
+        self._optimize_worker.start()
+
+    def _on_optimize_success(self, code: str, summary: str = "", meta=None):
+        meta = meta if isinstance(meta, dict) else {}
+        self._optimize_code = code
+        self._generated_code = code
+        self._stream_buf = code or ""
+        self._set_live_code(code or "")
+        self._view_code_btn.setEnabled(True)
+        self._save_btn.setEnabled(True)
+        self._copy_btn.setEnabled(True)
+        self._generate_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(False)
+        skipped = bool((meta or {}).get("skipped_llm"))
+        n_chars = len(code or "")
+        idle = "✓ 优化完成 · 建议再试运行" if not skipped else "已接近优化边界"
+        self._set_agent_idle(idle, success=not skipped)
+        if hasattr(self, "_live_code_hint"):
+            self._live_code_hint.setText(
+                f"{'已优化' if not skipped else '未改写'} · {n_chars:,} 字符"
+            )
+        self._set_ok_banner(
+            ("✓ 优化完成　　" if not skipped else "边界评估完成　　")
+            + f"{n_chars:,} 字符　　建议再试运行对比"
+        )
+        # 不在此处同步试跑校验；用户点「去试运行」时再写入临时文件
+        self._update_trial_availability()
+        self._update_optimize_availability()
+
+        summary = (summary or "").strip() or "（无摘要）"
+        ceiling = meta.get("ceiling") or {}
+        baseline = meta.get("baseline") or {}
+        if baseline:
+            self._append_optimize_log(
+                "[优化 baseline] "
+                f"total={baseline.get('total_s')}s "
+                f"black={baseline.get('black_s')}s "
+                f"effective={baseline.get('effective_s')}s"
+            )
+        if meta.get("pseudo_record_dir"):
+            self._append_optimize_log(f"[优化] 伪录制: {meta['pseudo_record_dir']}")
+        self._append_optimize_log("[优化摘要]\n" + summary)
+        self._trajectory.succeed_run("优化完成" if not skipped else "边界评估完成")
+        self._flash_taskbar("脚本优化完成" if not skipped else "已接近优化边界")
+
+        val_errors = meta.get("validation_errors") or []
+        near = bool(ceiling.get("near_ceiling"))
+        if not skipped:
+            self._awaiting_reliability_retrial = True
+            self._append_optimize_log(
+                "[可靠性] 请再试跑一次；结束后将自动对比优化前/后轨迹信号。"
+            )
+
+        if skipped:
+            title = "已接近脚本优化边界"
+            tip = summary
+            _show_scroll_message(self, title, tip, icon=QMessageBox.Icon.Information)
+        elif val_errors:
+            title = "优化完成 — 脚本检查未通过"
+            tip = (
+                "代码已更新，但本地校验有警告，请核对后再试跑。\n\n"
+                f"{summary}\n\n"
+                + "\n".join(f"- {e}" for e in val_errors[:6])
+                + "\n\n建议再试跑一次，核对可靠性是否下降。"
+            )
+            _show_scroll_message(self, title, tip, icon=QMessageBox.Icon.Warning)
+        elif near:
+            _show_scroll_message(
+                self,
+                "优化完成 — 可能已接近边界",
+                "代码已更新。\n\n"
+                f"{summary}\n\n"
+                "请再试跑一次：对比 effective，并核对可靠性是否下降；"
+                "若 effective 变化 <5%，建议停止反复优化。",
+                icon=QMessageBox.Icon.Information,
+            )
+        else:
+            _show_scroll_message(
+                self,
+                "优化完成",
+                "代码已更新。\n\n"
+                f"{summary}\n\n"
+                "请点「去试运行」再跑一轮：会自动对比优化前/后可靠性；"
+                "也可先「保存到文件」。",
+            )
+
+        if self._archive.session_dir:
+            try:
+                self._archive.write_text("code_post_optimize.py", code)
+                self._archive.write_text("optimize_summary.txt", summary)
+                if hasattr(self, "_optimize_feedback"):
+                    fb = self._optimize_feedback.toPlainText().strip()
+                    if fb:
+                        self._archive.write_text("optimize_feedback.txt", fb)
+                if meta.get("pseudo_record_dir"):
+                    self._archive.merge_meta({"pseudo_record_dir": meta["pseudo_record_dir"]})
+                self._archive.append_event("optimize_done")
+            except Exception as e:
+                print(f"[ScriptGenerator] 归档优化失败: {e}")
+
+    def _on_optimize_error(self, msg: str):
+        translated = self._translate_error(msg)
+        self._generate_btn.setEnabled(True)
+        self._cancel_btn.setEnabled(False)
+        reason = (translated.split("\n", 1)[0] or "优化失败").strip()
+        self._set_agent_idle(f"优化失败 · {reason}")
+        self._update_trial_availability()
+        self._trajectory.update_step(
+            "optimize",
+            "Error",
+            reason,
+            status="error",
+            body=translated,
+        )
+        self._trajectory.fail_run(reason)
+        QMessageBox.critical(self, "优化失败", translated)
+
     def _launch_revise(self, *, run_label: str = "根据反馈修订"):
         api_key = self._api_key.text().strip()
         if not api_key:
@@ -2964,6 +4555,11 @@ class ScriptGenerator(QWidget):
         if not feedback and self._trial_blocked:
             reason = self._trial_block_reason or "硬校验未通过"
             feedback = f"修复本地校验错误：{reason}"
+        if not feedback and getattr(self, "_last_revise_error", ""):
+            feedback = (
+                "上次修订失败，请基于原代码继续修复。\n"
+                f"失败原因：{self._last_revise_error}"
+            )
         if not feedback:
             QMessageBox.warning(
                 self,
@@ -2973,8 +4569,12 @@ class ScriptGenerator(QWidget):
             )
             return
         if not (self._generated_code or "").strip():
-            QMessageBox.warning(self, "无代码", "请先生成脚本。")
-            return
+            # 界面被清空时尽量从试运行临时文件恢复
+            recovered = self._try_recover_code_from_trial()
+            if not recovered:
+                QMessageBox.warning(self, "无代码", "请先生成脚本。")
+                return
+            feedback = feedback  # keep
 
         try:
             self._persist_explanation()
@@ -2999,6 +4599,7 @@ class ScriptGenerator(QWidget):
             "source_dir": str(self._source_dir) if self._source_dir else "",
             "trial_log": "\n".join(self._trial_log_lines[-200:]),
             "max_tokens": int(self._max_tokens.value()),
+            "free_mode": bool(self._free_mode_cb.isChecked()),
             "stop_frame_path": self._stop_frame_path or "",
             "prior_summary": getattr(self, "_last_revise_summary", "") or "",
             "prior_diagnosis": getattr(self, "_last_diagnosis_json", "") or "",
@@ -3031,11 +4632,10 @@ class ScriptGenerator(QWidget):
         if hasattr(self, "_rerevise_btn"):
             self._rerevise_btn.setEnabled(False)
         self._cancel_btn.setEnabled(True)
-        self._progress.show()
-        self._stream_buf = ""
-        self._view_code_btn.setEnabled(False)
+        self._set_agent_busy("修订", run_label, indeterminate=True)
+        self._keep_prev_live_code(phase="修订")
         self._tabs.setCurrentIndex(self.TAB_GEN)
-        self._trajectory.begin_run(run_label)
+        self._trajectory.begin_run(run_label, fresh=False)
         if self._archive.session_dir is not None:
             self._archive.append_event("revise_begin")
         self._trajectory.update_step(
@@ -3269,12 +4869,13 @@ class ScriptGenerator(QWidget):
 
         self._generated_code = code
         self._stream_buf = code or ""
+        self._set_live_code(code or "")
         self._view_code_btn.setEnabled(True)
         self._save_btn.setEnabled(True)
         self._copy_btn.setEnabled(True)
         self._generate_btn.setEnabled(True)
         self._cancel_btn.setEnabled(False)
-        self._progress.hide()
+        n_chars = len(code or "")
         self._last_revise_summary = (summary or "").strip()
         if isinstance(meta, dict) and meta.get("chat_session"):
             self._chat_session = meta["chat_session"]
@@ -3289,18 +4890,40 @@ class ScriptGenerator(QWidget):
             except Exception:
                 pass
         self._sync_trial_code()
+        self._reset_trial_surface_after_new_code()
         trial_blocked = self._trial_blocked
-        val_errors = [self._trial_block_reason] if trial_blocked else []
         if trial_blocked:
+            reason = self._trial_block_reason or "脚本检查未通过"
+            self._set_agent_idle("修订完成 · 校验未过不可试运行", success=False)
+            if hasattr(self, "_live_code_hint"):
+                self._live_code_hint.setText(f"已修订 · {n_chars:,} 字符 · 校验未过")
+            self._set_warn_banner(f"修订完成但不可试运行　　{reason}")
             self._append_trial_log(
                 "[修订] 脚本检查未通过，不可试运行。"
-                + (f" ({self._trial_block_reason})" if self._trial_block_reason else "")
+                + (f" ({reason})" if reason else "")
             )
+        else:
+            self._set_agent_idle("✓ 修订完成 · 可去试运行", success=True)
+            if hasattr(self, "_live_code_hint"):
+                self._live_code_hint.setText(f"已修订 · {n_chars:,} 字符 · 可保存或试运行")
+            self._set_ok_banner(
+                f"✓ 修订完成　　{n_chars:,} 字符　　可保存或去试运行验证"
+            )
+            if hasattr(self, "_to_trial_btn"):
+                self._to_trial_btn.setProperty("ready", True)
+                self._to_trial_btn.style().unpolish(self._to_trial_btn)
+                self._to_trial_btn.style().polish(self._to_trial_btn)
+                self._to_trial_btn.setText("去试运行 → 验证脚本")
         self._update_trial_availability()
         summary = (summary or "").strip() or "（无摘要）"
         self._append_trial_log("[修订摘要]\n" + summary)
-        self._trajectory.succeed_run("修订完成")
+        done_summary = f"约 {n_chars:,} 字符。\n{summary}"
+        self._trajectory.succeed_run(
+            "修订完成" if not trial_blocked else "修订完成（校验未过）",
+            summary=done_summary,
+        )
         self._flash_taskbar("反馈修订完成")
+        self._last_revise_error = ""
 
         # 先展示修订结果，再弹「新增约束」确认（避免结果被写回对话框挡住）
         review_fail = not meta.get("review_ok", True) or "未完全通过" in summary
@@ -3361,21 +4984,168 @@ class ScriptGenerator(QWidget):
         if hasattr(self, "_feedback_stale_hint"):
             self._feedback_stale_hint.setVisible(stale)
 
+    def _try_recover_code_from_trial(self) -> bool:
+        """修订失败清空预览后，从试运行临时文件恢复内存中的代码。"""
+        try:
+            path = SCRIPTS_PATH / _TRIAL_REL
+            if not path.is_file():
+                return False
+            text = path.read_text(encoding="utf-8")
+            if not text.strip():
+                return False
+            self._generated_code = text if text.endswith("\n") else text + "\n"
+            self._stream_buf = self._generated_code
+            self._set_live_code(self._generated_code)
+            self._view_code_btn.setEnabled(True)
+            self._save_btn.setEnabled(True)
+            self._copy_btn.setEnabled(True)
+            return True
+        except Exception as e:
+            print(f"[ScriptGenerator] 从试运行文件恢复代码失败: {e}")
+            return False
+
+    def _restore_code_preview_after_agent_fail(self) -> None:
+        """生成/修订失败时恢复右侧代码预览与操作按钮（不丢 _generated_code）。"""
+        code = (self._generated_code or "").strip()
+        if not code:
+            self._try_recover_code_from_trial()
+            code = (self._generated_code or "").strip()
+        if not code:
+            return
+        self._stream_buf = self._generated_code or code
+        self._set_live_code(self._stream_buf)
+        self._view_code_btn.setEnabled(True)
+        self._save_btn.setEnabled(True)
+        self._copy_btn.setEnabled(True)
+
     def _on_revise_error(self, msg: str):
         translated = self._translate_error(msg)
+        self._last_revise_error = translated
         self._generate_btn.setEnabled(True)
         self._cancel_btn.setEnabled(False)
-        self._progress.hide()
+        reason = (translated.split("\n", 1)[0] or "修订失败").strip()
+        self._set_agent_idle(f"修订失败 · {reason}")
+        self._restore_code_preview_after_agent_fail()
         self._update_trial_availability()
         self._trajectory.update_step(
             "revise",
-            "Revise",
-            "修订失败",
+            "Error",
+            reason,
             status="error",
             body=translated,
         )
-        self._trajectory.fail_run(translated)
+        self._trajectory.fail_run(reason)
         QMessageBox.critical(self, "修订失败", translated)
+
+    def _set_trial_pseudo_env(self, enabled: bool) -> None:
+        """试跑期间设置环境变量，供脚本内 getenv 分支启用伪录制。"""
+        import os
+        from backend.automation.run_recorder import ENV_FLAG
+
+        if enabled:
+            os.environ[ENV_FLAG] = "1"
+        else:
+            os.environ.pop(ENV_FLAG, None)
+
+    def _report_trial_feasibility(self, status: str = "") -> None:
+        """试跑结束后输出 L1 可行性评估；优化后再试跑时对比可靠性。"""
+        try:
+            from backend.script_generator.feasibility import (
+                assess_trial_feasibility,
+                compare_reliability,
+            )
+            from backend.script_generator.pseudo_analyze import find_latest_pseudo_record
+
+            log = "\n".join(self._trial_log_lines)
+            record_dir = None
+            try:
+                hint = ""
+                if getattr(self, "_optimize_script_path", None):
+                    hint = self._optimize_script_path.stem
+                elif (self._optimize_code or self._generated_code or "").strip():
+                    # 试跑临时脚本名不稳定时仍尽量用最近录制
+                    hint = ""
+                account = getattr(self, "_trial_account_name", "") or ""
+                rec = find_latest_pseudo_record(
+                    script_hint=hint, account_hint=account,
+                )
+                if rec is None and hint:
+                    rec = find_latest_pseudo_record(script_hint=hint)
+                if rec is None:
+                    rec = find_latest_pseudo_record()
+                record_dir = rec
+            except Exception:
+                record_dir = None
+
+            feas = assess_trial_feasibility(
+                log, status=status, record_dir=record_dir,
+            )
+            msg = feas.get("user_message") or ""
+            if msg:
+                self._append_trial_log("[可行性]\n" + msg)
+            if hasattr(self, "_append_optimize_log"):
+                self._append_optimize_log("[试跑可行性]\n" + msg)
+
+            if (
+                self._awaiting_reliability_retrial
+                and (self._pre_optimize_trial_log or "").strip()
+            ):
+                cmp = compare_reliability(
+                    self._pre_optimize_trial_log,
+                    log,
+                    before_record_dir=getattr(self, "_pre_optimize_record_dir", None) or None,
+                    after_record_dir=record_dir,
+                )
+                self._awaiting_reliability_retrial = False
+                if cmp.get("ok"):
+                    note = "[可靠性对比] 相对优化前未见明显劣化（匹配/终态信号）。"
+                else:
+                    degraded = cmp.get("degraded") or []
+                    note = (
+                        "[可靠性对比] ⚠️ 相对优化前可能下降：\n"
+                        + "\n".join(f"· {d}" for d in degraded)
+                        + "\n建议回退或再修订，勿只追求速度。"
+                    )
+                self._append_trial_log(note)
+                if hasattr(self, "_append_optimize_log"):
+                    self._append_optimize_log(note)
+                feas = dict(feas)
+                feas["reliability_compare"] = {
+                    "ok": cmp.get("ok"),
+                    "degraded": cmp.get("degraded"),
+                    "before_level": (cmp.get("before") or {}).get("level"),
+                    "after_level": (cmp.get("after") or {}).get("level"),
+                    "before_match_source": (
+                        ((cmp.get("before") or {}).get("signals") or {}).get("match_source")
+                    ),
+                    "after_match_source": (
+                        ((cmp.get("after") or {}).get("signals") or {}).get("match_source")
+                    ),
+                }
+
+            if getattr(self, "_trial_hud", None) is not None:
+                self._trial_hud.set_feasibility(feas)
+            if self._archive.session_dir:
+                try:
+                    self._archive.write_text(
+                        "feasibility.json",
+                        __import__("json").dumps(feas, ensure_ascii=False, indent=2),
+                    )
+                except Exception:
+                    pass
+        except Exception as e:
+            print(f"[ScriptGenerator] 可行性评估失败: {e}")
+
+    def _strip_pseudo_from_working_code(self) -> str:
+        """从当前工作副本去掉伪录制，写回内存（正式保存用）。"""
+        from backend.script_generator.pseudo_codegen import strip_pseudo_record_for_save
+
+        code = strip_pseudo_record_for_save(self._generated_code or "")
+        self._generated_code = code
+        self._stream_buf = code
+        if hasattr(self, "_optimize_code") and (self._optimize_code or "").strip():
+            self._optimize_code = strip_pseudo_record_for_save(self._optimize_code)
+        return code
 
     def _on_confirm_done(self):
         if not (self._generated_code or "").strip():
@@ -3387,12 +5157,15 @@ class ScriptGenerator(QWidget):
         reply = QMessageBox.question(
             self,
             "确认保存",
-            "确定将当前脚本保存为正式文件吗？\n保存后可在脚本列表中使用。",
+            "确定将当前脚本保存为正式文件吗？\n"
+            "保存时会去掉试运行用的伪录制开关。\n"
+            "保存后可在脚本列表中使用。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
+        self._strip_pseudo_from_working_code()
         self._save_script()
 
     def _cancel_generate(self):
@@ -3402,9 +5175,12 @@ class ScriptGenerator(QWidget):
         if self._revise_worker and self._revise_worker.isRunning():
             self._revise_worker.terminate()
             self._revise_worker.wait(2000)
+        if self._optimize_worker and self._optimize_worker.isRunning():
+            self._optimize_worker.terminate()
+            self._optimize_worker.wait(2000)
         self._generate_btn.setEnabled(True)
         self._cancel_btn.setEnabled(False)
-        self._progress.hide()
+        self._set_agent_idle("已取消")
         self._update_trial_availability()
         if hasattr(self, "_trajectory"):
             self._trajectory.mark_cancelled()
@@ -3422,6 +5198,41 @@ class ScriptGenerator(QWidget):
                 f"{title}\n\n"
                 f"建议：\n{advice}\n\n"
                 f"—— 原始错误（给排查用）——\n{raw}"
+            )
+
+        # 本地/结构校验失败（必须最先判：错误文本里常含 TASK_task1_TIMEOUT 等标识符，
+        # 会被下面的 timeout 子串匹配误判成「网络超时」）
+        if (
+            "生成的脚本校验失败" in raw
+            or "未通过本地检查" in raw
+            or "校验失败（已重试" in raw
+            or "仍校验失败" in raw
+        ):
+            return pack(
+                "生成的脚本未通过本地检查",
+                "1. 到「4. 试运行」点「重修订」（生成页也有此按钮），会自动带上错误说明\n"
+                "2. 也可直接再点「生成脚本」重试一次\n"
+                "3. 若同类错误反复出现，请简化脚本描述或补充素材/介绍",
+            )
+
+        # 余额 / 额度不足（须在通用 403 之前，DeepSeek 常回 402 + Insufficient Balance）
+        if (
+            "insufficient balance" in low
+            or "insufficient_quota" in low
+            or "insufficient credits" in low
+            or "exceeded your current quota" in low
+            or "billing" in low and ("hard limit" in low or "not active" in low)
+            or "余额不足" in raw
+            or "额度不足" in raw
+            or "欠费" in raw
+            or re.search(r"\b402\b", raw)
+            or ("error code: 402" in low)
+        ):
+            return pack(
+                "账号余额不足，无法调用该模型",
+                "1. 到当前提供商官网充值（例如 DeepSeek 开放平台）\n"
+                "2. 或在「API 配置」换一个仍有余额的方案 / 提供商后重试\n"
+                "3. 充值到账后可直接点「重修订」或「生成脚本」，不必重新写介绍",
             )
 
         # API Key 无效 / 缺失（含 DeepSeek 400 + Please pass a valid API key）
@@ -3472,7 +5283,7 @@ class ScriptGenerator(QWidget):
                 "请稍等一会儿再试；若持续出现，可降低调用频率或升级套餐。",
             )
 
-        if "timeout" in low or "timed out" in low:
+        if re.search(r"(?<![A-Za-z0-9_])timeout(?![A-Za-z0-9_])|\btimed out\b", low):
             return pack(
                 "请求超时",
                 "1. 检查本机网络 / 代理是否正常\n"
@@ -3540,6 +5351,20 @@ class ScriptGenerator(QWidget):
             "3. 仍无法解决时，可把原始错误发给开发者协助查看",
         )
     def _save_script(self):
+        # 正式落盘前去掉试运行伪录制（确认保存 / 生成页保存共用）
+        code = self._strip_pseudo_from_working_code()
+        # 保存前语法闸门：剥离/手改后若语法坏了，绝不落盘（历史事故：存进去才发现 SyntaxError）
+        if not self._code_compiles(code):
+            try:
+                compile(code, "<save>", "exec")
+            except SyntaxError as e:
+                QMessageBox.critical(
+                    self,
+                    "保存被阻止：语法错误",
+                    f"当前代码第 {e.lineno} 行语法错误：{e.msg}\n\n"
+                    "请在「查看完整代码」里修正，或点「重修订」后再保存。",
+                )
+            return
         name = self._script_name.text().strip()
         if not name:
             name = "my_script.py"
@@ -3559,7 +5384,7 @@ class ScriptGenerator(QWidget):
             counter += 1
 
         try:
-            out_path.write_text(self._generated_code, encoding="utf-8")
+            out_path.write_text(code, encoding="utf-8")
             QMessageBox.information(self, "保存成功", f"已保存到:\n{out_path}")
         except Exception as e:
             QMessageBox.critical(self, "保存失败", str(e))

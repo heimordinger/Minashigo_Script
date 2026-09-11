@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QCursor, QIcon
+from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 from core.path import ICON_PATH
 
@@ -23,19 +23,48 @@ class SpecEditorWindow(QWidget):
         self.setObjectName("SpecEditorWindow")
         self.setAttribute(Qt.WA_DeleteOnClose, False)
         self._force_close = False
+        self.panel = None
+        self._mounted = False
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        from script_spec.editor import SpecEditor
-        self.panel = SpecEditor()
+        self._root = QVBoxLayout(self)
+        self._root.setContentsMargins(0, 0, 0, 0)
+        self._placeholder = QLabel("正在加载脚本IDE…")
+        self._placeholder.setAlignment(Qt.AlignCenter)
+        self._placeholder.setObjectName("MutedLabel")
+        self._root.addWidget(self._placeholder)
+
         parent_qss = (parent.styleSheet() or "").strip() if parent is not None else ""
         if parent_qss:
             self.setStyleSheet(parent_qss)
         else:
             from gui.styles.theme import current_theme_from_config, load_theme_qss
             self.setStyleSheet(load_theme_qss(current_theme_from_config()))
-        root.addWidget(self.panel)
-        self.panel.apply_theme()
+
+        QTimer.singleShot(0, self._mount_panel)
+
+    def _mount_panel(self) -> None:
+        if self._mounted:
+            return
+        self._mounted = True
+        QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        QApplication.processEvents()
+        try:
+            from script_spec.editor import SpecEditor
+
+            panel = SpecEditor()
+            # 窗口已套主题时，面板不必再同步刷一整遍 qss
+            if self._placeholder is not None:
+                self._root.removeWidget(self._placeholder)
+                self._placeholder.deleteLater()
+                self._placeholder = None
+            self.panel = panel
+            self._root.addWidget(panel)
+        except Exception as e:
+            if self._placeholder is not None:
+                self._placeholder.setText(f"加载失败: {e}")
+            print(f"[SpecEditorWindow] 面板加载失败: {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def force_close(self):
         self._force_close = True

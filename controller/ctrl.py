@@ -528,6 +528,12 @@ class Controller(QObject):
 
         self._tasks[name]["script"] = task_name
 
+        # 同步最新账号字段（含 _target），避免 TaskController 持旧引用
+        try:
+            self._task_ctrls[name].account = account
+        except Exception:
+            pass
+
         self.emit_task_state(
             name,
             status=TaskStatus.RUNNING,

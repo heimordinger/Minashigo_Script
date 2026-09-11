@@ -63,6 +63,104 @@ QProgressBar#ScriptGenProgress::chunk {
     border-radius: 3px;
 }
 
+/* Agent 顶栏 */
+QFrame#AgentRunStrip {
+    background-color: #ffffff;
+    border: 1px solid #ddd8ce;
+    border-radius: 10px;
+}
+
+QLabel#AgentRunPhase {
+    color: #2a2824;
+    background: transparent;
+}
+
+QLabel#AgentRunDot {
+    color: #9a958c;
+    background: transparent;
+    font-size: 11px;
+}
+
+QLabel#AgentRunDot[busy="true"] {
+    color: #3b6fd8;
+}
+
+QLabel#AgentRunDot[success="true"] {
+    color: #16a34a;
+}
+
+QLabel#GenResultBanner {
+    background-color: #e8f5e9;
+    color: #166534;
+    border: 1px solid #86efac;
+    border-radius: 8px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+QLabel#GenResultBanner[busy="true"] {
+    background-color: #eff6ff;
+    color: #1e40af;
+    border: 1px solid #93c5fd;
+}
+
+QLabel#GenResultBanner[warn="true"] {
+    background-color: #fff7ed;
+    color: #9a3412;
+    border: 1px solid #fdba74;
+}
+
+QPushButton#PrimaryButton[ready="true"] {
+    background-color: #16a34a;
+    border-color: #15803d;
+    color: #ffffff;
+    font-weight: 600;
+}
+
+QPushButton#PrimaryButton[ready="true"]:hover {
+    background-color: #15803d;
+}
+
+QTextEdit#AgentLiveCode {
+    background-color: #1e1e1e;
+    border: 1px solid #ddd8ce;
+    border-radius: 8px;
+    color: #d4d4d4;
+    padding: 8px;
+    selection-background-color: #264f78;
+}
+
+QLabel#TrialStageChip {
+    background-color: #ebe8e1;
+    color: #6b6560;
+    border: 1px solid #ddd8ce;
+    border-radius: 11px;
+    padding: 0 10px;
+    font-size: 11px;
+}
+
+QLabel#TrialStageChip[stage="active"] {
+    background-color: #e8f0fe;
+    color: #1d4ed8;
+    border-color: #3b6fd8;
+}
+
+QLabel#TrialStageChip[stage="done"] {
+    background-color: #e8f5e9;
+    color: #2e7d32;
+    border-color: #4caf50;
+}
+
+QLabel#TrialFramePreview {
+    background-color: #faf8f4;
+    border: 1px dashed #ddd8ce;
+    border-radius: 8px;
+    color: #9a958c;
+    font-size: 12px;
+    padding: 8px;
+}
+
 QTextEdit#ScriptGenFeedback {
     background-color: #ffffff;
     border: 1px solid #ddd8ce;
@@ -74,3 +172,34 @@ QTextEdit#ScriptGenFeedback[stale="true"] {
     border: 1px solid #e0c48a;
     color: #6b5420;
 }
+
+
+/* ── 试运行 Live HUD ── */
+QFrame#TrialHudCard {
+    background-color: #ffffff;
+    border: 1px solid #ddd8ce;
+    border-radius: 10px;
+}
+QLabel#TrialHudDot {
+    background-color: #cfc9bc;
+    border-radius: 5px;
+    min-width: 10px; max-width: 10px;
+    min-height: 10px; max-height: 10px;
+}
+QLabel#TrialHudDot[state="running"] { background-color: #3b6fd8; }
+QLabel#TrialHudDot[state="running"][pulse="1"] { background-color: #9ec1ff; }
+QLabel#TrialHudDot[state="ok"]  { background-color: #2e7d32; }
+QLabel#TrialHudDot[state="warn"] { background-color: #b8860b; }
+QLabel#TrialHudDot[state="err"] { background-color: #c0392b; }
+QLabel#TrialHudStateText { color: #2a2824; font-weight: bold; font-size: 12px; background: transparent; }
+QLabel#TrialHudAccount   { color: #2a2824; font-weight: bold; font-size: 12px; background: transparent; }
+QLabel#TrialHudStateBadge { color: #1d4ed8; background: transparent; font-size: 12px; font-family: "Consolas", "Microsoft YaHei UI"; }
+QLabel#TrialHudAction    { color: #6b6560; background: transparent; font-size: 12px; }
+QLabel#TrialHudTimer     { color: #6b6560; background: transparent; font-size: 12px; font-family: "Consolas"; }
+QLabel#TrialHudMuted     { color: #b0aaa0; background: transparent; font-size: 12px; }
+QLabel#TrialHudVerdict   { border-radius: 9px; padding: 1px 8px; font-size: 11px; background: transparent; }
+QLabel#TrialHudVerdict[level="pass"]    { color: #2e7d32; border: 1px solid #a5d6a7; }
+QLabel#TrialHudVerdict[level="partial"] { color: #b8860b; border: 1px solid #e0c48a; }
+QLabel#TrialHudVerdict[level="fail"]    { color: #c0392b; border: 1px solid #e3a9a0; }
+QLabel#TrialHudVerdict[reliability="risk"] { background-color: #fdecea; color: #b71c1c; border: 1px solid #e57373; }
+QLabel#TrialHudVerdict[reliability="ok"]   { background-color: #e8f5e9; color: #1b5e20; border: 1px solid #81c784; }

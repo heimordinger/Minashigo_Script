@@ -100,21 +100,48 @@ class TaskController:
             else:
                 # 单类型标注：_target 可覆盖注解
                 manual_target = self.account.get("_target")
-                if manual_target is not None:
+                if manual_target:
                     prefer_window = manual_target == "window"
 
-                instances = (self.controller._window_instances
-                             if prefer_window else self.controller._browser_instances)
-                user_browser = instances.get(name)
+                primary = (
+                    self.controller._window_instances
+                    if prefer_window
+                    else self.controller._browser_instances
+                )
+                fallback = (
+                    self.controller._browser_instances
+                    if prefer_window
+                    else self.controller._window_instances
+                )
+                user_browser = primary.get(name)
+                if user_browser is None:
+                    user_browser = fallback.get(name)
+                    if user_browser is not None:
+                        used = "窗口" if not prefer_window else "浏览器"
+                        want = "窗口" if prefer_window else "浏览器"
+                        self.controller.emit_log(
+                            account=name,
+                            message=(
+                                f"脚本注解偏向{want}，但仅{used}就绪，已自动改用{used}"
+                            ),
+                            level=LogLevel.WARNING,
+                            source="runner",
+                        )
                 if user_browser is None:
                     hint = "请先选择窗口" if prefer_window else "请先启动浏览器"
+                    # 两者都没有时给更完整提示
+                    if (
+                        name not in self.controller._browser_instances
+                        and name not in self.controller._window_instances
+                    ):
+                        hint = "请先启动浏览器或选择窗口"
                     self.controller.emit_log(
                         account=name,
-                        message=f"脚本需要{'窗口' if prefer_window else '浏览器'}目标，{hint}",
+                        message=f"脚本需要运行目标，{hint}",
                         level=LogLevel.ERROR,
                         source="runner",
                     )
-                    raise RuntimeError(f"脚本需要{'窗口' if prefer_window else '浏览器'}目标，{hint}")
+                    raise RuntimeError(f"脚本需要运行目标，{hint}")
 
             run_target = user_browser
 

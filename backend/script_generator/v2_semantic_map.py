@@ -162,6 +162,16 @@ def build_structure_contract_block(
         parts.append("")
         parts.append(format_pattern_block(p))
 
+    try:
+        from backend.script_generator.corpus_promote import format_promoted_rules_block
+
+        promoted = format_promoted_rules_block()
+        if promoted.strip():
+            parts.append("")
+            parts.append(promoted)
+    except Exception:
+        pass
+
     parts.append("")
     parts.append(
         "_Contract source: production `*_v2.py` scripts paired with player explanations._"

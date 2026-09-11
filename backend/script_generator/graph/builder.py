@@ -15,6 +15,7 @@ from backend.script_generator.graph.nodes import (
     route_after_plan,
     route_after_task,
     route_after_validate,
+    select_images_node,
     validate_node,
 )
 from backend.script_generator.graph.state import ScriptGenState
@@ -23,13 +24,14 @@ _compiled = None
 
 
 def build_script_gen_graph():
-    """Compile plan → (generate | task×N → merge) → validate ↔ fix."""
+    """Compile plan → select_images → (generate | task×N → merge) → validate ↔ fix."""
     global _compiled
     if _compiled is not None:
         return _compiled
 
     g = StateGraph(ScriptGenState)
     g.add_node("plan", plan_node)
+    g.add_node("select_images", select_images_node)
     g.add_node("generate", generate_node)
     g.add_node("generate_task", generate_task_node)
     g.add_node("merge", merge_node)
@@ -37,8 +39,9 @@ def build_script_gen_graph():
     g.add_node("fix", fix_node)
 
     g.add_edge(START, "plan")
+    g.add_edge("plan", "select_images")
     g.add_conditional_edges(
-        "plan",
+        "select_images",
         route_after_plan,
         {"single": "generate", "split": "generate_task"},
     )
@@ -86,7 +89,11 @@ async def run_script_gen_graph(
     if free_mode:
         try:
             from backend.script_generator.agent import build_pseudo_plan_from_explanation
-            plan_struct = build_pseudo_plan_from_explanation(explanation_text or "")
+            from backend.script_generator.architecture import apply_architecture_to_plan
+            plan_struct = apply_architecture_to_plan(
+                build_pseudo_plan_from_explanation(explanation_text or "") or {},
+                explanation_text or "",
+            )
         except Exception:
             plan_struct = {}
     initial: ScriptGenState = {
@@ -108,6 +115,9 @@ async def run_script_gen_graph(
         "split_mode": False,
         "task_index": 0,
         "task_codes": [],
+        "image_parts": [],
+        "selected_part_ids": [],
+        "image_selection": {},
         "code": "",
         "errors": [],
         "attempt": 0,
@@ -122,6 +132,30 @@ async def run_script_gen_graph(
 
     code = (result.get("code") or "").strip()
     errors = result.get("errors") or []
+    # 统一校验上下文：让 GUI 归档/试运行用与管线完全相同的 plan/free/source_dir 校验，
+    # 避免「管线判过、UI 判不过」的伪失败。
+    if callable(on_artifact):
+        try:
+            import json as _json
+
+            on_artifact(
+                "gen_ctx",
+                _json.dumps(
+                    {
+                        "family": "graph",
+                        "plan_struct": result.get("plan_struct") or {},
+                        "free_mode": bool(result.get("free_mode")),
+                        "source_dir": source_dir or "",
+                        "split_mode": bool(result.get("split_mode")),
+                        "selected_part_ids": result.get("selected_part_ids") or [],
+                        "attempt": int(result.get("attempt") or 0),
+                        "max_fix_retries": int(max_fix_retries or 0),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        except Exception:
+            pass
     if not code:
         raise RuntimeError("LangGraph 未生成任何代码")
     if errors:

@@ -205,6 +205,8 @@ async def _bootstrap_state(
 
 
 # 非场景标识；多界面常驻 → 可见则说明非过场 loading
+# ⚠ 接地红线：NAV_CHROME 只能填「素材目录/识图目录里确实存在」的图；
+#   目录没有 home/返回图时不要探测、不要臆造 home/home_btn/back_home 之类名字。
 NAV_CHROME = ("home",)
 
 

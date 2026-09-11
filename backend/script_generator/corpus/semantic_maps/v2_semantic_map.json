@@ -27,7 +27,8 @@
       "task_phase 硬映射与 unknown_state 路由两套并行、互不消费。",
       "把 room_ok/jjc_结算 等弹窗循环写进 unknown_state。",
       "helper return「主界面」但 TASK_STATES 无「主界面」键（分支断裂，run_task handler None）。",
-      "run_task 超时/无 handler 时一律 helper_返回主界面（塔/竞技场任务会误导航）。"
+      "run_task 超时/无 handler 时一律 helper_返回主界面（塔/竞技场任务会误导航）。",
+      "任务枢纽 handler 点击其它任务入口图（如 jjc 主界面点 room_logo）；每任务只用本任务图集。"
     ]
   },
   "patterns": [

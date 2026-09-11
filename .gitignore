@@ -1,4 +1,4 @@
-﻿# ========== IDE / Editor ==========
+# ========== IDE / Editor ==========
 .idea/
 .vscode/
 
@@ -76,6 +76,7 @@ click2.html
 game_minashigo.html
 accounts.html
 screenshots/
+diagnostics/
 assets/images/12121.txt
 
 # ========== Personal / local notes ==========

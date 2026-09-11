@@ -27,6 +27,9 @@ class ScriptGenState(TypedDict, total=False):
     split_mode: bool  # True → generate_task × N → merge
     task_index: int
     task_codes: list[str]  # per-task fragments
+    image_parts: list  # closed IMAGE PARTS [{id,path,file,role,label}]
+    selected_part_ids: list[str]  # stage-1 selected Pxx
+    image_selection: dict  # {selections, use_ids, raw_ok}
     code: str
     errors: list[str]
     attempt: int

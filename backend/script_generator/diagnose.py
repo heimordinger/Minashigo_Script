@@ -480,7 +480,11 @@ def format_diagnosis_block(d: TrialDiagnosis) -> str:
         [d.symptom, d.root_cause, d.must_fix, d.do_not, d.vision_reason, d.frame_caption]
     ):
         return ""
-    lines = ["## Trial diagnosis (MUST implement before other tweaks)"]
+    lines = [
+        "## Trial diagnosis (implement if compatible with feedback > intro)",
+        "Authority: feedback > introduction > this diagnosis. "
+        "Items marked 请人工确认/已降级 are soft — do not delete intro steps for them.",
+    ]
     if d.symptom:
         lines.append(f"- Symptom: {d.symptom}")
     if d.root_cause:
@@ -829,8 +833,20 @@ async def diagnose_trial_failure(
     total_in = 0
     total_out = 0
 
+    from backend.script_generator.authority import (
+        authority_banner,
+        filter_diagnosis_for_authority,
+    )
+
+    def _finalize(d: TrialDiagnosis) -> TrialDiagnosis:
+        return filter_diagnosis_for_authority(
+            d,
+            explanation=explanation or "",
+            feedback=fb,
+        )
+
     if not fb and not log and not local.must_fix and not has_frame:
-        return local, 0, 0
+        return _finalize(local), 0, 0
 
     # —— 思考：要不要识停帧 ——
     hint = local_need_stop_frame_vision(
@@ -908,14 +924,19 @@ async def diagnose_trial_failure(
 
     system = (
         "You diagnose Minashigo game automation script trial failures.\n"
+        + authority_banner()
+        + "\n"
         "Output ONLY one JSON object (no markdown), keys:\n"
         "  symptom (string), root_cause (string),\n"
         "  must_fix (array of concrete fix strings in Chinese),\n"
         "  do_not (array of things to avoid changing),\n"
         "  code_hints (array, optional short notes).\n"
         "Focus on FSM control-flow gaps vs user feedback and trial log.\n"
+        "Never invent must_fix that delete introduction middle steps "
+        "(e.g. 2_back → 出击界面) unless feedback explicitly negates them.\n"
         "If a stop-frame caption is provided, treat it as ground truth for "
-        "what was on screen when the user stopped.\n"
+        "what was on screen when the user stopped — but do NOT invent `_img` "
+        "names not in the introduction.\n"
         "Common patterns (prefer local must_fix if already listed):\n"
         "1) room_ok popup visible but handler exits when room_收取奖励 missing — click room_ok loop.\n"
         "2) After click room_收取奖励, room_ok never matched then script navigates away "
@@ -961,6 +982,7 @@ async def diagnose_trial_failure(
         merged.need_vision = local.need_vision
         merged.vision_reason = local.vision_reason
         merged.frame_caption = local.frame_caption or merged.frame_caption
+        merged = _finalize(merged)
         _artifact("diagnosis", json.dumps(merged.to_dict(), ensure_ascii=False, indent=2))
         _artifact(
             "stage",
@@ -969,6 +991,7 @@ async def diagnose_trial_failure(
         )
         return merged, total_in, total_out
     except Exception as e:
+        local = _finalize(local)
         _artifact(
             "stage",
             f"diagnose|done|诊断完成（仅规则）|{format_diagnosis_block(local)}\n\n(LLM 跳过: {e})",

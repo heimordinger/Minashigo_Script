@@ -235,6 +235,10 @@ class ImageMatchingMixin:
             match_select: str = "best",
             match_mode: str = "image",
             pixel_tol: float = 8.0,
+            expect: str = "none",
+            appear_path=None,
+            confirm_timeout: float = 8.0,
+            stable_ms: float = 350.0,
     ):
         import time
         _t0 = time.time()
@@ -280,4 +284,34 @@ class ImageMatchingMixin:
             action="click", x=x, y=y,
         )
 
+        # 方案 F：可选点击后确认（默认 expect=none 不增耗）
+        exp = (expect or "none").strip().lower()
+        mode = "off"
+        try:
+            from backend.script_generator.click_confirm import (
+                confirm_after_click,
+                get_click_confirm_mode,
+            )
+            mode = get_click_confirm_mode(self)
+        except Exception:
+            confirm_after_click = None  # type: ignore
+        if confirm_after_click and exp not in ("", "none", "off"):
+            if mode == "off":
+                # 调用方显式 expect 时仍确认
+                pass
+            ok = await confirm_after_click(
+                self,
+                img_path,
+                expect=exp,
+                appear_path=appear_path,
+                timeout=confirm_timeout,
+                threshold=threshold,
+                stable_ms=stable_ms,
+            )
+            if not ok:
+                print(
+                    f"[Browser.click_image] 确认失败 expect={exp} path={img_path}",
+                    flush=True,
+                )
+                return False
         return True

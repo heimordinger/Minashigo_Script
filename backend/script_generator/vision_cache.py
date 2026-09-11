@@ -15,11 +15,15 @@ INDEX_NAME = "index.json"
 CATALOG_TXT_NAME = "识图目录.txt"
 
 _FILE_IN_TEXT = re.compile(
-    r"(?<![A-Za-z0-9_])([A-Za-z0-9_\u4e00-\u9fff\-]+\.(?:png|jpe?g|webp))",
+    r"(?<![A-Za-z0-9_\u4e00-\u9fff/])"
+    r"((?:[A-Za-z0-9_\u4e00-\u9fff.\-]+/)*"
+    r"[A-Za-z0-9_\u4e00-\u9fff.\-]+\.(?:png|jpe?g|webp))",
     re.I,
 )
 _FILE_LINE_START = re.compile(
-    r"^[\s\-*•]*(?P<name>[A-Za-z0-9_\u4e00-\u9fff\-]+\.(?:png|jpe?g|webp))\s*[：:]\s*(?P<rest>.+)$",
+    r"^[\s\-*•]*(?P<name>(?:[A-Za-z0-9_\u4e00-\u9fff.\-]+/)*"
+    r"[A-Za-z0-9_\u4e00-\u9fff.\-]+\.(?:png|jpe?g|webp))"
+    r"\s*[：:]\s*(?P<rest>.+)$",
     re.I,
 )
 _ID_LINE_RE = re.compile(r"标识图|作为.{0,8}标识|场景标识")
@@ -100,7 +104,8 @@ class VisionCache:
         key = _cache_key(sha, provider, model)
         entries = self._data.setdefault("entries", {})
         entries[key] = {
-            "filename": path.name,
+            "filename": str(path.name),
+            "relpath": str(path).replace("\\", "/"),
             "sha256": sha,
             "provider": provider,
             "model": model,
@@ -131,11 +136,11 @@ class VisionCache:
 
 
 _SECTION_RE = re.compile(
-    r"^#{1,3}\s*(?P<name>[^\s#]+\.(?:png|jpg|jpeg|webp))\s*$",
+    r"^#{1,3}\s*(?P<name>(?:[^\s#/]+/)*[^\s#/]+\.(?:png|jpg|jpeg|webp))\s*$",
     re.I | re.M,
 )
 _BULLET_FILE_RE = re.compile(
-    r"^[\-*•]\s*(?P<name>[^\s:]+\.(?:png|jpg|jpeg|webp))\b",
+    r"^[\-*•]\s*(?P<name>(?:[^\s:/]+/)*[^\s:]+\.(?:png|jpg|jpeg|webp))\b",
     re.I | re.M,
 )
 
@@ -213,12 +218,12 @@ def is_sufficient_explanation_caption(caption: str) -> bool:
 
 
 def extract_explanation_captions(explanation: str) -> dict[str, str]:
-    """从脚本介绍提取 filename.lower() → 说明文本。"""
+    """从脚本介绍提取 filename.lower() → 说明文本（支持子目录相对路径）。"""
     out: dict[str, str] = {}
-    expl = explanation or ""
+    expl = (explanation or "").replace("`", "")
 
     for m in _FILE_LINE_START.finditer(expl):
-        name = m.group("name")
+        name = m.group("name").replace("\\", "/")
         rest = m.group("rest").strip()
         key = name.lower()
         prev = out.get(key, "")
@@ -241,7 +246,7 @@ def extract_explanation_captions(explanation: str) -> dict[str, str]:
         if not useful:
             continue
         for fname in files:
-            key = fname.lower()
+            key = str(fname).replace("\\", "/").lower()
             if key in out and len(out[key]) >= len(snippet):
                 continue
             if is_sufficient_explanation_caption(snippet):
@@ -330,8 +335,15 @@ def write_catalog_txt(
         "",
     ]
     for p in paths:
-        cap = per_file.get(p.name, "")
-        lines.append(format_image_caption(p.name, cap))
+        try:
+            label = "/".join(p.resolve().relative_to(root.resolve()).parts)
+        except Exception:
+            try:
+                label = "/".join(p.relative_to(root).parts)
+            except Exception:
+                label = p.name
+        cap = per_file.get(label, "") or per_file.get(p.name, "")
+        lines.append(format_image_caption(label, cap))
         lines.append("")
     out_path = root / CATALOG_TXT_NAME
     out_path.write_text("\n".join(lines).strip() + "\n", encoding="utf-8")
@@ -373,7 +385,7 @@ def build_vision_user_context(
         )
     hints: list[str] = []
     for fn in chunk_names:
-        cap = expl_captions.get(fn.lower())
+        cap = expl_captions.get(fn.lower()) or expl_captions.get(Path(fn).name.lower())
         if cap:
             hints.append(f"- {fn}: {cap}")
     if hints:

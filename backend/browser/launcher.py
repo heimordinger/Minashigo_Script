@@ -41,6 +41,7 @@ class BrowserLauncher:
             # 防止 Chrome 恢复上次关闭时的标签页，避免出现多余的标签页
             "--disable-session-crashed-bubble",
             "--disable-restore-session-state",
+            # 依赖 --user-data-dir 持久磁盘缓存；勿加 --disable-http-cache
         ]
         if url:
             cmd.append(url)

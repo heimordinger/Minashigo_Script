@@ -24,6 +24,8 @@ _ALLOWED_BROWSER_METHODS = frozenset({
     "script_log",
     "note_state",
     "note_progress",
+    "enable_pseudo_record",
+    "finish_pseudo_record",
 })
 
 _NAV_HINTS = ("未知", "返回", "主界面", "出击界面", "出击")
@@ -302,21 +304,40 @@ def resolve_task_image_paths(
     plan: Any,
     task: dict[str, Any],
     all_paths: list,
+    source_dir: str = "",
 ) -> list[Path]:
     """Images for one task: shared_images ∪ task.images; fallback to all if empty."""
     paths = [Path(p) for p in (all_paths or []) if p]
-    by_name = {p.name: p for p in paths}
+    by_name: dict[str, Path] = {}
+    by_base: dict[str, Path] = {}
+    root = Path(source_dir) if (source_dir or "").strip() else None
+    for p in paths:
+        label = p.name
+        if root and root.is_dir():
+            try:
+                label = "/".join(p.resolve().relative_to(root.resolve()).parts)
+            except Exception:
+                try:
+                    label = "/".join(p.relative_to(root).parts)
+                except Exception:
+                    label = p.name
+        label = label.replace("\\", "/")
+        by_name[label] = p
+        by_name[label.lower()] = p
+        by_base[p.name] = p
+        by_base[p.name.lower()] = p
     plan_n = normalize_plan(plan)
     names = list(plan_n.get("shared_images") or []) + list(task.get("images") or [])
     seen: set[str] = set()
     out: list[Path] = []
     for n in names:
-        n = str(n).strip()
+        n = str(n).strip().replace("\\", "/")
         if not n or n in seen:
             continue
         seen.add(n)
-        if n in by_name:
-            out.append(by_name[n])
+        hit = by_name.get(n) or by_name.get(n.lower()) or by_base.get(n) or by_base.get(n.lower())
+        if hit:
+            out.append(hit)
     return out if out else paths
 
 
@@ -536,8 +557,13 @@ def plan_schema_hint() -> str:
         '  "notes": "optional short Chinese note"\n'
         "}\n"
         "Decision rules:\n"
-        "- If explanation has 2+ independent goals (e.g. 房间奖励 + 竞技场 + 塔), "
-        'use kind=multi_task and fill tasks[] (>=2).\n'
+        "- Choose kind yourself from explanation: single_fsm / multi_task / utility. "
+        "Do not lock into one mode.\n"
+        "- Hint: 2+ independent goals (e.g. 房间奖励 + 竞技场 + 塔) often fit "
+        "kind=multi_task with tasks[] (>=2).\n"
+        "- Hint: one continuous flow / 场景识别再处理 often fits kind=single_fsm "
+        "(while + unknown_state dispatch); numbered 任务流程 may be scene handlers "
+        "in one FSM rather than sequential tasks — use judgment.\n"
         "- If only one FSM / one goal, use kind=single_fsm and leave tasks=[] "
         "(or a single task — runtime will NOT split).\n"
         "- ALWAYS define shared_states first for multi_task: 未知 + navigation returns. "

@@ -51,6 +51,7 @@ class MainWindow(QWidget):
         self._match_debug = None
         self._script_gen = None
         self._script_spec = None
+        self._network_inspector = None
         self._setup_start_tab()
         self.setup_status_bar()
         self.setup_layout()
@@ -100,6 +101,25 @@ class MainWindow(QWidget):
             self.account_manager_tab.accounts_changed.connect(self.start_tab.render)
             self.account_manager_tab.accounts_changed.connect(self._refresh_account_switchers)
 
+        # 空闲时预热重模块，降低首次打开脚本生成/IDE 的卡顿
+        QTimer.singleShot(2500, self._warm_tool_imports)
+
+    def _warm_tool_imports(self):
+        """后台预 import，不建 Qt 控件。"""
+        import threading
+
+        def _run():
+            try:
+                import gui.widgets.ScriptGenerator  # noqa: F401
+            except Exception as e:
+                print(f"[MainWindow] 预热 ScriptGenerator 失败: {e}")
+            try:
+                import script_spec.editor  # noqa: F401
+            except Exception as e:
+                print(f"[MainWindow] 预热 SpecEditor 失败: {e}")
+
+        threading.Thread(target=_run, name="warm-tools", daemon=True).start()
+
     def setup_status_bar(self):
         """底部状态栏"""
         self.status_bar = QStatusBar()
@@ -129,6 +149,13 @@ class MainWindow(QWidget):
         self.script_gen_btn.setFlat(True)
         self.script_gen_btn.clicked.connect(self.open_script_gen)
         self.status_bar.addPermanentWidget(self.script_gen_btn)
+
+        self.network_btn = QPushButton("Network")
+        self.network_btn.setObjectName("GhostButton")
+        self.network_btn.setToolTip("打开网页 Network 检查器 (Ctrl+Shift+N)")
+        self.network_btn.setFlat(True)
+        self.network_btn.clicked.connect(self.open_network_inspector)
+        self.status_bar.addPermanentWidget(self.network_btn)
 
     def setup_layout(self):
         """主窗口布局"""
@@ -414,6 +441,12 @@ class MainWindow(QWidget):
         from script_spec.window import SpecEditorWindow
         self._script_spec = SpecEditorWindow.open(parent=self)
 
+    def open_network_inspector(self):
+        from network_inspector.window import NetworkInspectorWindow
+        self._network_inspector = NetworkInspectorWindow.open(
+            facade=self.facade, parent=self
+        )
+
     def on_theme_changed(self, theme: str):
         self.reload_stylesheet()
         for panel in self.account_panels.values():
@@ -439,6 +472,12 @@ class MainWindow(QWidget):
                 self._match_debug.setStyleSheet(load_theme_qss(theme))
             except Exception:
                 pass
+        if self._network_inspector is not None:
+            try:
+                from gui.styles.theme import load_theme_qss
+                self._network_inspector.setStyleSheet(load_theme_qss(theme))
+            except Exception:
+                pass
 
     def setup_shortcuts(self):
         shortcut_f5 = QShortcut(QKeySequence("F5"), self)
@@ -450,6 +489,9 @@ class MainWindow(QWidget):
 
         shortcut_gen = QShortcut(QKeySequence("Ctrl+Shift+G"), self)
         shortcut_gen.activated.connect(self.open_script_gen)
+
+        shortcut_net = QShortcut(QKeySequence("Ctrl+Shift+N"), self)
+        shortcut_net.activated.connect(self.open_network_inspector)
 
     def reload_stylesheet(self):
         print("正在重载样式表...")
@@ -553,6 +595,13 @@ class MainWindow(QWidget):
                 inst.force_close()
         except Exception:
             pass
+        try:
+            from network_inspector.window import NetworkInspectorWindow
+            inst = NetworkInspectorWindow._instance
+            if inst is not None:
+                inst.force_close()
+        except Exception:
+            pass
         app = QApplication.instance()
         if app is None:
             return
@@ -562,8 +611,13 @@ class MainWindow(QWidget):
             try:
                 if not w.isWindow():
                     continue
-                if w.objectName() in ("ScriptGenWindow", "SpecEditorWindow", "MatchDebugWindow"):
-                    # 已 force_close
+                if w.objectName() in (
+                    "ScriptGenWindow",
+                    "SpecEditorWindow",
+                    "MatchDebugWindow",
+                    "NetworkInspectorWindow",
+                ):
+                    # 已 force_close / 随主窗关闭
                     continue
                 w.close()
             except Exception:
@@ -571,6 +625,7 @@ class MainWindow(QWidget):
         self._script_gen = None
         self._script_spec = None
         self._match_debug = None
+        self._network_inspector = None
 
     def _shutdown_and_accept(self, event):
         try:

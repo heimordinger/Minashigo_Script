@@ -71,6 +71,10 @@ CFG = Config()
 
 # 见过 start 弹窗后，wait 改为全量探针
 _ui_seen_start: bool = False
+# 已成功点过 start2：除非 start1 仍在，否则不再进 start_dialog
+_start_clicked: bool = False
+# menu 附近已点过：冷却期内不再反复进入 tap_screen（避免同屏空转）
+_menu_tap_cooldown_until: float = 0.0
 
 
 def _img(name: str) -> Path:
@@ -300,11 +304,21 @@ async def _has_start_dialog(browser: UserBrowser) -> bool:
 async def wait_game_load_state(browser: UserBrowser) -> StateName:
     """等待游戏界面。
 
-    加载前期只盯 start2/start1 + rank；见过 start 后全量探测。
+    加载前期 / 黑屏：只盯 start2 + rank。
+    见过 start 且非黑屏：全量探测；menu 有冷却，避免连点空转。
     """
     global _ui_seen_start
 
-    if not _ui_seen_start:
+    # 黑屏或未出 UI：轻量探测
+    frame = getattr(getattr(browser, "_browser", None), "_frame", None)
+    is_black = False
+    if frame is not None:
+        try:
+            is_black, _ = analyze_frame_blackness(frame)
+        except Exception:
+            is_black = False
+
+    if (not _ui_seen_start) or is_black:
         rank, start2 = await asyncio.gather(
             browser.match_image(
                 _img("rank"), threshold=CFG.nav_threshold, quiet=True
@@ -316,16 +330,17 @@ async def wait_game_load_state(browser: UserBrowser) -> StateName:
         if rank:
             browser.script_log("  检测到 rank → 登录完成")
             return "__exit__"
-        if start2:
+        if start2 and not _start_clicked:
             _ui_seen_start = True
             browser.script_log("  检测到 start_dialog")
             return "start_dialog"
         return None
 
-    # 全量：rank > start > menu > skip/ok/close > 石头
-    rank, start2, menu, skip, ok, close1, close2 = await asyncio.gather(
+    # 全量：rank > start > skip/ok/close > menu > 石头
+    rank, start2, start1, menu, skip, ok, close1, close2 = await asyncio.gather(
         browser.match_image(_img("rank"), threshold=CFG.nav_threshold, quiet=True),
         browser.match_image(_img("start2"), threshold=CFG.threshold, quiet=True),
+        browser.match_image(_img("start1"), threshold=CFG.nav_threshold, quiet=True),
         browser.match_image(_img("menu"), threshold=CFG.nav_threshold, quiet=True),
         browser.match_image(_img("skip"), threshold=CFG.threshold, quiet=True),
         browser.match_image(_img("ok"), threshold=CFG.threshold, quiet=True),
@@ -336,24 +351,45 @@ async def wait_game_load_state(browser: UserBrowser) -> StateName:
     if rank:
         browser.script_log("  检测到 rank → 登录完成")
         return "__exit__"
-    if start2:
+    # 已点过 start 后：奖励按钮优先；仅当 start1 仍在才回 start_dialog
+    if _start_clicked:
+        if skip:
+            browser.script_log("  检测到 skip")
+            return "skip_anim"
+        if ok:
+            browser.script_log("  检测到 ok")
+            return "close_popup"
+        if close1:
+            browser.script_log("  检测到 close1")
+            return "close_btn"
+        if close2:
+            browser.script_log("  检测到 close2")
+            return "close_btn2"
+        if start1 and start2:
+            browser.script_log("  start1 仍在 → start_dialog")
+            return "start_dialog"
+    elif start2:
         browser.script_log("  检测到 start_dialog")
         return "start_dialog"
+    else:
+        if skip:
+            browser.script_log("  检测到 skip")
+            return "skip_anim"
+        if ok:
+            browser.script_log("  检测到 ok")
+            return "close_popup"
+        if close1:
+            browser.script_log("  检测到 close1")
+            return "close_btn"
+        if close2:
+            browser.script_log("  检测到 close2")
+            return "close_btn2"
     if menu:
+        now = time.time()
+        if now < _menu_tap_cooldown_until:
+            return None
         browser.script_log("  检测到 menu → tap_screen")
         return "tap_screen"
-    if skip:
-        browser.script_log("  检测到 skip")
-        return "skip_anim"
-    if ok:
-        browser.script_log("  检测到 ok")
-        return "close_popup"
-    if close1:
-        browser.script_log("  检测到 close1")
-        return "close_btn"
-    if close2:
-        browser.script_log("  检测到 close2")
-        return "close_btn2"
 
     if await browser.match_image(_img("石头"), threshold=CFG.threshold, quiet=True):
         browser.script_log("  检测到 石头")
@@ -362,11 +398,13 @@ async def wait_game_load_state(browser: UserBrowser) -> StateName:
 
 
 async def start_dialog_state(browser: UserBrowser) -> StateName:
+    global _start_clicked
     if not await _has_start_dialog(browser):
         return "wait_game_load"
 
     if await browser.click_image(_img("start2"), threshold=CFG.threshold):
         browser.script_log("  点击 start2")
+        _start_clicked = True
         for _ in range(6):
             await browser.b_sleep(0.22, 0.38)
             if not await browser.match_image(
@@ -381,6 +419,7 @@ async def start_dialog_state(browser: UserBrowser) -> StateName:
 
 
 async def tap_screen_state(browser: UserBrowser) -> StateName:
+    global _menu_tap_cooldown_until
     taps = 0
     for i in range(CFG.menu_taps):
         if await browser.click_image(
@@ -393,8 +432,12 @@ async def tap_screen_state(browser: UserBrowser) -> StateName:
             await browser.b_sleep(0.15, 0.3)
         else:
             break
+    # 冷却：menu 常驻时避免 62→112s 那种反复进 tap_screen
+    _menu_tap_cooldown_until = time.time() + 8.0
     if taps == 0:
         browser.script_log("  menu 已消失，回到等待")
+    else:
+        browser.script_log("  menu 点击完成，冷却后再探测")
     return "wait_game_load"
 
 
@@ -470,13 +513,15 @@ STATE_TIMEOUT = {
 # ═══════════════════════════════════════════════════════════════
 
 async def do_work(browser: UserBrowser):
-    global _ui_seen_start
+    global _ui_seen_start, _menu_tap_cooldown_until, _start_clicked
 
     if CFG.use_polling_cache:
         browser.use_polling_temp_cache = True
 
     status = "ok"
     _ui_seen_start = False
+    _start_clicked = False
+    _menu_tap_cooldown_until = 0.0
     if DEBUG_PSEUDO_RECORD or os.getenv("MINASHIGO_PSEUDO_RECORD"):
         browser.enable_pseudo_record(
             script_name="孤儿登录",
@@ -617,11 +662,18 @@ async def do_work(browser: UserBrowser):
                     await _maybe_wake_game(browser)
                     last_wake = now
                     last_guard = 0.0
-                sleep = (
-                    CFG.wait_poll_sleep_active
-                    if _ui_seen_start
-                    else CFG.wait_poll_sleep
-                )
+                sleep = CFG.wait_poll_sleep
+                if _ui_seen_start:
+                    # 黑屏仍用长轮询，避免二次加载期高频全量匹配
+                    frame = getattr(browser._browser, "_frame", None)
+                    still_black = False
+                    if frame is not None:
+                        try:
+                            still_black, _ = analyze_frame_blackness(frame)
+                        except Exception:
+                            still_black = False
+                    if not still_black:
+                        sleep = CFG.wait_poll_sleep_active
                 await browser.b_sleep(*sleep)
             elif next_state is None and state_name in (
                 "start_dialog",

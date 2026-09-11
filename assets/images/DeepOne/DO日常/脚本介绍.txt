@@ -125,9 +125,10 @@ ta_jindutiao.png：塔进度条（本脚本未直接使用）
   - 点击gift_claim.png
   - 点击gift_ok.png直到没有时任务完成
 （6）任务奖励领取
-  - 匹配task_logo.png判断是否在任务页面，匹配成功则跳到第三步
+  - 尝试点击 task.png，成功则跳到第四步（领取）
+  - 匹配 task_logo.png 判断是否在任务页面，匹配成功则跳到第四步（领取）
   - @返回主界面，点击 task.png 直到没有  （引用：@返回主界面）
-  - 循环：见 task_end（颜色校验）则结束；否则点 task_claim → 点 task_ok 直到消失，再继续直到 end
+  - 匹配 task_end.png（颜色校验）：成功则本任务完成；失败则依次点 task_claim.png → task_ok.png，循环直至 end
   - 入口 do_work：房间领体力 → 竞技场 → 爬塔 → 每日关卡 → 领取礼物 → 任务奖励领取；异常/正常结束均保存停帧。
 
 特殊规则：

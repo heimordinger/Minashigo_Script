@@ -51,7 +51,7 @@ TA_AUTO_USE_COLOR = True
 TA_AUTO_BANNER_THRESHOLD = 0.8
 TA_AUTO_BANNER_RECENT_SEC = 10.0
 # 最终关：横幅消失且奖励框持续稳定后才点 OK（中间关 auto 约 4s 内会自己关）
-TA_FINAL_REWARD_QUIET_SEC = 6.0
+TA_FINAL_REWARD_QUIET_SEC = 5.0
 TA_FINAL_REWARD_HOLD_SEC = 3.0
 # 每日关卡：开扫荡窗 / 点确认 / 点 OK
 MEIRI_SWEEP_TIMEOUT = 90.0
@@ -71,6 +71,23 @@ TA_SORTIE_CONFIRM_SLEEP = (0.7, 1.1)
 # 进塔选关 / 等 logo：短轮询代替固定 2s×3
 TA_ENTER_POLL = (0.55, 0.85)
 TA_ENTER_TIMEOUT = 8.0
+# 出击页右下角お知らせ（iOS 商店广告等）：挡 ta/meiri
+NOTICE_TITLE_THRESHOLD = 0.8
+NOTICE_BANNER_THRESHOLD = 0.8
+NOTICE_CLOSE_THRESHOLD = 0.8
+# 相对 notice_title 中心点到右上角 X（结束帧标定）
+NOTICE_TITLE_CLOSE_OFFSET = (146, 0)
+# 相对 notice_banner 中心点到 X
+NOTICE_BANNER_CLOSE_OFFSET = (141, -75)
+# 难度卡片：标题条 ta_nandu 未必可进关，需点卡片主体；COMPLETE 仍可进
+TA_TIAOZHAN_THRESHOLD = 0.75
+TA_CHUJI_Y_FRAC_MIN = 0.40  # 选关页顶栏易误匹配 ta_chuji
+TOWER_CARD_CLICK_OFFSETS = ((0, 0), (0, 100), (0, 140), (-60, 120), (60, 120))
+TOWER_ENTER_STAGE_TIMEOUT = 12.0
+# 确认类按钮：点后 settle，按「消失 / 下一屏」判定，避免点了没反应空转
+CONFIRM_CLICK_ATTEMPTS = 5
+CONFIRM_SETTLE_DELAY = (0.45, 0.75)
+CONFIRM_RETRY_POLL = (0.35, 0.55)
 MAX_ARENA_ROUNDS = 20
 MAX_TOWER_ROUNDS = 20
 # 单步最长停留；超时则回退上一步
@@ -100,6 +117,71 @@ class DailyStepError(RuntimeError):
 
 def _img(name: str) -> Path:
     return SCRIPT_PATH / (name if name.endswith(".png") else f"{name}.png")
+
+
+async def _click_confirm_until(
+    browser: UserBrowser,
+    stem: str,
+    *,
+    threshold: float = THRESHOLD,
+    max_attempts: int = CONFIRM_CLICK_ATTEMPTS,
+    settle: tuple[float, float] = CONFIRM_SETTLE_DELAY,
+    poll: tuple[float, float] = CONFIRM_RETRY_POLL,
+    success_check: Callable[[UserBrowser], Awaitable[bool]] | None = None,
+    label: str = "",
+    optional: bool = True,
+) -> bool:
+    """点确认类按钮直到消失，或 success_check 成立。
+
+    - optional=True：一开始就没有该键 → True（可选确认框）
+    - optional=False：必须见到并点掉 → 未见则 False
+    - 多次点击后键仍在且未达下一屏 → False
+    """
+    name = label or stem
+    saw = False
+    for attempt in range(1, max_attempts + 1):
+        await browser.update_frame()
+        if success_check is not None and await success_check(browser):
+            browser.script_log(f"{name}：已达成功条件")
+            return True
+
+        visible = await browser.match_image(
+            _img(stem), threshold=threshold, quiet=True
+        )
+        if not visible:
+            if saw:
+                browser.script_log(f"{name}：按钮已消失")
+                return True
+            if success_check is not None:
+                await browser.b_sleep(*poll)
+                await browser.update_frame()
+                if await success_check(browser):
+                    browser.script_log(f"{name}：已达成功条件")
+                    return True
+            if optional:
+                return True
+            browser.script_log(f"{name}：未见确认键")
+            return False
+
+        saw = True
+        if await browser.click_image(_img(stem), threshold=threshold):
+            browser.script_log(f"点击{name}（{attempt}/{max_attempts}）")
+        else:
+            browser.script_log(
+                f"{name}：匹配到但点击失败（{attempt}/{max_attempts}）"
+            )
+        await browser.b_sleep(*settle)
+
+    await browser.update_frame()
+    if success_check is not None and await success_check(browser):
+        browser.script_log(f"{name}：重试后已达成功条件")
+        return True
+    still = await browser.match_image(_img(stem), threshold=threshold, quiet=True)
+    if not still:
+        browser.script_log(f"{name}：重试后按钮已消失")
+        return True
+    browser.script_log(f"{name}：多次点击仍无反应")
+    return False
 
 
 def _unpack_step(item: StepItem, default_timeout: float) -> tuple[str, StepFn, float]:
@@ -1173,26 +1255,359 @@ async def _tower_go_sortie(browser: UserBrowser) -> bool:
     return await 返回出击界面(browser)
 
 
+async def _match_tower_chuji(browser: UserBrowser, *, threshold: float = THRESHOLD) -> bool:
+    """塔内「出撃」按钮；排除选关页顶栏误匹配。"""
+    m = await browser.match_image(_img("ta_chuji"), threshold=threshold, quiet=True)
+    if not m or m.x is None:
+        return False
+    if browser._frame is None:
+        await browser.update_frame()
+    fh = browser._frame.shape[0]
+    return m.y >= fh * TA_CHUJI_Y_FRAC_MIN
+
+
+async def _click_tower_chuji(browser: UserBrowser) -> bool:
+    m = await browser.match_image(_img("ta_chuji"), threshold=THRESHOLD, quiet=True)
+    if not m or m.x is None:
+        return False
+    if browser._frame is None:
+        await browser.update_frame()
+    fh = browser._frame.shape[0]
+    if m.y < fh * TA_CHUJI_Y_FRAC_MIN:
+        return False
+    await browser.click(m.x, m.y)
+    return True
+
+
+async def _wait_tower_chuji(browser: UserBrowser, *, timeout: float) -> bool:
+    step_start = time.monotonic()
+    while time.monotonic() - step_start < timeout:
+        await browser.update_frame()
+        if await _match_tower_chuji(browser):
+            browser.script_log("已进入塔内关卡")
+            return True
+        await browser.b_sleep(0.35, 0.5)
+    return False
+
+
+async def _click_tower_difficulty_card(
+    browser: UserBrowser, offset: tuple[int, int] = (0, 0)
+) -> bool:
+    m = await browser.match_image(_img("ta_nandu"), threshold=THRESHOLD, quiet=True)
+    if not m or m.x is None:
+        return False
+    x = m.x + offset[0]
+    y = m.y + offset[1]
+    browser.script_log(f"点难度卡片 offset=({offset[0]},{offset[1]}) → ({x},{y})")
+    await browser.click(x, y)
+    return True
+
+
+async def _enter_tower_stage_from_card(browser: UserBrowser) -> bool:
+    """从难度卡片进入塔内（含 COMPLETE 仍可进）。"""
+    if await _match_tower_chuji(browser):
+        browser.script_log("已在塔内关卡")
+        return True
+
+    for attempt, offset in enumerate(TOWER_CARD_CLICK_OFFSETS, 1):
+        await browser.update_frame()
+        if await _match_tower_chuji(browser):
+            return True
+        if not await _click_tower_difficulty_card(browser, offset):
+            if offset == (0, 0):
+                browser.script_log("未找到 ta_nandu，无法点卡片")
+                return False
+            continue
+        browser.script_log(f"尝试进入塔内 ({attempt}/{len(TOWER_CARD_CLICK_OFFSETS)})")
+        await browser.b_sleep(0.45, 0.7)
+
+        # 挑战确认：点到消失或已见 ta_chuji，避免「点了没反应」卡死
+        if await browser.match_image(
+            _img("ta_tiaozhan"), threshold=TA_TIAOZHAN_THRESHOLD, quiet=True
+        ):
+            ok = await _click_confirm_until(
+                browser,
+                "ta_tiaozhan",
+                threshold=TA_TIAOZHAN_THRESHOLD,
+                success_check=_match_tower_chuji,
+                label="挑战确认",
+                optional=False,
+            )
+            if not ok:
+                browser.script_log("挑战确认未生效，换卡片偏移重试")
+                continue
+
+        if await _wait_tower_chuji(browser, timeout=4.0):
+            return True
+
+    return await _wait_tower_chuji(browser, timeout=TOWER_ENTER_STAGE_TIMEOUT)
+
+
+async def _already_in_tower_ui(browser: UserBrowser) -> bool:
+    """已在塔相关界面（选塔 / 选难度 / 关内），不必再点出击页的 ta.png。"""
+    if await browser.match_image(_img("ta_logo"), threshold=NAV_THRESHOLD, quiet=True):
+        return True
+    if await _match_tower_chuji(browser):
+        return True
+    hits = await asyncio.gather(
+        browser.match_image(_img("ta_nandu"), threshold=THRESHOLD, quiet=True),
+        browser.match_image(_img("ta_biancheng"), threshold=THRESHOLD, quiet=True),
+        browser.match_image(_img("ta_cishu"), threshold=TA_CISHU_THRESHOLD, quiet=True),
+        browser.match_image(
+            _img("ta_tiaozhan"), threshold=TA_TIAOZHAN_THRESHOLD, quiet=True
+        ),
+    )
+    return any(hits)
+
+
+async def _dismiss_tower_reward_if_any(browser: UserBrowser) -> bool:
+    """点掉残留最终奖励框，避免挡住选塔识别。"""
+    await browser.update_frame()
+    if not await _tower_reward_popup_visible(browser):
+        return False
+
+    async def _reward_gone(b: UserBrowser) -> bool:
+        return not await _tower_reward_popup_visible(b)
+
+    return await _click_confirm_until(
+        browser,
+        "ta_ok",
+        threshold=THRESHOLD,
+        success_check=_reward_gone,
+        label="塔奖励 OK",
+        optional=True,
+    )
+
+
+async def _cp_banner_dom_visible(browser: UserBrowser) -> bool:
+    """CP 横幅 DOM 是否仍可见（用于决定是否走识图兜底）。"""
+    page = browser._browser.page
+    heading_needles = (
+        "iOS版ストアアプリがリリース",
+        "このお知らせを次回から表示しない",
+    )
+    close_selectors = (
+        'button[aria-label="close"][data-gtm-action-detail="switch_cp-banner-close"]',
+        '[data-gtm-action-detail="switch_cp-banner-close"]',
+    )
+    for frame in page.frames:
+        try:
+            for needle in heading_needles:
+                loc = frame.get_by_text(needle, exact=False).first
+                if await loc.count() > 0:
+                    try:
+                        if await loc.is_visible():
+                            return True
+                    except Exception:
+                        return True
+            for sel in close_selectors:
+                loc = frame.locator(sel).first
+                if await loc.count() > 0:
+                    try:
+                        if await loc.is_visible():
+                            return True
+                    except Exception:
+                        return True
+        except Exception:
+            continue
+    return False
+
+
+async def _dismiss_cp_banner_dom(browser: UserBrowser) -> bool:
+    """DMM 出击页 CP 横幅（网页 DOM，非 canvas）。
+
+    优先用稳定属性：aria-label / data-gtm-action-detail；不依赖 CSS module 哈希类名。
+    """
+    page = browser._browser.page
+    close_selectors = (
+        'button[aria-label="close"][data-gtm-action-detail="switch_cp-banner-close"]',
+        '[data-gtm-action-detail="switch_cp-banner-close"]',
+        'button[aria-label="close"]',
+    )
+    opt_selectors = (
+        '[data-gtm-action-detail="switch_cp-banner-optout"]',
+        'input[data-gtm-action-detail="switch_cp-banner-optout"]',
+    )
+    heading_needles = (
+        "iOS版ストアアプリがリリース",
+        "このお知らせを次回から表示しない",
+    )
+
+    for frame in page.frames:
+        try:
+            banner_visible = False
+            for needle in heading_needles:
+                loc = frame.get_by_text(needle, exact=False).first
+                if await loc.count() > 0:
+                    try:
+                        if await loc.is_visible():
+                            banner_visible = True
+                            break
+                    except Exception:
+                        banner_visible = True
+                        break
+            if not banner_visible:
+                # 无标题时也允许仅靠 close 按钮命中（部分语言/裁剪）
+                has_close = False
+                for sel in close_selectors:
+                    loc = frame.locator(sel).first
+                    if await loc.count() > 0:
+                        try:
+                            if await loc.is_visible():
+                                has_close = True
+                                break
+                        except Exception:
+                            has_close = True
+                            break
+                if not has_close:
+                    continue
+
+            for sel in opt_selectors:
+                opt = frame.locator(sel).first
+                if await opt.count() <= 0:
+                    continue
+                try:
+                    if not await opt.is_checked():
+                        await opt.check(force=True, timeout=2_000)
+                        browser.script_log("勾选 CP 横幅「下次不再显示」")
+                except Exception:
+                    pass
+                break
+
+            for sel in close_selectors:
+                btn = frame.locator(sel).first
+                if await btn.count() <= 0:
+                    continue
+                try:
+                    if not await btn.is_visible():
+                        continue
+                except Exception:
+                    pass
+                await btn.click(force=True, timeout=3_000)
+                browser.script_log(f"关闭 CP 横幅 (DOM: {sel})")
+                return True
+        except Exception as e:
+            browser.script_log(f"CP 横幅 DOM 关闭失败: {type(e).__name__}: {e}")
+            continue
+    return False
+
+
+async def _dismiss_sortie_notices(browser: UserBrowser) -> bool:
+    """关掉出击页右下角お知らせ/商店广告（会挡住 ta / meiri）。
+
+    策略：DOM CP 横幅 → notice_title+相对 X（须 title 命中；banner 单独易假阳性）。
+    已在塔/每日界面时跳过，避免误点。
+    """
+    await browser.update_frame()
+    if await _already_in_tower_ui(browser):
+        return False
+    if await browser.match_image(_img("meiri_logo"), threshold=NAV_THRESHOLD, quiet=True):
+        return False
+
+    dismissed = False
+    for _ in range(3):
+        closed = False
+        if await _dismiss_cp_banner_dom(browser):
+            closed = True
+
+        title_visible = False
+        if _img("notice_title").is_file():
+            tm = await browser.match_image(
+                _img("notice_title"), threshold=NOTICE_TITLE_THRESHOLD, quiet=True
+            )
+            title_visible = bool(tm and tm.match_success)
+
+        dom_still = await _cp_banner_dom_visible(browser)
+
+        # 识图兜底：须 DOM 仍在或 title 命中，避免塔界面 GAMES 字样误触
+        if not closed and (dom_still or title_visible) and _img("notice_title").is_file():
+            if title_visible:
+                if await browser.click_image(
+                    _img("notice_title"),
+                    threshold=NOTICE_TITLE_THRESHOLD,
+                    pianyi=NOTICE_TITLE_CLOSE_OFFSET,
+                ):
+                    browser.script_log(
+                        f"关闭出击页お知らせ (title+{NOTICE_TITLE_CLOSE_OFFSET})"
+                    )
+                    closed = True
+        # banner 偏移仅作 title 未命中时的次选，且 DOM 仍可见
+        if (
+            not closed
+            and dom_still
+            and not title_visible
+            and _img("notice_banner").is_file()
+        ):
+            bm = await browser.match_image(
+                _img("notice_banner"), threshold=NOTICE_BANNER_THRESHOLD, quiet=True
+            )
+            if bm and bm.match_success:
+                if await browser.click_image(
+                    _img("notice_banner"),
+                    threshold=NOTICE_BANNER_THRESHOLD,
+                    pianyi=NOTICE_BANNER_CLOSE_OFFSET,
+                ):
+                    browser.script_log(
+                        f"关闭出击页お知らせ (banner+{NOTICE_BANNER_CLOSE_OFFSET})"
+                    )
+                    closed = True
+        if not closed and _img("notice_close").is_file() and (dom_still or title_visible):
+            if await browser.click_image(
+                _img("notice_close"), threshold=NOTICE_CLOSE_THRESHOLD
+            ):
+                browser.script_log("关闭出击页お知らせ (notice_close)")
+                closed = True
+        if not closed and _img("shop_close").is_file():
+            if await browser.click_image(_img("shop_close"), threshold=0.85):
+                browser.script_log("关闭出击页弹窗 (shop_close)")
+                closed = True
+
+        if not closed:
+            break
+        dismissed = True
+        await browser.b_sleep(0.6, 1.0)
+        await browser.update_frame()
+    return dismissed
+
+
 async def _tower_enter_select(browser: UserBrowser) -> bool:
     await browser.update_frame()
-    if await browser.match_image(_img("ta_logo"), threshold=NAV_THRESHOLD, quiet=True):
-        browser.script_log("已在塔界面")
+    await _dismiss_tower_reward_if_any(browser)
+    if not await _already_in_tower_ui(browser):
+        await _dismiss_sortie_notices(browser)
+    await browser.update_frame()
+    if await _already_in_tower_ui(browser):
+        browser.script_log("已在塔界面/塔内")
         return True
+    # 可能仍在出击界面：点 ta 进入
     if not await browser.click_image(_img("ta"), threshold=THRESHOLD):
-        browser.script_log("未找到 ta.png")
-        return False
+        browser.script_log("未见 ta.png，尝试关广告后重试")
+        await _dismiss_sortie_notices(browser)
+        await browser.update_frame()
+        clicked = await browser.click_image(_img("ta"), threshold=THRESHOLD)
+        if not clicked:
+            browser.script_log("未见 ta.png，先回出击界面再进塔")
+            if not await 返回出击界面(browser):
+                browser.script_log("回出击界面失败，无法进塔")
+                return False
+            await _dismiss_sortie_notices(browser)
+            await browser.update_frame()
+            if await _already_in_tower_ui(browser):
+                browser.script_log("回出击后已在塔界面")
+                return True
+            if not await browser.click_image(_img("ta"), threshold=THRESHOLD):
+                browser.script_log("未找到 ta.png")
+                return False
     browser.script_log("点击 ta，等待塔界面")
-    # 短轮询，避免固定 2s×3 空等
-    if await _wait_img(
-        browser,
-        "ta_logo",
-        timeout=TA_ENTER_TIMEOUT,
-        threshold=NAV_THRESHOLD,
-        extend_on_transition=False,
-    ):
-        browser.script_log("已进入塔界面")
-        return True
-    browser.script_log(f"{TA_ENTER_TIMEOUT:.0f}s 内未见 ta_logo")
+    # 短轮询：logo 或关内标识均可
+    timer = StepTimer("enter_tower", TA_ENTER_TIMEOUT)
+    while not timer.expired():
+        await browser.update_frame()
+        if await _already_in_tower_ui(browser):
+            browser.script_log("已进入塔界面")
+            return True
+        await browser.b_sleep(*TA_ENTER_POLL)
+    browser.script_log(f"{TA_ENTER_TIMEOUT:.0f}s 内未见塔界面标识")
     return False
 
 
@@ -1201,6 +1616,9 @@ async def _switch_tower_difficulty(browser: UserBrowser) -> bool:
     if await _tower_times_exhausted(browser):
         browser.script_log("调整难度前次数已耗尽，跳过切难度")
         return False
+    if await _match_tower_chuji(browser):
+        browser.script_log("已在塔内，跳过切难度")
+        return True
 
     browser.script_log("开始调整塔难度…")
     for i in range(12):
@@ -1208,7 +1626,9 @@ async def _switch_tower_difficulty(browser: UserBrowser) -> bool:
         if await _tower_times_exhausted(browser):
             browser.script_log("切难度过程中次数已耗尽")
             return False
-        if await browser.match_image(_img("ta_nandu"), threshold=THRESHOLD, quiet=True):
+        if await browser.match_image(
+            _img("ta_nandu"), threshold=THRESHOLD, quiet=True
+        ):
             browser.script_log("已看到目标难度 ta_nandu")
             break
         ox = random.randint(0, 30)
@@ -1229,38 +1649,10 @@ async def _switch_tower_difficulty(browser: UserBrowser) -> bool:
         browser.script_log("点难度前次数已耗尽")
         return False
 
-    if not await browser.click_image(_img("ta_nandu"), threshold=THRESHOLD):
-        browser.script_log("点击 ta_nandu 失败")
-        return False
-    browser.script_log("已点目标难度，等待确认框")
-
-    if await _wait_img(
-        browser,
-        "ta_tiaozhan",
-        timeout=5.0,
-        threshold=THRESHOLD,
-        extend_on_transition=False,
-    ):
-        if await browser.click_image(_img("ta_tiaozhan"), threshold=THRESHOLD):
-            browser.script_log("点击挑战确认")
-            await browser.b_sleep(0.45, 0.7)
-    else:
-        browser.script_log("未出现 ta_tiaozhan，可能已直接进塔")
-
-    if await _wait_img(
-        browser,
-        "ta_chuji",
-        timeout=12.0,
-        threshold=THRESHOLD,
-        extend_on_transition=False,
-    ):
-        browser.script_log("已进入塔内关卡")
-        return True
-    if await _tower_times_exhausted(browser):
-        browser.script_log("进入塔内超时，且次数已耗尽")
-    else:
+    if not await _enter_tower_stage_from_card(browser):
         browser.script_log("进入塔内超时（未见 ta_chuji）")
-    return False
+        return False
+    return True
 
 
 async def _match_tower_auto(
@@ -1513,7 +1905,7 @@ async def _wait_tower_auto_finish(browser: UserBrowser) -> bool:
 
 async def _run_tower_auto(browser: UserBrowser) -> bool:
     await browser.update_frame()
-    if not await browser.click_image(_img("ta_chuji"), threshold=THRESHOLD):
+    if not await _click_tower_chuji(browser):
         browser.script_log("未找到 ta_chuji.png")
         return False
     browser.script_log("点击塔内出击，等待出击界面")
@@ -1553,13 +1945,12 @@ async def _tower_one_round(browser: UserBrowser) -> bool:
         browser.script_log("本轮开始前次数已耗尽")
         return True
 
-    in_stage, on_nandu, on_biancheng = await asyncio.gather(
-        browser.match_image(_img("ta_chuji"), threshold=THRESHOLD, quiet=True),
+    in_stage, on_nandu = await asyncio.gather(
+        _match_tower_chuji(browser),
         browser.match_image(_img("ta_nandu"), threshold=THRESHOLD, quiet=True),
-        browser.match_image(_img("ta_biancheng"), threshold=THRESHOLD, quiet=True),
     )
 
-    if in_stage and not on_biancheng and not on_nandu:
+    if in_stage and not on_nandu:
         browser.script_log("已在塔内，直接出击/auto")
     else:
         if not await _switch_tower_difficulty(browser):
@@ -1580,7 +1971,10 @@ async def _tower_one_round(browser: UserBrowser) -> bool:
             return True
         return False
 
+    # 结算 OK 后常仍停在塔内；清残留弹窗，方便下一轮直接打
     await browser.b_sleep(0.8, 1.2)
+    await browser.update_frame()
+    await _dismiss_tower_reward_if_any(browser)
     await browser.update_frame()
     return True
 
@@ -1635,11 +2029,13 @@ async def _meiri_go_sortie(browser: UserBrowser) -> bool:
 
 async def _meiri_enter(browser: UserBrowser) -> bool:
     await browser.update_frame()
+    await _dismiss_sortie_notices(browser)
     if await browser.match_image(_img("meiri_logo"), threshold=NAV_THRESHOLD):
         browser.script_log("已在每日关卡界面")
         return True
     for attempt in range(1, 4):
         await browser.update_frame()
+        await _dismiss_sortie_notices(browser)
         if await browser.match_image(_img("meiri_logo"), threshold=NAV_THRESHOLD):
             browser.script_log("已进入每日关卡")
             return True
@@ -1716,27 +2112,60 @@ async def _meiri_sweep(browser: UserBrowser) -> bool:
         return False
 
     # 3) 点 meiri_ok 直到消失
-    saw_ok = False
+    async def _meiri_ok_gone(b: UserBrowser) -> bool:
+        if await b.match_image(_img("meiri_ok"), threshold=THRESHOLD, quiet=True):
+            return False
+        # OK 没了，或已回每日列表
+        if await b.match_image(_img("meiri_logo"), threshold=NAV_THRESHOLD, quiet=True):
+            if not await b.match_image(
+                _img("meiri_skip_title"), threshold=NAV_THRESHOLD, quiet=True
+            ):
+                return True
+        return True
+
+    await browser.update_frame()
+    if await browser.match_image(_img("meiri_ok"), threshold=THRESHOLD, quiet=True):
+        if await _click_confirm_until(
+            browser,
+            "meiri_ok",
+            threshold=THRESHOLD,
+            max_attempts=8,
+            success_check=_meiri_ok_gone,
+            label="meiri_ok",
+            optional=False,
+        ):
+            browser.script_log("meiri_ok 已消失，每日关卡完成")
+            return True
+        browser.script_log("meiri_ok 未能点掉")
+        return False
+
+    # 可能直接跳过了 OK（标题消失即结束）
+    if not await browser.match_image(_img("meiri_skip_title"), threshold=NAV_THRESHOLD):
+        browser.script_log("无 meiri_ok 且扫荡窗已关，视为完成")
+        return True
+
+    browser.script_log("等待 meiri_ok…")
     while not timer.expired():
         await browser.update_frame()
         if await browser.match_image(_img("meiri_ok"), threshold=THRESHOLD):
-            saw_ok = True
-            if await browser.click_image(_img("meiri_ok"), threshold=THRESHOLD):
-                browser.script_log("点击 meiri_ok")
-            await browser.b_sleep(0.5, 0.9)
-            continue
-
-        if saw_ok:
-            browser.script_log("meiri_ok 已消失，每日关卡完成")
-            return True
-
+            if await _click_confirm_until(
+                browser,
+                "meiri_ok",
+                threshold=THRESHOLD,
+                max_attempts=8,
+                success_check=_meiri_ok_gone,
+                label="meiri_ok",
+                optional=False,
+            ):
+                browser.script_log("meiri_ok 已消失，每日关卡完成")
+                return True
+            return False
         if await browser.match_image(_img("meiri_logo"), threshold=NAV_THRESHOLD):
             if not await browser.match_image(
                 _img("meiri_skip_title"), threshold=NAV_THRESHOLD
             ):
                 browser.script_log("已回每日列表，视为完成")
                 return True
-
         await browser.b_sleep(0.5, 0.8)
 
     browser.script_log("每日关卡扫荡超时")
@@ -1861,44 +2290,8 @@ async def _dismiss_task_ok(browser: UserBrowser) -> None:
         await browser.b_sleep(0.35, 0.55)
 
 
-async def 任务奖励领取(browser: UserBrowser) -> bool:
-    """回主界面进任务页 → 循环一键领取直到 task_end。"""
-    await browser.update_frame()
-    on_task = await browser.match_image(
-        _img("task_logo"), threshold=NAV_THRESHOLD, quiet=True
-    )
-
-    if not on_task:
-        if not await 返回主界面(browser):
-            return False
-        timer = StepTimer("enter_task", 30.0)
-        while not timer.expired():
-            await browser.update_frame()
-            if await browser.match_image(
-                _img("task_logo"), threshold=NAV_THRESHOLD, quiet=True
-            ):
-                browser.script_log("已进入任务页面")
-                on_task = True
-                break
-            if await browser.click_image(_img("task"), threshold=THRESHOLD):
-                browser.script_log("点击 task…")
-                await browser.b_sleep(0.6, 1.0)
-                continue
-            browser.script_log("task 已消失，等待 task_logo…")
-            if await _wait_img(
-                browser, "task_logo", timeout=8, threshold=NAV_THRESHOLD
-            ):
-                on_task = True
-            break
-        if not on_task:
-            await browser.update_frame()
-            on_task = await browser.match_image(
-                _img("task_logo"), threshold=NAV_THRESHOLD, quiet=True
-            )
-        if not on_task:
-            browser.script_log("未能进入任务页面")
-            return False
-
+async def _task_claim_loop(browser: UserBrowser) -> bool:
+    """任务页内：循环一键领取直到 task_end。"""
     claim_rounds = 0
     timer = StepTimer("task_reward", TASK_REWARD_TIMEOUT)
     while not timer.expired():
@@ -1942,6 +2335,67 @@ async def 任务奖励领取(browser: UserBrowser) -> bool:
         f"任务奖励领取超时（已领 {claim_rounds} 轮，限时 {TASK_REWARD_TIMEOUT:.0f}s）"
     )
     return False
+
+
+async def _enter_task_from_home(browser: UserBrowser) -> bool:
+    """@返回主界面后点击 task.png 进入任务页。"""
+    if not await 返回主界面(browser):
+        return False
+    timer = StepTimer("enter_task", 30.0)
+    while not timer.expired():
+        await browser.update_frame()
+        if await browser.match_image(
+            _img("task_logo"), threshold=NAV_THRESHOLD, quiet=True
+        ):
+            browser.script_log("已进入任务页面")
+            return True
+        if await browser.click_image(_img("task"), threshold=THRESHOLD):
+            browser.script_log("点击 task…")
+            await browser.b_sleep(0.6, 1.0)
+            continue
+        browser.script_log("task 已消失，等待 task_logo…")
+        if await _wait_img(
+            browser, "task_logo", timeout=8, threshold=NAV_THRESHOLD
+        ):
+            return True
+        break
+    await browser.update_frame()
+    if await browser.match_image(
+        _img("task_logo"), threshold=NAV_THRESHOLD, quiet=True
+    ):
+        return True
+    browser.script_log("未能进入任务页面")
+    return False
+
+
+async def 任务奖励领取(browser: UserBrowser) -> bool:
+    """尝试点 task → 已在任务页则领；否则回主界面进任务页 → 循环领取。"""
+    await browser.update_frame()
+
+    # ① 尝试点击 task.png，成功则进领取
+    if await browser.click_image(_img("task"), threshold=THRESHOLD):
+        browser.script_log("点击 task，等待任务页…")
+        await browser.b_sleep(0.6, 1.0)
+        if await _wait_img(
+            browser, "task_logo", timeout=10, threshold=NAV_THRESHOLD
+        ):
+            return await _task_claim_loop(browser)
+        browser.script_log("点了 task 但未见 task_logo，继续判断…")
+
+    # ② 已在任务页 → 直接领取（插入第一步后原「跳到第三步」= 领取）
+    await browser.update_frame()
+    if await browser.match_image(
+        _img("task_logo"), threshold=NAV_THRESHOLD, quiet=True
+    ):
+        browser.script_log("已在任务页面，开始领取")
+        return await _task_claim_loop(browser)
+
+    # ③ @返回主界面，点击 task.png 直到没有 / 进入任务页
+    if not await _enter_task_from_home(browser):
+        return False
+
+    # ④ 领取循环
+    return await _task_claim_loop(browser)
 
 
 # ── 入口 ───────────────────────────────────────────────────

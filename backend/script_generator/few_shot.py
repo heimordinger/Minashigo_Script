@@ -162,7 +162,26 @@ def build_paradigm_block(
     if shot:
         parts.append(format_few_shots_for_prompt([shot]))
     query_tags = tags_from_text(explanation, tags)
-    if "run_task" in query_tags or "multi" in query_tags or _count_tasks_in_explanation(explanation) >= 2:
+    arch = ""
+    try:
+        from backend.script_generator.architecture import (
+            ARCH_MULTI,
+            ARCH_SCENE,
+            infer_architecture,
+        )
+        arch, _ = infer_architecture(explanation or "")
+    except Exception:
+        ARCH_SCENE = "scene_driven"  # type: ignore
+        ARCH_MULTI = "multi_task"  # type: ignore
+    inject_multi = arch == ARCH_MULTI or (
+        arch != ARCH_SCENE
+        and (
+            "run_task" in query_tags
+            or "multi" in query_tags
+            or _count_tasks_in_explanation(explanation) >= 2
+        )
+    )
+    if inject_multi:
         mt_path = _CORPUS_ROOT / "few_shot" / "03_multi_task_dispatch.py"
         if mt_path.is_file():
             mt_content = mt_path.read_text(encoding="utf-8").strip()

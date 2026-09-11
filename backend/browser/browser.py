@@ -24,12 +24,14 @@ from .mixins import (
     DebugMixin,
     UtilsMixin,
     MultiStepMixin,
+    NetOptimizeMixin,
 )
 
 
 class Browser(
     BaseMixin,
     LifecycleMixin,
+    NetOptimizeMixin,
     NavigationMixin,
     MouseActionsMixin,
     SlideActionsMixin,
@@ -90,6 +92,9 @@ class Browser(
 
         self._connect_task: asyncio.Task | None = None
         self._window_focused: bool = False  # 是否已聚焦过一次
+
+        # 广告拦截 / 游戏在途（NetOptimizeMixin）
+        self._net_opt_init_fields()
 
         print(f"{self.account['name']}: 浏览器实例创建完成")
 

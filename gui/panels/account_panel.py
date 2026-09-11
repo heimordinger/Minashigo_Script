@@ -15,7 +15,7 @@ from core.logging.events import LogLevel, LogEvent, LogSource
 from core.state.events import StateEvent, StateDomain
 
 from gui.panels.screenshot_viewer import ScreenshotViewer
-from gui.panels.task_ball import TaskBallCard
+from gui.panels.task_ball import TaskBallCard, TASKBALL_MIME
 from core.taskflow_manager import taskflow_manager
 
 
@@ -23,6 +23,61 @@ class _CardScrollArea(QScrollArea):
     """QScrollArea whose min size is NOT driven by content widgets inside."""
     def minimumSizeHint(self):
         return QSize(200, 100)
+
+
+class _CardContainer(QWidget):
+    """承接任务球拖放，按落点 Y 重排卡片。"""
+
+    def __init__(self, panel: "AccountPanel", parent=None):
+        super().__init__(parent)
+        self._panel = panel
+        self.setAcceptDrops(True)
+        self.setObjectName("CardContainer")
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(TASKBALL_MIME):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(TASKBALL_MIME):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasFormat(TASKBALL_MIME):
+            event.ignore()
+            return
+        raw = bytes(event.mimeData().data(TASKBALL_MIME)).decode("utf-8", errors="ignore")
+        try:
+            src_id = int(raw)
+        except ValueError:
+            event.ignore()
+            return
+        src = self._panel._card_by_id(src_id)
+        if src is None:
+            event.ignore()
+            return
+        insert_at = self._insert_index_at_y(event.position().y())
+        self._panel._reorder_card(src, insert_at)
+        event.acceptProposedAction()
+
+    def _insert_index_at_y(self, y: float) -> int:
+        lay = self._panel._card_layout
+        count = lay.count()
+        if count <= 0:
+            return 0
+        for i in range(count):
+            item = lay.itemAt(i)
+            w = item.widget() if item else None
+            if w is None:
+                continue
+            mid = w.y() + w.height() / 2
+            if y < mid:
+                return i
+        return count
 
 
 class _QueueChip(QWidget):
@@ -343,9 +398,8 @@ class AccountPanel(QWidget):
         debug_row.addStretch()
         debug_row.addWidget(self.screenshot_btn)
 
-        # ========== 任务卡片列表（可滚动） ==========
-        self._card_container = QWidget()
-        self._card_container.setObjectName("CardContainer")
+        # ========== 任务卡片列表（可滚动，支持拖拽排序） ==========
+        self._card_container = _CardContainer(self)
         self._card_layout = QVBoxLayout(self._card_container)
         self._card_layout.setContentsMargins(0, 0, 0, 0)
         self._card_layout.setSpacing(0)
@@ -687,6 +741,75 @@ class AccountPanel(QWidget):
         self.append_log(f"开始排队任务：{Path(next_task).stem}")
         self.on_start_clicked()
 
+    def _display_name_for_script(self, script: str) -> str:
+        s = (script or "").replace("\\", "/").strip()
+        if not s:
+            return "（未命名脚本）"
+        if s.startswith("_trial/") or "/_trial/" in s:
+            return f"试运行 · {s}"
+        return s
+
+    def _spawn_task_ball(
+        self,
+        task_name: str,
+        *,
+        target_type: str | None = None,
+        intro_message: str = "",
+    ) -> TaskBallCard:
+        """新建任务球并设为当前卡片（插到列表最前）。"""
+        if self._current_card is not None and self._current_card.status == "运行中":
+            self._current_card.status = "已停止"
+
+        tt = (target_type or self._selected_target() or self.account.get("_target") or "browser")
+        self.account["_target"] = tt
+        self._ball_counter += 1
+        card = TaskBallCard(
+            task_name,
+            index=self._ball_counter,
+            target_type=tt,
+        )
+        self._card_for_layout(card)
+        self._current_card = card
+        if intro_message:
+            card.add_event(LogEvent(
+                account=self.account["name"],
+                level=LogLevel.INFO,
+                message=intro_message,
+                source=LogSource.SYSTEM,
+            ))
+        while self._card_layout.count() > 50:
+            item = self._card_layout.takeAt(self._card_layout.count() - 1)
+            if item and item.widget():
+                item.widget().deleteLater()
+        self._resize_content()
+        return card
+
+    def ensure_task_ball_for_script(self, script: str) -> None:
+        """外部启动（如脚本生成器试运行）时：若当前球不是该脚本的运行中球，则另起一球。"""
+        script = (script or "").replace("\\", "/").strip()
+        if not script:
+            return
+        card = self._current_card
+        if (
+            card is not None
+            and card.status == "运行中"
+            and (
+                card.task_name == script
+                or card.task_name == self._display_name_for_script(script)
+                or self._active_task == script
+            )
+        ):
+            return
+        display = self._display_name_for_script(script)
+        target_label = self._target_label(
+            self._selected_target() or self.account.get("_target") or "browser"
+        )
+        self._spawn_task_ball(
+            display,
+            intro_message=f"开始执行：{script}（目标：{target_label}）",
+        )
+        self._active_task = script
+
     def on_start_clicked(self):
         if self._is_pre_run_mode():
             self._enqueue_current_selection()
@@ -708,31 +831,11 @@ class AccountPanel(QWidget):
         target_label = self._target_label(target_type)
         self.set_browser_state(f'正在运行 "{self.current_task}"（{target_label}）')
 
-        # 创建新任务卡（插到最前）
-        self._ball_counter += 1
-        card = TaskBallCard(
+        self._spawn_task_ball(
             self.current_task,
-            index=self._ball_counter,
             target_type=target_type,
+            intro_message=f"开始执行：{self.current_task}（目标：{target_label}）",
         )
-        self._card_for_layout(card)
-        self._current_card = card
-
-        # 记录启动日志
-        ev = LogEvent(
-            account=self.account['name'],
-            level=LogLevel.INFO,
-            message=f"开始执行：{self.current_task}（目标：{target_label}）",
-            source=LogSource.SYSTEM,
-        )
-        card.add_event(ev)
-
-        # 限定卡片数量，移除最旧的
-        while self._card_layout.count() > 50:
-            item = self._card_layout.takeAt(self._card_layout.count() - 1)
-            if item and item.widget():
-                item.widget().deleteLater()
-        self._resize_content()
 
         self.start_task.emit(self.account, self.current_task)
 
@@ -934,6 +1037,37 @@ class AccountPanel(QWidget):
         self._scroll_to_top()
         self._resize_content()
 
+    def _card_by_id(self, card_id: int) -> TaskBallCard | None:
+        for i in range(self._card_layout.count()):
+            item = self._card_layout.itemAt(i)
+            w = item.widget() if item else None
+            if isinstance(w, TaskBallCard) and id(w) == card_id:
+                return w
+        return None
+
+    def _reorder_card(self, card: TaskBallCard, insert_at: int) -> None:
+        """按目标下标重排卡片（insert_at 为落点索引，含拖拽前的布局下标）。"""
+        lay = self._card_layout
+        old_index = -1
+        for i in range(lay.count()):
+            item = lay.itemAt(i)
+            if item and item.widget() is card:
+                old_index = i
+                break
+        if old_index < 0:
+            return
+        # 从旧位置移除后，目标下标需校正
+        target = insert_at
+        if target > old_index:
+            target -= 1
+        target = max(0, min(target, lay.count() - 1))
+        if target == old_index:
+            return
+        lay.removeWidget(card)
+        lay.insertWidget(target, card)
+        card.show()
+        self._resize_content()
+
     def refresh_log_themes(self):
         """主题切换后重绘所有任务球日志颜色。"""
         for i in range(self._card_layout.count()):
@@ -1032,11 +1166,18 @@ class AccountPanel(QWidget):
         status = getattr(snapshot.status, "value", snapshot.status)
         status = str(status).strip().lower()
         step = str(getattr(snapshot, "step", "") or "").strip().lower()
+        script = str(getattr(snapshot, "script", "") or "").strip()
 
         terminal_statuses = {"idle", "finished", "stopped", "error"}
         terminal_steps = {"finished", "stopped", "exception", "idle"}
         running = status not in terminal_statuses and step not in terminal_steps
         was_running = self.running
+
+        # 外部 start_task（脚本生成器试运行等）不会走 on_start_clicked：
+        # 进入 RUNNING 时若当前球不是该脚本，另起一球，避免日志堆在上一任务上。
+        if running and script:
+            self.ensure_task_ball_for_script(script)
+
         self.set_running(running)
 
         # 更新任务球状态

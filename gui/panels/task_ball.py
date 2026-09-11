@@ -1,11 +1,16 @@
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPainter, QColor, QPen, QFont, QBrush, QTextCursor, QWheelEvent
+from PySide6.QtCore import Qt, Signal, QEvent, QMimeData, QPoint
+from PySide6.QtGui import (
+    QPainter, QColor, QPen, QFont, QBrush, QTextCursor, QWheelEvent, QDrag,
+)
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QTextEdit,
+    QLabel, QTextEdit, QApplication,
 )
 
 from core.logging.events import LogLevel, LogEvent
+
+# 任务球卡片拖拽排序
+TASKBALL_MIME = "application/x-minashigo-taskball"
 
 
 
@@ -132,6 +137,13 @@ class TaskBallCard(QWidget):
 
         self._ball = BallIcon(index=index)
         self._ball.set_target(self._target_type)
+        self._ball.setToolTip("拖动可调整卡片顺序")
+        self._ball.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._ball_area.setCursor(Qt.CursorShape.OpenHandCursor)
+        self._ball_area.setToolTip("拖动可调整卡片顺序")
+        self._ball_area.installEventFilter(self)
+        self._ball.installEventFilter(self)
+        self._drag_start: QPoint | None = None
         ba.addWidget(self._ball)
 
         # ===== 右侧：内容区 =====
@@ -187,8 +199,110 @@ class TaskBallCard(QWidget):
         layout.addWidget(self._ball_area)
         layout.addWidget(self._content, stretch=1)
 
+        self.setAcceptDrops(True)
+
         # 所有子控件创建完毕后触发 setter 更新球颜色和标签
         self.status = "运行中"
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasFormat(TASKBALL_MIME):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dragMoveEvent(self, event):
+        if event.mimeData().hasFormat(TASKBALL_MIME):
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if not event.mimeData().hasFormat(TASKBALL_MIME):
+            event.ignore()
+            return
+        panel = self._account_panel()
+        if panel is None:
+            event.ignore()
+            return
+        raw = bytes(event.mimeData().data(TASKBALL_MIME)).decode("utf-8", errors="ignore")
+        try:
+            src_id = int(raw)
+        except ValueError:
+            event.ignore()
+            return
+        if src_id == id(self):
+            event.acceptProposedAction()
+            return
+        src = panel._card_by_id(src_id)
+        if src is None:
+            event.ignore()
+            return
+        # 相对本卡中线：上半插入到本卡前，下半插入到本卡后
+        local_y = event.position().y()
+        before = local_y < self.height() / 2
+        lay = panel._card_layout
+        self_index = -1
+        for i in range(lay.count()):
+            item = lay.itemAt(i)
+            if item and item.widget() is self:
+                self_index = i
+                break
+        if self_index < 0:
+            event.ignore()
+            return
+        insert_at = self_index if before else self_index + 1
+        panel._reorder_card(src, insert_at)
+        event.acceptProposedAction()
+
+    def _account_panel(self):
+        w = self.parent()
+        while w is not None:
+            if w.__class__.__name__ == "AccountPanel":
+                return w
+            # CardContainer 挂在 panel 上
+            if hasattr(w, "_panel") and w.__class__.__name__ == "_CardContainer":
+                return w._panel
+            w = w.parent()
+        return None
+
+    def eventFilter(self, obj, event):
+        if obj in (self._ball_area, self._ball):
+            et = event.type()
+            if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+                self._drag_start = event.position().toPoint()
+                self._ball.setCursor(Qt.CursorShape.ClosedHandCursor)
+                self._ball_area.setCursor(Qt.CursorShape.ClosedHandCursor)
+                return False
+            if et == QEvent.Type.MouseButtonRelease:
+                self._drag_start = None
+                self._ball.setCursor(Qt.CursorShape.OpenHandCursor)
+                self._ball_area.setCursor(Qt.CursorShape.OpenHandCursor)
+                return False
+            if (
+                et == QEvent.Type.MouseMove
+                and self._drag_start is not None
+                and (event.buttons() & Qt.MouseButton.LeftButton)
+            ):
+                delta = event.position().toPoint() - self._drag_start
+                if delta.manhattanLength() >= QApplication.startDragDistance():
+                    self._start_card_drag()
+                    self._drag_start = None
+                    self._ball.setCursor(Qt.CursorShape.OpenHandCursor)
+                    self._ball_area.setCursor(Qt.CursorShape.OpenHandCursor)
+                    return True
+        return super().eventFilter(obj, event)
+
+    def _start_card_drag(self) -> None:
+        drag = QDrag(self)
+        mime = QMimeData()
+        mime.setData(TASKBALL_MIME, str(id(self)).encode("utf-8"))
+        drag.setMimeData(mime)
+        pix = self.grab()
+        if not pix.isNull():
+            # 半透明预览，避免挡住目标位置
+            drag.setPixmap(pix.scaledToWidth(min(280, pix.width()), Qt.TransformationMode.SmoothTransformation))
+            drag.setHotSpot(QPoint(24, 16))
+        drag.exec(Qt.DropAction.MoveAction)
 
     @property
     def target_type(self) -> str | None:
@@ -204,13 +318,16 @@ class TaskBallCard(QWidget):
         if not label:
             self._target_badge.clear()
             self._target_badge.hide()
-            self._ball.setToolTip("")
+            self._ball.setToolTip("拖动可调整卡片顺序")
+            self._ball_area.setToolTip("拖动可调整卡片顺序")
             return
         self._target_badge.setText(label)
         self._target_badge.show()
         tip = "控制目标：浏览器" if self._target_type == "browser" else "控制目标：桌面窗口"
+        tip = f"{tip}\n拖动左侧序号球可调整卡片顺序"
         self._target_badge.setToolTip(tip)
         self._ball.setToolTip(tip)
+        self._ball_area.setToolTip("拖动可调整卡片顺序")
         # 用 property 驱动样式（浏览器蓝 / 窗口橙）
         self._target_badge.setProperty("target", self._target_type)
         self._target_badge.style().unpolish(self._target_badge)

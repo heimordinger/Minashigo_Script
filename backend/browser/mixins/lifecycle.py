@@ -130,6 +130,9 @@ class LifecycleMixin:
             self.browser = None
             self.context = None
             self.page = None
+            self._net_route_installed = False
+            self._net_inflight = {}
+            self._net_blocked_count = 0
 
         if getattr(self, "_page_watch_task", None):
             self._log("[CONNECT-02] cancel page watcher task")
@@ -219,6 +222,12 @@ class LifecycleMixin:
                 self._log("[CONNECT-41] no page found, creating new page")
                 self.page = await self.context.new_page()
                 self._log("[CONNECT-42] new page created")
+
+            # ====== 网络优化：挡广告 + 游戏在途跟踪 ======
+            try:
+                await self.install_net_optimize()
+            except Exception as e:
+                self._log(f"[CONNECT-45E] net optimize: {e}", level=LogLevel.WARNING)
 
             # ====== 页面状态 ======
             self._log("[CONNECT-50] wait_for_load_state(domcontentloaded)")

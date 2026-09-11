@@ -12,6 +12,7 @@ from .waiting import WaitingMixin
 from .debug import DebugMixin
 from .utils import UtilsMixin
 from .multi_step import MultiStepMixin
+from .net_optimize import NetOptimizeMixin
 
 __all__ = [
     'BaseMixin',
@@ -27,4 +28,5 @@ __all__ = [
     'DebugMixin',
     'UtilsMixin',
     'MultiStepMixin',
+    'NetOptimizeMixin',
 ]

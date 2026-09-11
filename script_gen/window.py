@@ -2,22 +2,11 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QTimer
+from PySide6.QtGui import QIcon, QCursor
+from PySide6.QtWidgets import QApplication, QLabel, QVBoxLayout, QWidget
 
 from core.path import ICON_PATH
-
-
-def _create_panel_class():
-    """首次创建时热重载后端 + UI，返回 ScriptGenerator 类。"""
-    try:
-        from backend.script_generator.reload import reload_script_generator
-        reload_script_generator(include_gui=True)
-    except Exception as e:
-        print(f"[ScriptGenWindow] 热重载失败: {e}")
-    from gui.widgets.ScriptGenerator import ScriptGenerator
-    return ScriptGenerator
 
 
 class ScriptGenWindow(QWidget):
@@ -33,31 +22,63 @@ class ScriptGenWindow(QWidget):
         super().__init__(None, Qt.Window)
         self.setWindowTitle("脚本生成")
         self.setWindowIcon(QIcon(str(ICON_PATH)))
-        self.setMinimumSize(720, 560)
+        self.setMinimumSize(720, 480)
         self.resize(900, 720)
         self.setObjectName("ScriptGenWindow")
-        # 关闭时不销毁，便于再次打开恢复内容
         self.setAttribute(Qt.WA_DeleteOnClose, False)
         self._style_parent = parent
         self._force_close = False
+        self._facade = facade
+        self.panel = None
+        self._mounted = False
 
-        root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
-        Panel = _create_panel_class()
-        self.panel = Panel()
-        # 有主窗样式则继承；独立启动时自行套主题
+        self._root = QVBoxLayout(self)
+        self._root.setContentsMargins(0, 0, 0, 0)
+        self._placeholder = QLabel("正在加载脚本生成…")
+        self._placeholder.setAlignment(Qt.AlignCenter)
+        self._placeholder.setObjectName("MutedLabel")
+        self._root.addWidget(self._placeholder)
+
         parent_qss = (parent.styleSheet() or "").strip() if parent is not None else ""
         if parent_qss:
             self.setStyleSheet(parent_qss)
         else:
             from gui.styles.theme import current_theme_from_config, load_theme_qss
             self.setStyleSheet(load_theme_qss(current_theme_from_config()))
-        if facade is not None:
-            self.panel.set_facade(facade)
-        root.addWidget(self.panel)
+
+        # 先亮窗，下一拍再挂重面板，避免主界面长时间无响应
+        QTimer.singleShot(0, self._mount_panel)
+
+    def _mount_panel(self) -> None:
+        if self._mounted:
+            return
+        self._mounted = True
+        QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
+        QApplication.processEvents()
+        try:
+            # 首次只 import，不在打开时全量 reload（生成 Worker 内仍会热重载）
+            from gui.widgets.ScriptGenerator import ScriptGenerator
+
+            panel = ScriptGenerator()
+            if self._facade is not None:
+                panel.set_facade(self._facade)
+            if self._placeholder is not None:
+                self._root.removeWidget(self._placeholder)
+                self._placeholder.deleteLater()
+                self._placeholder = None
+            self.panel = panel
+            self._root.addWidget(panel)
+        except Exception as e:
+            if self._placeholder is not None:
+                self._placeholder.setText(f"加载失败: {e}")
+            print(f"[ScriptGenWindow] 面板加载失败: {e}")
+        finally:
+            QApplication.restoreOverrideCursor()
 
     def set_facade(self, facade):
-        self.panel.set_facade(facade)
+        self._facade = facade
+        if self.panel is not None:
+            self.panel.set_facade(facade)
 
     def _busy(self) -> bool:
         p = getattr(self, "panel", None)
@@ -73,21 +94,26 @@ class ScriptGenWindow(QWidget):
 
     def rebuild_panel(self, facade=None):
         """显式换新面板（会丢失当前编辑内容；仅调试/强制刷新时用）。"""
+        if self.panel is None:
+            if facade is not None:
+                self._facade = facade
+            self._mount_panel()
+            return
         if self._busy():
             print("[ScriptGenWindow] 正在生成/试运行，跳过面板重建")
             if facade is not None:
                 self.set_facade(facade)
             return
-        Panel = _create_panel_class()
+        from gui.widgets.ScriptGenerator import ScriptGenerator
+
         old = self.panel
-        new_panel = Panel()
-        fac = facade
+        new_panel = ScriptGenerator()
+        fac = facade if facade is not None else self._facade
         if fac is None and hasattr(old, "_facade"):
             fac = old._facade
         if fac is not None:
             new_panel.set_facade(fac)
-        lay = self.layout()
-        lay.replaceWidget(old, new_panel)
+        self._root.replaceWidget(old, new_panel)
         old.deleteLater()
         self.panel = new_panel
 
@@ -102,7 +128,6 @@ class ScriptGenWindow(QWidget):
                 ScriptGenWindow._instance = None
             super().closeEvent(event)
             return
-        # 普通关闭：隐藏并缓存，内容保留
         self.hide()
         event.ignore()
 
@@ -113,15 +138,9 @@ class ScriptGenWindow(QWidget):
             win = cls(parent=parent, facade=facade)
             cls._instance = win
         else:
-            # 复用已缓存窗口与面板，不重建（避免清空 API/描述/轨迹/代码）
+            # 复用已缓存窗口与面板；打开时不再全量热重载（避免卡顿）
             if facade is not None:
                 win.set_facade(facade)
-            try:
-                from backend.script_generator.reload import reload_script_generator
-                # 只热重载后端逻辑，不动 UI 面板状态
-                reload_script_generator(include_gui=False)
-            except Exception as e:
-                print(f"[ScriptGenWindow] 后端热重载失败: {e}")
         win.show()
         win.raise_()
         win.activateWindow()

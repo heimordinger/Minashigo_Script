@@ -50,6 +50,12 @@ class FacadeImpl:
     def list_accounts(self):
         return self.state.accounts
 
+    def list_cdp_endpoints(self) -> list[dict]:
+        """运行中账号浏览器 + 扫描到的 CDP 端口（供 Network Inspector）。"""
+        from gui.widgets.NetworkInspector import discover_cdp_endpoints
+
+        return discover_cdp_endpoints(self)
+
     def select_account(self, account: dict):
         self.state.current_account = account
         self.state.message = f"已选择账号：{account.get('name')}"

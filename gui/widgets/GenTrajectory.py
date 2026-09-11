@@ -26,10 +26,14 @@ _KIND_META = {
     "Validate": ("#c48a2a", "校验", "◎"),
     "Fix": ("#d97706", "修复", "⚒"),
     "Revise": ("#0ea5e9", "修订", "↺"),
+    "Optimize": ("#10b981", "优化", "⚡"),
     "Review": ("#db2777", "审查", "※"),
     "Vision": ("#a855f7", "识图", "◉"),
+    "Trial": ("#f59e0b", "试跑", "▶"),
+    "Phase": ("#64748b", "阶段", "━"),
     "Info": ("#6b7280", "信息", "·"),
     "Error": ("#dc2626", "错误", "✕"),
+    "Done": ("#16a34a", "完成", "✓"),
 }
 
 _STATUS_LABEL = {
@@ -322,12 +326,12 @@ class GenTrajectory(QWidget):
         root.setSpacing(4)
 
         head = QHBoxLayout()
-        title = QLabel("生成轨迹")
+        self._title = QLabel("Agent 轨迹")
         tf = QFont()
         tf.setBold(True)
-        title.setFont(tf)
-        head.addWidget(title)
-        self._hint = QLabel("生成或修订时逐步显示 · 点击行可展开")
+        self._title.setFont(tf)
+        head.addWidget(self._title)
+        self._hint = QLabel("生成 / 修订 / 优化会按步骤追加 · 点击行可展开")
         self._hint.setObjectName("MutedLabel")
         head.addWidget(self._hint, 1)
 
@@ -341,8 +345,9 @@ class GenTrajectory(QWidget):
         root.addLayout(head)
 
         self._empty = QLabel(
-            "点上方「生成脚本」后，规划 / 分任务 / 合并 / 校验\n"
-            "会按步骤出现在这里。点击任一行可展开详情。"
+            "点「生成脚本」后，规划 / 分任务 / 合并 / 校验\n"
+            "会按步骤出现在这里。修订与优化会追加到同一会话。\n"
+            "点击任一行可展开详情。"
         )
         self._empty.setObjectName("GenTrajectoryEmpty")
         self._empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -372,6 +377,8 @@ class GenTrajectory(QWidget):
 
         self.setMinimumWidth(260)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._phase_n = 0
+        self._current_run_key = "run"
         self._show_empty(True)
 
     def _show_empty(self, empty: bool):
@@ -381,7 +388,7 @@ class GenTrajectory(QWidget):
     def set_status_hint(self, text: str):
         base = " · 点击行可展开"
         t = (text or "").strip()
-        self._hint.setText((t + base) if t else ("生成或修订时逐步显示" + base))
+        self._hint.setText((t + base) if t else ("生成 / 修订 / 优化会按步骤追加" + base))
 
     def _scroll_to_bottom(self):
         bar = self._scroll.verticalScrollBar()
@@ -393,14 +400,61 @@ class GenTrajectory(QWidget):
             w.deleteLater()
         self._steps.clear()
         self._by_key.clear()
-        self.set_status_hint("生成或修订时逐步显示")
+        self._phase_n = 0
+        self._current_run_key = "run"
+        self.set_status_hint("")
         self._show_empty(True)
 
-    def begin_run(self, label: str = "开始生成"):
+    def begin_run(self, label: str = "开始生成", *, fresh: bool = True):
+        """开始一段 Agent 运行。
+
+        fresh=True：清空并开启新会话（首次生成）。
+        fresh=False：在同一轨迹上追加新阶段（修订 / 优化）。
+        """
+        if not fresh and self._steps:
+            self.begin_phase(label)
+            return
         self.clear()
         self._show_empty(False)
+        self._phase_n = 1
+        self._current_run_key = "run_1"
         self.set_status_hint(label)
-        self.add_step("Info", label, key="run", running=True)
+        self.add_step("Info", label, key=self._current_run_key, running=True)
+
+    def demote_prior_results(self):
+        """新阶段开始时收起旧「完成」卡，避免看起来像当前已跑完。"""
+        for row in self._steps:
+            if getattr(row, "_kind", "") != "Done":
+                continue
+            if getattr(row, "_status", "") != "done":
+                continue
+            title = (getattr(row, "_title_text", "") or "完成").strip()
+            if "上一段" not in title:
+                title = f"{title}（上一段）"
+            body = getattr(row, "_full_body", "") or ""
+            row.set_done(title, body if body else None)
+            if body:
+                row.set_body(body, expand=False)
+
+    def begin_phase(self, label: str, *, kind: str = "Phase"):
+        """在不清空的前提下追加新阶段分隔 + 运行头。"""
+        self._show_empty(False)
+        self.demote_prior_results()
+        # 收束上一段仍在 running 的 run 头
+        prev = self._by_key.get(self._current_run_key)
+        if prev is not None and getattr(prev, "_status", "") == "running":
+            prev.set_done("上一段结束")
+        self._phase_n += 1
+        sep_key = f"phase_{self._phase_n}"
+        self.add_step(
+            kind if kind in _KIND_META else "Phase",
+            f"── {label} ──",
+            key=sep_key,
+            running=False,
+        )
+        self._current_run_key = f"run_{self._phase_n}"
+        self.add_step("Info", f"{label} · 进行中…", key=self._current_run_key, running=True)
+        self.set_status_hint(f"{label} · 进行中…")
 
     def add_step(
         self,
@@ -473,18 +527,39 @@ class GenTrajectory(QWidget):
 
     def fail_run(self, message: str):
         self.add_step("Error", "失败", body=message, running=False)
-        if self._steps:
-            last = self._steps[-1]
-            last.set_error("失败", message)
+        key = self._current_run_key
+        if key in self._by_key:
+            self._by_key[key].set_error("失败", message)
         self.set_status_hint("已失败")
 
-    def succeed_run(self, message: str = "完成"):
-        if "run" in self._by_key:
-            self.finish_step("run", title=message)
-        self.set_status_hint(message)
+    def succeed_run(self, message: str = "完成", *, summary: str = ""):
+        """收束当前运行头，并追加一条醒目的完成总结（默认展开）。"""
+        key = self._current_run_key
+        title = (message or "完成").strip()
+        if key in self._by_key:
+            self.finish_step(key, title=title)
+        elif "run" in self._by_key:
+            self.finish_step("run", title=title)
+        body = (summary or "").strip() or "可以保存代码，或点右下角「去试运行」验证。"
+        row = self.add_step(
+            "Done",
+            title,
+            key=f"done_{self._phase_n or 1}",
+            body=body,
+            running=False,
+        )
+        try:
+            row.set_body(body, expand=True)
+        except Exception:
+            pass
+        self.set_status_hint(f"✓ {title} · 可去试运行")
+        self._scroll_to_bottom()
 
     def mark_cancelled(self):
         self.add_step("Info", "已取消", running=False)
+        key = self._current_run_key
+        if key in self._by_key and getattr(self._by_key[key], "_status", "") == "running":
+            self._by_key[key].set_done("已取消")
         self.set_status_hint("已取消")
 
     def export_snapshot(self) -> list[dict]:

@@ -3,11 +3,11 @@
   "title": "DeepOne 日常多任务",
   "tags": ["deepone", "daily", "multi", "run_task", "日常"],
   "source_dir": "assets/images/DeepOne/DO日常",
-  "ref_script": "scripts/Deep One/DO日常.py",
+  "ref_script": "scripts/Deep One/DO日常_v1.py",
   "explanation_file": "explanation.txt",
   "expect_few_shot": ["multi_task_dispatch", "unknown_routing", "room_ok_popup", "goal_exit", "update_frame_refresh"],
-  "expect_template": null,
-  "must_contain": ["async def do_work", "UserBrowser"],
-  "must_not_contain": ["use_color_check"],
-  "notes": "手写草稿非标准 FSM；回归重点是 few-shot；room_ok_popup 范文含 update_frame"
+  "expect_template": "do_daily_v1",
+  "must_contain": ["async def do_work", "UserBrowser", "run_step_chain", "返回主界面", "竞技场"],
+  "must_not_contain": [],
+  "notes": "生产参考 DO日常_v1（step_chain）；生成侧结构仍跟 multi few-shot / run_task。回归重点：模板命中 + few-shot。"
 }

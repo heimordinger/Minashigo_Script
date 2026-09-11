@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "rules": [],
+  "updated_at": null,
+  "_comment": "Append-only: python -m backend.script_generator.corpus_promote 或 tools/analyze_gen_sessions.py --promote"
+}

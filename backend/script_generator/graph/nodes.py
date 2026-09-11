@@ -1,4 +1,4 @@
-"""Graph nodes: plan → (generate | generate_task×N → merge) → validate ↔ fix."""
+"""Graph nodes: plan → select_images → (generate | generate_task×N → merge) → validate ↔ fix."""
 
 from __future__ import annotations
 
@@ -128,8 +128,22 @@ def _emit_split_skeleton(state: ScriptGenState, plan: dict) -> None:
 async def plan_node(state: ScriptGenState) -> dict[str, Any]:
     """Produce a structured JSON contract (vision subset or filenames + role hints)."""
     if not state.get("enable_plan", True):
+        explanation = state.get("explanation") or ""
         plan = empty_plan()
-        _emit_artifact(state, "stage", "plan|done|已跳过规划|直接进入整文件生成")
+        try:
+            from backend.script_generator.agent import build_pseudo_plan_from_explanation
+            from backend.script_generator.architecture import apply_architecture_to_plan
+            pseudo = build_pseudo_plan_from_explanation(explanation)
+            plan = apply_architecture_to_plan(pseudo or empty_plan(), explanation)
+        except Exception:
+            plan = empty_plan()
+        arch = (plan or {}).get("architecture") or (plan or {}).get("kind") or ""
+        blurb = (
+            f"自由模式跳过 LLM 规划；伪计划 architecture={arch or 'n/a'}"
+            if arch
+            else "直接进入整文件生成"
+        )
+        _emit_artifact(state, "stage", f"plan|done|已跳过规划|{blurb}")
         return {
             "plan": "",
             "plan_struct": plan,
@@ -146,11 +160,31 @@ async def plan_node(state: ScriptGenState) -> dict[str, Any]:
         "plan|running|规划中|统筹共享状态 / 是否拆分 / 图片分发",
     )
 
+    all_paths = [Path(p) for p in state.get("image_paths") or []]
+    source_dir = str(state.get("source_dir") or "")
     from backend.script_generator.agent import (
         _build_messages,
         _load_config,
         _provider_supports_images,
+        build_image_parts,
+        image_rel_label,
     )
+    # 规划阶段也只看介绍∩磁盘零件，避免 MENU 等未点名图进入 plan
+    parts, _dropped, _pending, _meta = build_image_parts(
+        source_dir, explanation=state.get("explanation") or "",
+    )
+    if parts:
+        names = [str(p.get("file") or f"{p.get('path')}.png") for p in parts]
+        img_list = "\n".join(
+            f"- [{p.get('id')}] {p.get('role')}: {p.get('file')} — {p.get('label')}"
+            for p in parts
+        )
+    else:
+        names = [image_rel_label(p, source_dir) for p in all_paths]
+        img_list = "\n".join(f"- {n}" for n in names) or "(no images)"
+    explanation = state.get("explanation") or ""
+    hints = extract_image_role_hints(explanation, names)
+    hint_block = "\n".join(hints) if hints else "(none extracted; do not invent roles)"
 
     cfg = _load_config()
     scripts = cfg.get("available_scripts", [])
@@ -158,28 +192,32 @@ async def plan_node(state: ScriptGenState) -> dict[str, Any]:
         f"- {s.get('module')}: {s.get('name')} — {s.get('desc')}" for s in scripts
     ) or "(none)"
 
-    all_paths = [Path(p) for p in state.get("image_paths") or []]
-    names = [p.name for p in all_paths]
-    img_list = "\n".join(f"- {n}" for n in names) or "(no images)"
-    explanation = state.get("explanation") or ""
-    hints = extract_image_role_hints(explanation, names)
-    hint_block = "\n".join(hints) if hints else "(none extracted; do not invent roles)"
-
     system = (
         "You are a planner for Minashigo automation scripts. "
         "Do NOT write Python. Output ONLY valid JSON.\n\n"
         + plan_schema_hint()
         + "\n\nExtra requirements:\n"
-        "- First decide kind. multi_task only when >=2 independent goals.\n"
+        "- First decide kind yourself (single_fsm / multi_task / utility). "
+        "Prefer multi_task only for truly independent goals (房间/竞技/塔). "
+        "If explanation emphasizes 场景识别/按场景处理, prefer one loop that "
+        "dispatches by unknown_state — but choose the structure that best fits; "
+        "do not lock into one mode.\n"
         "- For multi_task: define shared_states BEFORE tasks; assign shared_images "
         "and per-task images so every listed filename is claimed when relevant.\n"
+        "- Image filenames MUST come from the IMAGE PARTS / Image filenames list "
+        "below (intro-filtered). Never invent MENU/home chrome.\n"
         "- Do not put available_scripts into reuse unless the game/domain matches.\n"
         "- Prefer explanation + role hints over pixels when they disagree.\n"
         "- AUTHORITY: explanation weight > generic Rules / few-shot; @helper means return that state name.\n"
     )
+    try:
+        from backend.script_generator.architecture import architecture_prompt_block
+        system = system + "\n" + architecture_prompt_block(explanation)
+    except Exception:
+        pass
     user = (
         f"## Script explanation\n{_hoist_plan_explanation(explanation)}\n\n"
-        f"## Image filenames\n{img_list}\n\n"
+        f"## Image filenames (IMAGE PARTS / intro-filtered)\n{img_list}\n\n"
         f"## Image role hints (from explanation / filenames; do not guess beyond this)\n"
         f"{hint_block}\n\n"
         f"## Available scripts to reuse\n{script_hint}\n\n"
@@ -200,11 +238,17 @@ async def plan_node(state: ScriptGenState) -> dict[str, Any]:
             provider=state["provider"],
             send_images=True,
             compress_images=bool(state.get("compress_images", False)),
+            source_dir=source_dir,
         )
     else:
         messages = [{"role": "user", "content": [{"type": "text", "text": user}]}]
     text, inp, out = await _llm_call(state, messages=messages, system_prompt=system)
     plan = parse_plan_text(text)
+    try:
+        from backend.script_generator.architecture import apply_architecture_to_plan
+        plan = apply_architecture_to_plan(plan, explanation)
+    except Exception:
+        pass
     split = should_split(plan)
     display = format_plan_for_display(plan)
     _emit_artifact(state, "plan", display)
@@ -266,6 +310,123 @@ def route_after_plan(state: ScriptGenState) -> str:
     return "single"
 
 
+async def select_images_node(state: ScriptGenState) -> dict[str, Any]:
+    """Stage-1: pick IMAGE PART ids from closed catalog before codegen."""
+    from backend.script_generator.agent import (
+        _build_messages,
+        _provider_supports_images,
+        build_image_parts,
+        format_image_parts_block,
+        format_image_selection_for_prompt,
+        image_select_schema_hint,
+        parse_image_part_selection,
+    )
+    from backend.script_generator.graph.plan_schema import select_plan_images as _sel_imgs
+
+    source_dir = str(state.get("source_dir") or "")
+    explanation = state.get("explanation") or ""
+    parts, dropped, pending, meta = build_image_parts(
+        source_dir, explanation=explanation,
+    )
+    if not parts:
+        _emit_artifact(state, "stage", "select_images|done|跳过选图|无零件表")
+        return {
+            "image_parts": [],
+            "selected_part_ids": [],
+            "image_selection": {"selections": [], "use_ids": [], "raw_ok": False},
+            "stage": "images_selected",
+        }
+
+    _emit_status(state, "选图中…")
+    _emit_artifact(
+        state,
+        "stage",
+        f"select_images|running|选图中|从 {len(parts)} 个零件中按步骤点名",
+    )
+
+    catalog = format_image_parts_block(
+        parts,
+        dropped=dropped,
+        pending=pending,
+        all_count=int(meta.get("all_count") or 0),
+        ambiguous=list(meta.get("ambiguous") or []),
+        banned_chrome=list(meta.get("banned_chrome") or []),
+        kept_files=[p.get("file") for p in parts],
+    )
+    system = (
+        "You select image parts for a Minashigo automation script. "
+        "Do NOT write Python. Output ONLY valid JSON.\n\n"
+        + image_select_schema_hint()
+    )
+    user = (
+        f"## Script explanation\n{explanation}\n\n"
+        f"{catalog}\n"
+        "Map each explanation step/scene to the part ids it needs.\n"
+    )
+    all_paths = [Path(p) for p in state.get("image_paths") or []]
+    send = bool(state.get("send_images")) and _provider_supports_images(state["provider"])
+    plan_imgs = _sel_imgs(all_paths, explanation, max_n=6) if send else []
+    if send and plan_imgs:
+        messages = _build_messages(
+            user,
+            plan_imgs,
+            provider=state["provider"],
+            send_images=True,
+            compress_images=bool(state.get("compress_images", False)),
+            source_dir=source_dir,
+        )
+    else:
+        messages = [{"role": "user", "content": [{"type": "text", "text": user}]}]
+
+    text, inp, out = await _llm_call(state, messages=messages, system_prompt=system)
+    selection = parse_image_part_selection(text, parts)
+    use_ids = list(selection.get("use_ids") or [])
+    # 失败或空选 → 回退全表（仍封闭，不放行介绍外图）
+    if not use_ids:
+        use_ids = [str(p.get("id")) for p in parts if p.get("id")]
+        selection = {
+            "selections": [{"step": "(fallback-all)", "use": list(use_ids)}],
+            "use_ids": list(use_ids),
+            "raw_ok": False,
+        }
+        think = f"选图解析失败或为空，回退全部 {len(use_ids)} 个零件"
+    else:
+        think = format_image_selection_for_prompt(selection, parts)
+
+    _emit_artifact(state, "image_selection", think if isinstance(think, str) else str(think))
+    _emit_artifact(
+        state,
+        "stage",
+        f"select_images|done|选图完成|选用 {len(use_ids)}/{len(parts)} 个零件",
+    )
+
+    # 写码看图时尽量只传已选文件，减少无关 chrome
+    narrowed = list(state.get("image_paths") or [])
+    if use_ids and source_dir:
+        by_id = {str(p.get("id")): p for p in parts}
+        root = Path(source_dir)
+        picked: list[str] = []
+        for sid in use_ids:
+            p = by_id.get(sid)
+            if not p:
+                continue
+            rel = str(p.get("file") or f"{p.get('path')}.png").replace("\\", "/")
+            abs_p = root / rel
+            if abs_p.is_file():
+                picked.append(str(abs_p))
+        if picked:
+            narrowed = picked
+
+    return {
+        "image_parts": parts,
+        "selected_part_ids": use_ids,
+        "image_selection": selection,
+        "image_paths": narrowed,
+        "stage": "images_selected",
+        **_add_tokens(state, inp, out),
+    }
+
+
 async def generate_node(state: ScriptGenState) -> dict[str, Any]:
     """Generate full Python script from explanation + structured plan + images."""
     _emit_status(state, "生成脚本中…")
@@ -276,14 +437,36 @@ async def generate_node(state: ScriptGenState) -> dict[str, Any]:
         _build_system_prompt,
         enforce_img_dir,
         format_explanation_structure_checklist,
+        format_image_selection_for_prompt,
         strip_code_fences,
     )
 
     source_dir = state.get("source_dir") or ""
     explanation = state.get("explanation") or ""
     free = bool(state.get("free_mode"))
+    selected_ids = list(state.get("selected_part_ids") or []) or None
+    try:
+        from backend.script_generator.execution_checklist import (
+            dumps_checklist,
+            extract_execution_checklist,
+            format_checklist_for_prompt,
+        )
+        ck_items = extract_execution_checklist(explanation, source_dir=source_dir)
+        if ck_items:
+            _emit_artifact(state, "checklist", dumps_checklist(ck_items))
+            _emit_artifact(
+                state,
+                "stage",
+                "checklist|done|执行清单|"
+                + format_checklist_for_prompt(ck_items)[:1200],
+            )
+    except Exception:
+        pass
     prompt = _build_system_prompt(
-        source_dir=source_dir, explanation=explanation, free_mode=free,
+        source_dir=source_dir,
+        explanation=explanation,
+        free_mode=free,
+        selected_part_ids=selected_ids,
     )
     plan_struct = state.get("plan_struct") or empty_plan()
     plan_block = format_plan_for_prompt(plan_struct)
@@ -291,7 +474,15 @@ async def generate_node(state: ScriptGenState) -> dict[str, Any]:
         explanation = f"{explanation}\n\n{plan_block}\n"
     elif plan_block.strip() and free and (plan_struct.get("tasks")):
         explanation = f"{explanation}\n\n## Pseudo plan (from introduction)\n{plan_block}\n"
-    struct_checklist = format_explanation_structure_checklist(explanation)
+    sel_block = format_image_selection_for_prompt(
+        state.get("image_selection") or {},
+        state.get("image_parts") or [],
+    )
+    if sel_block.strip():
+        explanation = f"{explanation}\n\n{sel_block}\n"
+    struct_checklist = format_explanation_structure_checklist(
+        explanation, source_dir=source_dir,
+    )
     if struct_checklist.strip() and free:
         explanation = f"{explanation}\n\n{struct_checklist}\n"
 
@@ -303,6 +494,7 @@ async def generate_node(state: ScriptGenState) -> dict[str, Any]:
         send_images=bool(state.get("send_images", True)),
         compress_images=bool(state.get("compress_images", False)),
         lean=free,
+        source_dir=str(state.get("source_dir") or ""),
     )
     raw, inp, out = await _llm_call_with_tools(
         state,
@@ -354,8 +546,12 @@ async def generate_task_node(state: ScriptGenState) -> dict[str, Any]:
     source_dir = state.get("source_dir") or ""
     explanation = state.get("explanation") or ""
     free = bool(state.get("free_mode"))
+    selected_ids = list(state.get("selected_part_ids") or []) or None
     base_prompt = _build_system_prompt(
-        source_dir=source_dir, explanation=explanation, free_mode=free,
+        source_dir=source_dir,
+        explanation=explanation,
+        free_mode=free,
+        selected_part_ids=selected_ids,
     )
     contract = format_task_contract_for_prompt(
         plan, task, task_index=idx, task_count=len(tasks),
@@ -378,7 +574,9 @@ async def generate_task_node(state: ScriptGenState) -> dict[str, Any]:
         f"## Full plan (context)\n{format_plan_for_prompt(plan)}\n"
     )
     all_paths = [Path(p) for p in state.get("image_paths") or []]
-    image_paths = resolve_task_image_paths(plan, task, all_paths)
+    image_paths = resolve_task_image_paths(
+        plan, task, all_paths, source_dir=str(state.get("source_dir") or ""),
+    )
     messages = _build_messages(
         user_text,
         image_paths,
@@ -386,6 +584,7 @@ async def generate_task_node(state: ScriptGenState) -> dict[str, Any]:
         send_images=bool(state.get("send_images", True)),
         compress_images=bool(state.get("compress_images", False)),
         lean=free,
+        source_dir=str(state.get("source_dir") or ""),
     )
     raw, inp, out = await _llm_call_with_tools(
         state,
@@ -605,12 +804,26 @@ async def fix_node(state: ScriptGenState) -> dict[str, Any]:
     else:
         checklist = format_required_task_keys_checklist(plan_struct)
     img_id_only = is_img_identifiers_only()
+    from backend.script_generator.agent import (
+        allowed_images_block,
+        format_image_selection_for_prompt,
+    )
+    selected_ids = list(state.get("selected_part_ids") or []) or None
+    parts_blk = allowed_images_block(
+        source_dir or "",
+        explanation=explanation or "",
+        selected_part_ids=selected_ids,
+    )
+    sel_blk = format_image_selection_for_prompt(
+        state.get("image_selection") or {},
+        state.get("image_parts") or [],
+    )
     system = (
         "You fix Minashigo automation Python scripts.\n"
         "Output ONLY the full corrected Python source. No markdown fences, no explanation.\n"
         f"Allowed browser methods ONLY: {methods}. Do NOT invent others "
         "(no click, get_window_size, get_element, etc.).\n"
-        "Keep FSM shape: do_work(browser: UserBrowser) with type annotation, "
+        "Keep FSM shape: do_work(browser: UserBrowser | UserWindow) with type annotation, "
         "未知 recovery state, STATES or TASK*_STATES + run_task, "
         "unknown_state must return business state names on id match (never 未知 after match), "
         "every called helper must be imported, "
@@ -620,10 +833,14 @@ async def fix_node(state: ScriptGenState) -> dict[str, Any]:
         "Scene wiring: hub states 主界面/出击界面 belong in every task table; "
         "task-specific scenes (房间界面/竞技场/塔) only in the matching TASK_* table. "
         "You may alias a scene key to an existing handler (same function, two keys).\n"
+        "If errors mention 未知+unknown_state / _task_entry_state: in run_task after "
+        "_resolve_state, use `if resolved and resolved != '未知'` and on 未知/未映射 "
+        "set `state_name = _task_entry_state(states, task_name)` — never stay on 未知 "
+        "only calling unknown_state. Prefer a small surgical edit, not a full rewrite.\n"
         + (
-            "Keep _img('stem') from script explanation; folder filename alignment is local.\n"
+            "Keep _img('stem') from IMAGE PARTS / SELECTED; folder filename alignment is local.\n"
             if img_id_only
-            else "Only use _img() / register_guard for PNG files that exist in the selected folder. "
+            else "Only use _img() / register_guard for IMAGE PARTS paths. "
             "Do NOT copy err1_1/err2_2 guards from login scripts unless those files exist.\n"
         )
         + "Add `import time` if using time.time / time.sleep.\n"
@@ -635,11 +852,13 @@ async def fix_node(state: ScriptGenState) -> dict[str, Any]:
             if free
             else ""
         )
+        + "\n" + parts_blk
     )
     user = (
         f"## Validation errors\n{err_block}\n\n"
         f"{plan_block}\n\n"
         f"{checklist}\n\n"
+        f"{sel_blk}\n"
         f"## Current code\n```python\n{state.get('code') or ''}\n```\n\n"
         "Return the complete fixed file. Satisfy EVERY missing-key error using the "
         "exact TASK_* names and keys listed above."

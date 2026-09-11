@@ -151,6 +151,39 @@
       "states": ["网页跳转", "游戏页加载", "进入游戏", "登录奖励", "完成登录"],
       "images": ["start1", "start2", "menu", "skip", "ok", "close1", "close2", "石头", "rank"],
       "keywords": ["登录", "login", "网页跳转", "DMM", "孤儿", "minashigo", "start1", "start2", "menu", "石头", "rank"]
+    },
+    {
+      "id": "do_daily_v1",
+      "title": "DeepOne 日常 v1",
+      "script": "scripts/Deep One/DO日常_v1.py",
+      "explanation": "assets/images/DeepOne/DO日常/脚本介绍.txt",
+      "source_dir": "assets/images/DeepOne/DO日常",
+      "tags": ["daily", "deepone", "multi", "日常", "run_task"],
+      "summary": "房间领体力 → 竞技场 → 爬塔 → 每日关卡 → 领取礼物 → 任务奖励；含导航辅助与过场探测。",
+      "when_to_use": "介绍含日常/房间/竞技场/爬塔/每日关卡/礼物/任务奖励，或素材夹是 DO日常；场景含 rank/出击_logo/jjc_logo/room_logo/ta_logo/meiri_logo。",
+      "copy": [
+        "场景并行探测（SCENE_MARKERS / _probe_scene）与过场判断",
+        "导航辅助：返回主界面 / 返回出击界面 / 打开菜单",
+        "各子任务结束条件（ap上限、jjc_end、ta_cishu、task_end）",
+        "竞技场结算优先级、塔 AUTO 等待、jjc_段位 x 最大",
+        "房间 room_ok 弹窗：无收取按钮时仍须关 ok"
+      ],
+      "do_not_copy": [
+        "IMG_DIR / 图片文件名 / 具体阈值数字（按当前介绍）",
+        "整份 run_step_chain 骨架当生成范式（生成仍用 run_task + 每任务独立 STATES）",
+        "DEBUG_PSEUDO_RECORD / 伪录制开关照抄"
+      ],
+      "states": ["返回主界面", "返回出击界面", "打开菜单", "房间领体力", "竞技场", "爬塔", "每日关卡", "领取礼物", "任务奖励领取"],
+      "images": [
+        "rank", "home", "出击_logo", "出击", "room_logo", "room", "room_收取奖励", "room_ok", "room_ap上限",
+        "jjc_logo", "jjc", "jjc_刷新", "jjc_段位", "jjc_出击", "jjc_end", "jjc_结算", "jjc_touch", "jjc_ok", "jjc_rankup",
+        "ta_logo", "ta", "ta_cishu", "ta_chuji", "ta_auto1", "ta_jiangli", "meiri_logo", "meiri", "meiri_skip",
+        "menu_logo", "menu", "gift_logo", "gift_claim", "task_logo", "task", "task_claim", "task_end"
+      ],
+      "keywords": [
+        "日常", "房间", "竞技场", "爬塔", "每日关卡", "礼物", "任务奖励", "领体力",
+        "jjc", "ta", "meiri", "room_ok", "出击", "DeepOne", "deeponer", "multi", "多任务"
+      ]
     }
   ],
   "golden": [

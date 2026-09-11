@@ -22,6 +22,8 @@ ALLOWED_METHODS = (
     "script_log",
     "note_state",
     "note_progress",
+    "enable_pseudo_record",
+    "finish_pseudo_record",
 )
 
 LOGIN_METHODS = frozenset({"goto", "dmm_login"})
@@ -66,12 +68,14 @@ _CARDS: dict[str, str] = {
     ),
     "click_image": (
         "await browser.click_image(path, threshold=CFG.threshold, "
-        "pianyi=(0,0)) -> bool\n"
+        "pianyi=(0,0), expect='none', appear_path=None) -> bool\n"
         "DO: single-template buttons; if scene changes, wait_image / "
-        "match_image the next id in the SAME state fn.\n"
+        "match_image the next id in the SAME state fn, OR set "
+        "expect='appear' + appear_path / expect='gone'.\n"
         "DON'T: use to select among several multi hits (use match_image_multi "
         "+ click).\n"
-        "NOTE: successful click invalidates frame; b_sleep also invalidates."
+        "NOTE: successful click invalidates frame; b_sleep also invalidates. "
+        "Default expect='none' (no confirm wait)."
     ),
     "wait_image": (
         "await browser.wait_image(path, timeout=seconds, threshold=0.9) "
@@ -119,6 +123,16 @@ _CARDS: dict[str, str] = {
     ),
     "note_progress": (
         "browser.note_progress()  # optional manual progress heartbeat"
+    ),
+    "enable_pseudo_record": (
+        "browser.enable_pseudo_record(script_name=..., force=True)  # sync\n"
+        "Starts timeline+keyframe recording under screenshots/pseudo_record/.\n"
+        "DO: call once at do_work start when measuring performance.\n"
+        "DON'T: remove during optimize; instrumentation is always allowed."
+    ),
+    "finish_pseudo_record": (
+        "browser.finish_pseudo_record(status='ok'|'error')  # sync\n"
+        "Flushes summary.json / timeline; call in finally."
     ),
     "goto": (
         "await browser.goto(url: str, retries=3)  # LOGIN / web navigation ONLY\n"

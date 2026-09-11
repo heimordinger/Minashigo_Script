@@ -264,6 +264,10 @@ class PseudoRecorder:
                     break
                 sp = self._spans.pop()
             dt = time.perf_counter() - sp.t0
+            # 未闭合 span 冲入 timeline 时截断到剩余墙钟，避免幽灵超长 dt
+            remain = max(0.0, self.elapsed_s)
+            if dt > remain + 0.5:
+                dt = remain
             self.event(
                 sp.kind,
                 name=sp.name,
@@ -293,6 +297,18 @@ class PseudoRecorder:
 
 
 def build_summary(timeline_path: Path, *, total_s: float | None = None) -> dict:
+    """从 timeline 汇总耗时。
+
+    语义：
+    - total_s：墙钟总时长
+    - black_s：black_on→black_off 跨度之和
+    - effective_s：total_s - black_s（非黑墙钟；脚本侧优化主要看这里）
+    - sleep/match：脚本线程事件耗时（可与黑段重叠；accounted 只含这两项）
+    - capture：observer 并行采样流，与 sleep/match 天然重叠 → parallel_overhead_s，
+      不进 accounted、不参与 buckets_exceed_wall
+    - *_out_black_s：非黑段内事件耗时（脚本 overhead 用 match/sleep out_black）
+    - *_in_black_s：黑段内事件耗时（不计脚本开销）
+    """
     events: list[dict] = []
     if timeline_path.is_file():
         for line in timeline_path.read_text(encoding="utf-8").splitlines():
@@ -305,39 +321,131 @@ def build_summary(timeline_path: Path, *, total_s: float | None = None) -> dict:
                 continue
 
     if total_s is None and events:
-        total_s = float(events[-1].get("t") or 0.0)
+        try:
+            total_s = float(events[-1].get("t") or 0.0)
+        except Exception:
+            total_s = 0.0
     total_s = float(total_s or 0.0)
 
+    black_spans: list[dict] = []
+    pending_on: dict | None = None
+    for e in events:
+        kind = str(e.get("kind") or "")
+        if kind == "black_on":
+            pending_on = e
+        elif kind == "black_off":
+            dt = float(e.get("dt_ms") or 0.0) / 1000.0
+            t0 = (pending_on or {}).get("t")
+            t1 = e.get("t")
+            try:
+                t0f = float(t0) if t0 is not None else None
+                t1f = float(t1) if t1 is not None else None
+            except Exception:
+                t0f, t1f = None, None
+            if t0f is not None and t1f is not None and t1f < t0f:
+                t0f, t1f = t1f, t0f
+            if dt <= 0 and t0f is not None and t1f is not None:
+                dt = max(0.0, t1f - t0f)
+            black_spans.append(
+                {
+                    "t0": t0f if t0f is not None else t0,
+                    "t1": t1f if t1f is not None else t1,
+                    "dt_s": round(dt, 2),
+                }
+            )
+            pending_on = None
+
+    black_intervals: list[tuple[float, float]] = []
+    black_s = 0.0
+    for sp in black_spans:
+        try:
+            a, b = float(sp["t0"]), float(sp["t1"])
+        except Exception:
+            black_s += float(sp.get("dt_s") or 0)
+            continue
+        if b < a:
+            a, b = b, a
+        black_intervals.append((a, b))
+        black_s += max(0.0, b - a)
+
+    def _in_black(t: float) -> bool:
+        for a, b in black_intervals:
+            if a <= t <= b:
+                return True
+        return False
+
     by_kind: dict[str, dict] = {}
-    match_fail = 0
-    match_ok = 0
-    sleep_s = 0.0
-    capture_s = 0.0
-    match_s = 0.0
+    match_fail = match_ok = 0
+    match_fail_out = match_ok_out = 0
+    sleep_s = sleep_in = sleep_out = 0.0
+    capture_s = capture_in = capture_out = 0.0
+    match_s = match_in = match_out = 0.0
     click_n = 0
     long_sleeps: list[dict] = []
     long_matches: list[dict] = []
     log_marks: list[dict] = []
+    truncated_skipped_n = 0
+    truncated_skipped_s = 0.0
+    has_black_events = any(
+        str(e.get("kind") or "") in ("black_on", "black_off") for e in events
+    )
 
     for e in events:
         kind = str(e.get("kind") or "")
+        truncated = bool(e.get("truncated"))
         bucket = by_kind.setdefault(kind, {"count": 0, "dt_ms": 0.0})
         bucket["count"] += 1
         dt_ms = float(e.get("dt_ms") or 0.0)
+        try:
+            t = float(e.get("t") or 0.0)
+        except Exception:
+            t = 0.0
+
+        # finish() 冲掉的未闭合 span 常带 truncated=True 且 dt≈整段墙钟；
+        # 不得计入 sleep/match/capture 桶，否则 overhead 被幽灵时长撑爆。
+        if truncated and kind in ("sleep", "match", "capture"):
+            truncated_skipped_n += 1
+            truncated_skipped_s += dt_ms / 1000.0
+            continue
+
+        # 单事件耗时不可能超过整场墙钟
+        if total_s > 0 and dt_ms / 1000.0 > total_s * 1.01:
+            truncated_skipped_n += 1
+            truncated_skipped_s += dt_ms / 1000.0
+            continue
+
         bucket["dt_ms"] += dt_ms
+        inside = _in_black(t) if black_intervals else False
+        dt_s = dt_ms / 1000.0
 
         if kind == "sleep":
-            sleep_s += dt_ms / 1000.0
+            sleep_s += dt_s
+            if inside:
+                sleep_in += dt_s
+            else:
+                sleep_out += dt_s
             if dt_ms >= 1500:
                 long_sleeps.append(e)
         elif kind == "capture":
-            capture_s += dt_ms / 1000.0
+            capture_s += dt_s
+            if inside:
+                capture_in += dt_s
+            else:
+                capture_out += dt_s
         elif kind == "match":
-            match_s += dt_ms / 1000.0
+            match_s += dt_s
+            if inside:
+                match_in += dt_s
+            else:
+                match_out += dt_s
             if e.get("ok"):
                 match_ok += 1
+                if not inside:
+                    match_ok_out += 1
             else:
                 match_fail += 1
+                if not inside:
+                    match_fail_out += 1
             if dt_ms >= 400:
                 long_matches.append(e)
         elif kind in ("click", "click_image"):
@@ -345,7 +453,6 @@ def build_summary(timeline_path: Path, *, total_s: float | None = None) -> dict:
         elif kind == "log":
             log_marks.append({"t": e.get("t"), "msg": e.get("msg")})
 
-    # 相邻 log 之间的墙钟间隔 → 找「黑段」
     gaps: list[dict] = []
     for a, b in zip(log_marks, log_marks[1:]):
         try:
@@ -364,33 +471,64 @@ def build_summary(timeline_path: Path, *, total_s: float | None = None) -> dict:
             )
     gaps.sort(key=lambda x: -x["dt_s"])
 
-    # 黑屏段：black_on → black_off（dt_ms）累加
-    black_s = 0.0
-    black_spans: list[dict] = []
-    pending_on: dict | None = None
-    for e in events:
-        kind = str(e.get("kind") or "")
-        if kind == "black_on":
-            pending_on = e
-        elif kind == "black_off":
-            dt = float(e.get("dt_ms") or 0.0) / 1000.0
-            black_s += dt
-            black_spans.append(
-                {
-                    "t0": (pending_on or {}).get("t"),
-                    "t1": e.get("t"),
-                    "dt_s": round(dt, 2),
-                }
-            )
-            pending_on = None
-
     effective_s = max(0.0, total_s - black_s)
-    accounted = sleep_s + capture_s + match_s
+    # 脚本线程可与墙钟比；capture 是并行 observer，单独报，不进墙钟超额判定
+    accounted = sleep_s + match_s
+    parallel_overhead_s = capture_s
+    unaccounted = max(0.0, total_s - accounted)
+
+    quality_flags: list[str] = []
+    if total_s <= 0:
+        quality_flags.append("zero_total")
+    if total_s >= 3600:
+        quality_flags.append("extremely_long_wall")
+    if black_s > total_s * 1.05 + 1.0:
+        quality_flags.append("black_exceeds_total")
+    if abs(effective_s + black_s - total_s) > 1.0:
+        quality_flags.append("effective_black_inconsistent")
+    if total_s > 0 and accounted > total_s * 1.05 + 1.0:
+        quality_flags.append("buckets_exceed_wall")
+    if truncated_skipped_n > 0:
+        quality_flags.append("truncated_spans_skipped")
+    if total_s > 60 and not has_black_events:
+        quality_flags.append("no_black_instrumentation")
+    if total_s > 120 and black_s <= 0 and has_black_events:
+        quality_flags.append("black_zero_suspicious")
+    if effective_s <= 0 and total_s > 30 and black_s <= 0:
+        quality_flags.append("effective_zero_contradiction")
+    if match_ok + match_fail == 0 and total_s > 30:
+        quality_flags.append("no_match_events")
+
+    metrics_reliable = not any(
+        f in quality_flags
+        for f in (
+            "zero_total",
+            "extremely_long_wall",
+            "black_exceeds_total",
+            "effective_black_inconsistent",
+            "effective_zero_contradiction",
+            "buckets_exceed_wall",
+        )
+    )
+    ceiling_eligible = metrics_reliable and "no_black_instrumentation" not in quality_flags
+    # 无黑埋点时：有足够 match 样本可做弱边界评估（不可 recommend_skip）
+    weak_ceiling_eligible = bool(
+        metrics_reliable
+        and not ceiling_eligible
+        and "no_black_instrumentation" in quality_flags
+        and (match_ok + match_fail) >= 20
+    )
+
     return {
         "total_s": round(total_s, 2),
         "black_s": round(black_s, 2),
         "effective_s": round(effective_s, 2),
         "event_count": len(events),
+        "metrics_reliable": metrics_reliable,
+        "ceiling_eligible": ceiling_eligible,
+        "weak_ceiling_eligible": weak_ceiling_eligible,
+        "quality_flags": quality_flags,
+        "has_black_events": has_black_events,
         "by_kind": {
             k: {
                 "count": v["count"],
@@ -402,13 +540,24 @@ def build_summary(timeline_path: Path, *, total_s: float | None = None) -> dict:
             "sleep_s": round(sleep_s, 2),
             "capture_s": round(capture_s, 2),
             "match_s": round(match_s, 2),
+            "sleep_in_black_s": round(sleep_in, 2),
+            "sleep_out_black_s": round(sleep_out, 2),
+            "capture_in_black_s": round(capture_in, 2),
+            "capture_out_black_s": round(capture_out, 2),
+            "match_in_black_s": round(match_in, 2),
+            "match_out_black_s": round(match_out, 2),
             "accounted_s": round(accounted, 2),
-            "unaccounted_s": round(max(0.0, total_s - accounted), 2),
+            "parallel_overhead_s": round(parallel_overhead_s, 2),
+            "unaccounted_s": round(unaccounted, 2),
             "match_ok": match_ok,
             "match_fail": match_fail,
+            "match_ok_out_black": match_ok_out,
+            "match_fail_out_black": match_fail_out,
             "clicks": click_n,
             "black_s": round(black_s, 2),
             "effective_s": round(effective_s, 2),
+            "truncated_skipped_n": truncated_skipped_n,
+            "truncated_skipped_s": round(truncated_skipped_s, 2),
         },
         "black_spans": black_spans[:20],
         "top_log_gaps": gaps[:15],
@@ -419,21 +568,45 @@ def build_summary(timeline_path: Path, *, total_s: float | None = None) -> dict:
 
 def format_summary_text(summary: dict) -> str:
     lines = []
+    flags = summary.get("quality_flags") or []
+    reliable = summary.get("metrics_reliable", True)
     lines.append(
         f"伪录制摘要  total={summary.get('total_s')}s  "
         f"black={summary.get('black_s')}s  "
         f"effective={summary.get('effective_s')}s  "
-        f"events={summary.get('event_count')}"
+        f"events={summary.get('event_count')}  "
+        f"reliable={'yes' if reliable else 'NO'}"
     )
+    if flags:
+        lines.append("质量标记: " + ", ".join(flags))
     tot = summary.get("totals") or {}
     lines.append(
-        "分类: "
+        "分类(脚本线程): "
         f"sleep={tot.get('sleep_s')}s  "
-        f"capture={tot.get('capture_s')}s  "
         f"match={tot.get('match_s')}s  "
+        f"accounted={tot.get('accounted_s')}s  "
         f"unaccounted={tot.get('unaccounted_s')}s  "
         f"match_ok/fail={tot.get('match_ok')}/{tot.get('match_fail')}  "
         f"clicks={tot.get('clicks')}"
+    )
+    lines.append(
+        "分类(并行observer): "
+        f"capture={tot.get('capture_s')}s  "
+        f"parallel_overhead={tot.get('parallel_overhead_s', tot.get('capture_s'))}s"
+        "（不进墙钟 accounted）"
+    )
+    lines.append(
+        "分类(非黑段/脚本overhead): "
+        f"sleep={tot.get('sleep_out_black_s')}s  "
+        f"match={tot.get('match_out_black_s')}s  "
+        f"match_ok/fail={tot.get('match_ok_out_black')}/{tot.get('match_fail_out_black')}"
+        f"  | capture_out_black={tot.get('capture_out_black_s')}s（并行，仅参考）"
+    )
+    lines.append(
+        "分类(黑段内): "
+        f"sleep={tot.get('sleep_in_black_s')}s  "
+        f"capture={tot.get('capture_in_black_s')}s  "
+        f"match={tot.get('match_in_black_s')}s"
     )
     lines.append("")
     lines.append("黑屏段（已从 effective 剔除）:")

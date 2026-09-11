@@ -232,6 +232,48 @@ def missing_images_in_text(text: str, source_dir: str | Path) -> list[str]:
     return missing
 
 
+def mark_image_tokens(
+    text: str,
+    source_dir: str | Path | None = None,
+    known: dict[str, str] | None = None,
+) -> str:
+    """给文本中的图片路径包上反引号，便于生成侧 LLM 识别为素材 token。"""
+    text = text or ""
+    if not text.strip():
+        return text
+    known_map = known if known is not None else (
+        dir_image_map(source_dir) if source_dir else {}
+    )
+    spans = find_image_tokens(text, source_dir, known=known_map)
+    if not spans:
+        return text
+    parts: list[str] = []
+    last = 0
+    for start, end, token in spans:
+        if start < last:
+            continue
+        # 已有反引号则跳过
+        if start > 0 and text[start - 1] == "`" and end < len(text) and text[end] == "`":
+            continue
+        parts.append(text[last:start])
+        parts.append(f"`{token}`")
+        last = end
+    parts.append(text[last:])
+    return "".join(parts)
+
+
+def basename_collisions(source_dir: str | Path | None) -> dict[str, list[str]]:
+    """同名 basename 出现在多个相对路径时 → {basename: [rel, ...]}。"""
+    known = dir_image_map(source_dir)
+    if not known:
+        return {}
+    by_base: dict[str, list[str]] = {}
+    for rel in known.values():
+        base = Path(rel).name.lower()
+        by_base.setdefault(base, []).append(rel)
+    return {b: sorted(v) for b, v in by_base.items() if len(v) > 1}
+
+
 @dataclass
 class SceneRow:
     """兼容旧 JSON：仅标识图 → 状态。"""
@@ -425,10 +467,10 @@ class ScriptSpec:
             for ref in _HELPER_REF_RE.findall(t.steps or ""):
                 if ref in named_helpers or ref in feature_tags:
                     continue
-                issues.append(SpecIssue(
-                    "error",
-                    f"任务「{t.name}」引用了不存在的辅助步骤 @{ref}",
-                ))
+                    issues.append(SpecIssue(
+                        "error",
+                        f"任务「{t.name}」引用了不存在的辅助步骤 @{ref}",
+                    ))
 
         if self.source_dir:
             root = Path(self.source_dir)
@@ -465,6 +507,20 @@ class ScriptSpec:
                         ))
             else:
                 issues.append(SpecIssue("warn", f"图片目录不存在：{self.source_dir}"))
+
+        # 同名 basename 多路径：裸写文件名易让生成侧用错图
+        collisions = basename_collisions(self.source_dir) if self.source_dir else {}
+        if collisions:
+            sample = []
+            for _base, paths in list(collisions.items())[:4]:
+                sample.append(" / ".join(paths))
+            more = f" 等{len(collisions)}组" if len(collisions) > 4 else ""
+            issues.append(SpecIssue(
+                "warn",
+                "存在同名图片位于不同子目录（步骤里请写完整相对路径）："
+                + "；".join(sample)
+                + more,
+                        ))
 
         return issues
 
@@ -523,8 +579,20 @@ class ScriptSpec:
                 return [line + "  （引用：" + "、".join(f"@{r}" for r in known) + "）"]
         return [line]
 
+    @staticmethod
+    def _format_numbered_steps(raw_lines: list[str]) -> list[str]:
+        """导出编号步骤（含列举 / 分支结构）。"""
+        return _structure_export_steps(raw_lines)
+
     def to_explanation_text(self, *, include_validation: bool = True) -> str:
         """导出给生成 Agent 用的规范说明文本。"""
+        known: dict[str, str] = {}
+        if self.source_dir:
+            known = dir_image_map(self.source_dir) or refresh_dir_image_map(self.source_dir)
+
+        def _mark(s: str) -> str:
+            return mark_image_tokens(s, self.source_dir, known=known) if known else s
+
         lines: list[str] = []
         if include_validation:
             summary = self.validation_summary()
@@ -543,12 +611,10 @@ class ScriptSpec:
                 lines.append(f"（{chr(ord('a') + i - 1) if i <= 26 else i}）{name}")
                 steps = (h.steps or "").strip()
                 if steps:
-                    for step in steps.splitlines():
-                        step = step.strip()
-                        if step:
-                            lines.append(f"  - {step}")
+                    marked = _mark(steps)
+                    lines.extend(self._format_numbered_steps(marked.splitlines()))
                 else:
-                    lines.append("  - （未写步骤）")
+                    lines.append("  1. （未写步骤）")
             lines.append("")
 
         id_entries = [
@@ -571,7 +637,7 @@ class ScriptSpec:
             for e in id_entries:
                 img = ensure_image_name(e.image)
                 extra = f"；{e.note.strip()}" if e.note.strip() else ""
-                lines.append(f"{img}：可作为「{e.state.strip()}」的标识图{extra}")
+                lines.append(f"`{img}`：可作为「{e.state.strip()}」的标识图{extra}")
         lines.append("")
 
         if btn_entries or other_entries:
@@ -583,11 +649,11 @@ class ScriptSpec:
                     bits.append(f"界面「{e.state.strip()}」")
                 if e.note.strip():
                     bits.append(e.note.strip())
-                lines.append(f"{img}：{'；'.join(bits)}")
+                lines.append(f"`{img}`：{'；'.join(bits)}")
             for e in other_entries:
                 img = ensure_image_name(e.image)
                 note = e.note.strip() or "其它"
-                lines.append(f"{img}：{note}")
+                lines.append(f"`{img}`：{note}")
             lines.append("")
 
         lines.append("任务流程：")
@@ -599,16 +665,22 @@ class ScriptSpec:
                 lines.append(f"（{i}）{t.name.strip()}")
                 steps = (t.steps or "").strip()
                 if steps:
-                    for step in steps.splitlines():
-                        for expanded in self._expand_step_line(step, helpers):
-                            lines.append(f"  - {expanded}")
+                    marked = _mark(steps)
+                    lines.extend(
+                        _structure_export_steps(
+                            marked.splitlines(),
+                            expand_line=lambda ln, h=helpers: [
+                                _mark(x) for x in self._expand_step_line(ln, h)
+                            ],
+                        )
+                    )
                 else:
-                    lines.append("  - （未写步骤）")
+                    lines.append("  1. （未写步骤）")
         lines.append("")
 
         rule_bits = []
         if (self.notes or "").strip():
-            rule_bits.append(self.notes.strip())
+            rule_bits.append(_mark(self.notes.strip()) if known else self.notes.strip())
         auto = self._auto_rules_from_images()
         if auto:
             rule_bits.append(auto)
@@ -641,9 +713,9 @@ class ScriptSpec:
                 sec = hold.group(1) or hold.group(2)
                 tags.append(f"连续可见约 {sec} 秒再操作")
             if tags:
-                chunks.append(f"{img}：{'；'.join(tags)}")
+                chunks.append(f"`{img}`：{'；'.join(tags)}")
             elif (e.role or "") == ROLE_BUTTON and note:
-                chunks.append(f"{img}：{note}")
+                chunks.append(f"`{img}`：{note}")
         return "\n".join(chunks)
 
     def _infer_task_states(self, task: TaskSpec) -> list[str]:
@@ -819,12 +891,134 @@ _IMG_LINE_RE = re.compile(
 )
 _HELPER_EXPAND_RE = re.compile(r"^执行辅助步骤「([^」]+)」：?\s*$")
 _DOT_STEP_RE = re.compile(r"^[·•]\s*")
+# 导出编号「  1. xxx」/「  2.1 xxx」/「第1步：xxx」回读时剥掉
+_STEP_NUM_RE = re.compile(
+    r"^(?:第\s*)?(?:"
+    r"\d+\.\d+\s+"  # 2.1 子步
+    r"|\d+\s*[.、．:：]\s*"  # 1. / 1、
+    r"|\d+\s*步[：:\s]?"
+    r")"
+)
+_LIST_HINT_RE = re.compile(r"以下|如下|优先级|列举|包括|依次|按顺序|候选")
+_BRANCH_HINT_RE = re.compile(r"情况|分支")
+_IMG_ONLY_RE = re.compile(
+    r"^(?:[^/\s]+/)*[^/\s]+\.(?:png|jpe?g|webp|bmp)\s*$",
+    re.I,
+)
 # 图片说明里「a.png / b.png」等同义多文件名
 _IMG_NAME_SPLIT_RE = re.compile(r"\s*[/／、]\s*")
 _IMG_FILE_RE = re.compile(
     r"^(.+?\.(?:png|jpe?g|webp|bmp))$",
     re.I,
 )
+
+
+def _is_list_intro(line: str) -> bool:
+    """「持续点击以下按钮（以优先级排序）：」类列举导语。"""
+    s = (line or "").strip()
+    if not s.endswith(("：", ":")):
+        return False
+    return bool(_LIST_HINT_RE.search(s))
+
+
+def _is_branch_head(line: str) -> bool:
+    """「未确定属性的情况：」类分支标题。"""
+    s = (line or "").strip()
+    if not s.endswith(("：", ":")):
+        return False
+    if _is_list_intro(s):
+        return False
+    core = s.rstrip("：:").strip()
+    if _BRANCH_HINT_RE.search(core):
+        return True
+    return bool(re.match(r"^(未|已|若|如果|当|无|有)", core))
+
+
+def _is_list_item(line: str) -> bool:
+    """列举导语后的条目（多为图片路径）。"""
+    s = (line or "").strip()
+    if not s or _is_list_intro(s) or _is_branch_head(s):
+        return False
+    if s.startswith(("@", "{")):
+        return False
+    if _IMG_ONLY_RE.match(s):
+        return True
+    if "/" in s and len(s) < 100 and not re.search(
+        r"[，。；]|失败|成功|点击|匹配|等待|拖拽|跳到|下一步", s
+    ):
+        return True
+    return False
+
+
+def _structure_export_steps(
+    raw_lines: list[str],
+    *,
+    expand_line=None,
+) -> list[str]:
+    """导出带编号步骤，识别列举 / 多级分支。
+
+    - 普通步：``  1. …``
+    - 列举：导语占一步号，条目用 ``     - …`` 挂在其下（不另占步号）
+    - 分支：标题占一步号，分支内 ``     1.1 / 1.2`` 子编号
+    """
+    lines = [(x or "").strip() for x in raw_lines if (x or "").strip()]
+    if not lines:
+        return ["  1. （未写步骤）"]
+
+    out: list[str] = []
+    step_n = 0
+    i = 0
+    n = len(lines)
+
+    def _expand(text: str) -> list[str]:
+        if expand_line is None:
+            return [text]
+        got = expand_line(text)
+        return got if got else [text]
+
+    while i < n:
+        line = lines[i]
+
+        if _is_list_intro(line):
+            step_n += 1
+            head = _expand(line)
+            out.append(f"  {step_n}. {head[0]}")
+            for extra in head[1:]:
+                body = _DOT_STEP_RE.sub("", extra.strip()).strip()
+                if body:
+                    out.append(f"     · {body}")
+            i += 1
+            while i < n and _is_list_item(lines[i]):
+                out.append(f"     - {lines[i]}")
+                i += 1
+            continue
+
+        if _is_branch_head(line):
+            step_n += 1
+            out.append(f"  {step_n}. {line}")
+            i += 1
+            sub = 0
+            while i < n and not _is_branch_head(lines[i]) and not _is_list_intro(lines[i]):
+                sub += 1
+                body_lines = _expand(lines[i])
+                out.append(f"     {step_n}.{sub} {body_lines[0]}")
+                for extra in body_lines[1:]:
+                    body = _DOT_STEP_RE.sub("", extra.strip()).strip()
+                    if body:
+                        out.append(f"        · {body}")
+                i += 1
+            continue
+
+        step_n += 1
+        expanded = _expand(line)
+        out.append(f"  {step_n}. {expanded[0]}")
+        for extra in expanded[1:]:
+            body = _DOT_STEP_RE.sub("", extra.strip()).strip()
+            if body:
+                out.append(f"     · {body}")
+        i += 1
+
+    return out if out else ["  1. （未写步骤）"]
 
 
 def _split_image_token(raw: str) -> list[str]:
@@ -910,6 +1104,18 @@ def _first_content_line(block: str) -> str:
     return ""
 
 
+def _strip_step_prefix(s: str) -> str:
+    """去掉导出编号 / bullet，得到编辑器里的纯步骤文案。"""
+    line = (s or "").strip()
+    if not line:
+        return ""
+    if line.startswith("- "):
+        line = line[2:].strip()
+    line = _DOT_STEP_RE.sub("", line).strip()
+    line = _STEP_NUM_RE.sub("", line).strip()
+    return line
+
+
 def _parse_named_blocks(block: str) -> list[HelperSpec]:
     items: list[HelperSpec] = []
     name = ""
@@ -930,10 +1136,12 @@ def _parse_named_blocks(block: str) -> list[HelperSpec]:
             flush()
             name = m.group(1).strip()
             continue
-        if s.startswith("- "):
-            steps.append(s[2:].strip())
-        elif name:
-            steps.append(s)
+        # 展开子行不写回 helper 定义
+        if s.startswith(("·", "•")) or _DOT_STEP_RE.match(s):
+            continue
+        body = _strip_step_prefix(s)
+        if body and name:
+            steps.append(body)
     flush()
     return items
 
@@ -945,6 +1153,9 @@ def _collapse_helper_steps(raw_steps: list[str]) -> str:
         line = (s or "").strip()
         if not line:
             continue
+        line = _strip_step_prefix(line)
+        if not line:
+            continue
         hm = _HELPER_EXPAND_RE.match(line)
         if hm:
             out.append(f"@{hm.group(1)}")
@@ -952,6 +1163,9 @@ def _collapse_helper_steps(raw_steps: list[str]) -> str:
             continue
         if skipping_expand:
             if line.startswith(("·", "•")) or _DOT_STEP_RE.match(line):
+                continue
+            # 编号展开残留
+            if line.startswith("执行辅助步骤"):
                 continue
             skipping_expand = False
         line = re.sub(r"\s*（引用：[^）]+）\s*$", "", line)
@@ -980,12 +1194,16 @@ def _parse_task_blocks(block: str) -> list[TaskSpec]:
             flush()
             name = m.group(1).strip()
             continue
-        if s.startswith("- "):
-            steps.append(s[2:])
-        elif s.startswith("·") or s.startswith("•"):
-            steps.append(s)
-        elif name:
-            steps.append(s)
+        # 辅助展开缩进子行
+        if s.startswith(("·", "•")) or (
+            raw.startswith("     ") and (_DOT_STEP_RE.match(s) or s.startswith(("·", "•")))
+        ):
+            if name:
+                steps.append(s)
+            continue
+        body = _strip_step_prefix(s)
+        if body and name:
+            steps.append(body)
     flush()
     return items
 

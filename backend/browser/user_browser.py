@@ -469,6 +469,10 @@ class UserBrowser:
             max_delay: float | None = None,
             match_mode: str = "image",
             pixel_tol: float = 8.0,
+            expect: str = "none",
+            appear_path=None,
+            confirm_timeout: float = 8.0,
+            stable_ms: float = 350.0,
     ):
         import time
         _t0 = time.time()
@@ -488,6 +492,10 @@ class UserBrowser:
                 match_select=match_select,
                 match_mode=match_mode,
                 pixel_tol=pixel_tol,
+                expect=expect,
+                appear_path=appear_path,
+                confirm_timeout=confirm_timeout,
+                stable_ms=stable_ms,
             )
             print(f"[UserBrowser.click_image] _browser.click_image done t={time.time()-_t0:.3f}s result={result}", flush=True)
             self._stuck.note_action("click", img_path, bool(result))
@@ -543,6 +551,25 @@ class UserBrowser:
             f"最大匹配度:{match.max_val}"
         )
         self._emit_click_hud(str(img_path), True, match.max_val, x=x, y=y)
+
+        exp = (expect or "none").strip().lower()
+        if exp not in ("", "none", "off"):
+            try:
+                from backend.script_generator.click_confirm import confirm_after_click
+                ok = await confirm_after_click(
+                    self,
+                    img_path,
+                    expect=exp,
+                    appear_path=appear_path,
+                    timeout=confirm_timeout,
+                    threshold=threshold,
+                    stable_ms=stable_ms,
+                )
+                if not ok:
+                    self._stuck.note_action("click", img_path, False)
+                    return False
+            except Exception:
+                pass
 
         self.invalidate_frame()
         try:
