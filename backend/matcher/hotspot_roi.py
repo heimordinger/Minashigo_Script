@@ -476,7 +476,28 @@ def adaptive_match(
     store = get_hotspot_store()
     templ_wh = _template_size(template, matcher)
 
-    def _call(crop_tl=None, crop_br=None):
+    from backend.matcher.scale_calibrate import (
+        cache_key,
+        get_scale_cache,
+        resolve_scale_scales,
+    )
+
+    scale_hint, scales, scale_src = resolve_scale_scales(
+        matcher=matcher,
+        frame=frame,
+        template=template,
+        template_key=tkey,
+        frame_w=fw,
+        frame_h=fh,
+        capture_mode=capture_mode,
+    )
+    fallback_wide = True
+    print(
+        f"[scale] src={scale_src} hint={scale_hint} band={scales} "
+        f"frame={fw}x{fh} tpl={tkey}"
+    )
+
+    def _call(crop_tl=None, crop_br=None, *, force_scales=None, force_hint=None):
         return matcher.match(
             target=frame,
             template=template,
@@ -488,7 +509,69 @@ def adaptive_match(
             pixel_tol=pixel_tol,
             crop_top_left=crop_tl,
             crop_bottom_right=crop_br,
+            scale_hint=force_hint if force_hint is not None else scale_hint,
+            scales=force_scales if force_scales is not None else scales,
+            fallback_wide_scales=fallback_wide,
         )
+
+    def _ok_result(result) -> bool:
+        if not result or result.x is None:
+            return False
+        if getattr(result, "score", None) is not None and result.score < threshold:
+            return False
+        if hasattr(result, "match_success") and result.match_success is False:
+            # still allow if score passes threshold
+            if getattr(result, "score", None) is not None and result.score >= threshold:
+                return True
+            if getattr(result, "max_val", None) is not None and result.max_val >= threshold:
+                return True
+            return False
+        return True
+
+    def _after_result(result, via_roi: bool):
+        skey = cache_key(tkey, fw, fh, capture_mode)
+        cache = get_scale_cache()
+        ok = _ok_result(result)
+        if ok:
+            cache.note_hit(skey)
+            store.record_hit(
+                template_key=tkey,
+                frame_key=fkey,
+                x=float(result.x),
+                y=float(result.y),
+                score=float(getattr(result, "max_val", None) or getattr(result, "score", 0) or 0),
+                via_roi=via_roi,
+            )
+            return result
+
+        # 缓存尺度连续未命中 → 强制重定标再试一次
+        if scale_src in ("cache", "calibrate", "match_ref") and cache.note_miss(skey):
+            hint2, scales2, src2 = resolve_scale_scales(
+                matcher=matcher,
+                frame=frame,
+                template=template,
+                template_key=tkey,
+                frame_w=fw,
+                frame_h=fh,
+                capture_mode=capture_mode,
+                force_recalibrate=True,
+            )
+            print(f"[scale] recalibrate after miss → src={src2} hint={hint2}")
+            retry = _call(None, None, force_scales=scales2, force_hint=hint2)
+            if _ok_result(retry):
+                cache.note_hit(skey)
+                store.record_hit(
+                    template_key=tkey,
+                    frame_key=fkey,
+                    x=float(retry.x),
+                    y=float(retry.y),
+                    score=float(
+                        getattr(retry, "max_val", None) or getattr(retry, "score", 0) or 0
+                    ),
+                    via_roi=False,
+                )
+                return retry
+        return result
 
     use_roi = bool(enabled and store.enabled and tkey)
     raw_rois = store.propose_rois(
@@ -550,33 +633,10 @@ def adaptive_match(
     for box in rois:
         x1, y1, x2, y2 = box
         result = _call((x1, y1), (x2, y2))
-        ok = bool(result and result.x is not None and getattr(result, "match_success", True))
-        if ok and result.score is not None and result.score < threshold:
-            ok = False
-        if ok:
-            store.record_hit(
-                template_key=tkey,
-                frame_key=fkey,
-                x=float(result.x),
-                y=float(result.y),
-                score=float(result.max_val or 0.0),
-                via_roi=True,
-            )
-            return result
+        if _ok_result(result):
+            return _after_result(result, via_roi=True)
 
     result = _call(None, None)
-    ok = bool(result and result.x is not None and getattr(result, "match_success", True))
-    if ok and result.score is not None and result.score < threshold:
-        ok = False
-    if ok:
-        if rois:
-            store.note_roi_miss_then_full(template_key=tkey, frame_key=fkey)
-        store.record_hit(
-            template_key=tkey,
-            frame_key=fkey,
-            x=float(result.x),
-            y=float(result.y),
-            score=float(result.max_val or 0.0),
-            via_roi=False,
-        )
-    return result
+    if rois and _ok_result(result):
+        store.note_roi_miss_then_full(template_key=tkey, frame_key=fkey)
+    return _after_result(result, via_roi=False)

@@ -68,6 +68,21 @@ python main.py
 - 开启伪录制后，会话输出在 `screenshots/pseudo_record/`（`timeline.jsonl`、`summary.txt`、`frames/`）
 - 匹配调试窗口可查看模板命中位置与分数
 
+### 演示模式（截图 / 展示）
+
+不加载真实 `json/accounts.json`，使用示例账号（`编队-01` 等），浏览器配置写入 `browser_data_demo/`，日志邮箱自动打码。
+
+```bash
+# Windows
+tools\run_demo.bat
+
+# 或手动
+set MINASHIGO_DEMO=1
+python main.py
+```
+
+示例账号定义见 `core/demo_mode.py` 与 `json/accounts.demo.json`。
+
 ## 项目结构
 
 ```

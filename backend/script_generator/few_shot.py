@@ -1,14 +1,19 @@
-"""精品 few-shot + v2 模板检索：按标签 / 介绍 / 图片目录打分，注入 prompt。"""
+"""精品 few-shot + v2 模板：类 RAG —— 首轮只给目录卡，写码/修码困惑时再取全文。"""
 
 from __future__ import annotations
 
 import json
 import re
 from pathlib import Path
+from typing import Iterable, Optional
 
 _CORPUS_ROOT = Path(__file__).parent / "corpus"
 _INDEX_PATH = _CORPUS_ROOT / "index.json"
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
+# rag=首轮目录；eager=旧行为全文硬塞；retrieve=仅按错误/意图取全文
+_INJECT_RAG = "rag"
+_INJECT_EAGER = "eager"
 
 # 中文/英文关键词 → 检索标签
 _KEYWORD_TAGS: list[tuple[re.Pattern[str], list[str]]] = [
@@ -101,6 +106,47 @@ def _image_stems(text: str) -> set[str]:
 _PARADIGM_ID = "minimal_multitask_paradigm"
 _MULTI_TASK_RE = re.compile(r"[（(]\d+[）)]")
 
+# 校验/反馈错误 → 应翻开的范文 id（评价不知如何改时）
+_ERROR_SHOT_RULES: list[tuple[re.Pattern[str], list[str]]] = [
+    (
+        re.compile(
+            r"过场|_task_entry_state|未知\+unknown|停在 未知|bootstrap|"
+            r"逃逸|重识屏|transition.?hold|unknown.?trap",
+            re.I,
+        ),
+        ["minimal_multitask_paradigm", "fsm_branch_dispatch", "scene_first"],
+    ),
+    (
+        re.compile(r"TASK_.*STATES|多任务|缺少.*run_task|TASK1_STATES|介绍含 .* 个子任务", re.I),
+        ["minimal_multitask_paradigm", "multi_task_dispatch", "v2_semantic_map"],
+    ),
+    (
+        re.compile(r"unknown_state|场景识别|SCENE_TO_STEP|_resolve_state|场景名", re.I),
+        ["unknown_routing", "scene_first", "fsm_branch_dispatch"],
+    ),
+    (re.compile(r"room_ok|收取|弹窗", re.I), ["room_ok_popup"]),
+    (re.compile(r"update_frame|旧帧", re.I), ["update_frame_refresh"]),
+    (re.compile(r"match_image_multi|x\s*最大|x最大|最靠右", re.I), ["match_multi_dict"]),
+    (re.compile(r"过场|loading|战斗结束|长时间等待|jjc", re.I), ["jjc_fight_wait", "post_click_wait"]),
+    (re.compile(r"__exit__|本任务完成|goal", re.I), ["goal_exit"]),
+    (re.compile(r"wait_image|转场|点击后", re.I), ["post_click_wait"]),
+    (re.compile(r"阈值|threshold|nav_threshold", re.I), ["threshold_usage"]),
+]
+
+
+def _inject_mode(explicit: Optional[str] = None) -> str:
+    if explicit in (_INJECT_RAG, _INJECT_EAGER):
+        return explicit  # type: ignore[return-value]
+    try:
+        cfg_path = Path(__file__).parent / "config.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        mode = str((cfg.get("defaults") or {}).get("few_shot_inject") or _INJECT_RAG).lower()
+        if mode in (_INJECT_RAG, _INJECT_EAGER):
+            return mode
+    except Exception:
+        pass
+    return _INJECT_RAG
+
 
 def _explanation_task_count(explanation: str) -> int:
     text = explanation or ""
@@ -155,8 +201,26 @@ def build_paradigm_block(
     *,
     explanation: str = "",
     tags: list[str] | None = None,
+    mode: Optional[str] = None,
 ) -> str:
-    """仅注入最小结构范式（自由模式 / 骨架锚点）。"""
+    """结构范式：rag 模式下只给目录卡；eager 才塞全文（兼容旧行为）。"""
+    if _inject_mode(mode) == _INJECT_EAGER:
+        return _build_paradigm_block_eager(explanation=explanation, tags=tags)
+    return format_corpus_catalog(
+        explanation=explanation,
+        tags=tags,
+        prefer_ids=[_PARADIGM_ID, "multi_task_dispatch", "fsm_branch_dispatch"],
+        max_items=6,
+        heading="Corpus catalog (structure — open full snippet only if unsure how to wire run_task)",
+    )
+
+
+def _build_paradigm_block_eager(
+    *,
+    explanation: str = "",
+    tags: list[str] | None = None,
+) -> str:
+    """旧行为：强制注入完整范式代码。"""
     shot = _load_paradigm_few_shot()
     parts: list[str] = []
     if shot:
@@ -203,6 +267,196 @@ def build_paradigm_block(
     return "\n\n".join(parts)
 
 
+def _shot_by_id(shot_id: str) -> dict | None:
+    index = load_index()
+    for item in index.get("few_shot") or []:
+        if item.get("id") != shot_id:
+            continue
+        path = _CORPUS_ROOT / item["file"]
+        if not path.is_file():
+            return None
+        return {
+            "id": item.get("id"),
+            "title": item.get("title") or item.get("id"),
+            "tags": item.get("tags") or [],
+            "when_to_use": item.get("when_to_use") or item.get("summary") or "",
+            "score": 0,
+            "content": path.read_text(encoding="utf-8").strip(),
+        }
+    return None
+
+
+def format_corpus_catalog(
+    *,
+    explanation: str = "",
+    tags: list[str] | None = None,
+    prefer_ids: list[str] | None = None,
+    max_items: int = 8,
+    heading: str = "",
+) -> str:
+    """短目录卡：有什么范例、何时翻开；不含完整代码。"""
+    index = load_index()
+    items = list(index.get("few_shot") or [])
+    query_tags = tags_from_text(explanation, tags)
+    prefer = list(prefer_ids or [])
+    if _needs_structure_paradigm(explanation, query_tags) and _PARADIGM_ID not in prefer:
+        prefer.insert(0, _PARADIGM_ID)
+
+    scored: list[tuple[int, dict]] = []
+    for item in items:
+        item_tags = {str(t).lower() for t in (item.get("tags") or [])}
+        score = len(query_tags & item_tags)
+        if item.get("id") in prefer:
+            score += 10
+        if score <= 0 and item.get("id") == "unknown_routing":
+            score = 1
+        if score <= 0:
+            continue
+        scored.append((score, item))
+    scored.sort(key=lambda x: (-x[0], x[1].get("id", "")))
+
+    # 保证 prefer 靠前出现
+    seen: set[str] = set()
+    ordered: list[dict] = []
+    for pid in prefer:
+        for _, item in scored:
+            if item.get("id") == pid and pid not in seen:
+                ordered.append(item)
+                seen.add(pid)
+                break
+    for _, item in scored:
+        sid = str(item.get("id") or "")
+        if sid in seen:
+            continue
+        ordered.append(item)
+        seen.add(sid)
+        if len(ordered) >= max_items:
+            break
+
+    if not ordered:
+        return ""
+    lines = [
+        heading
+        or (
+            "Corpus catalog (RAG): patterns below are available in the library. "
+            "Do NOT paste them wholesale. If unsure how to wire a pattern, follow Rules + "
+            "explanation; the fix loop will attach the matching full snippet when validation fails."
+        ),
+        "",
+    ]
+    for item in ordered[:max_items]:
+        sid = item.get("id") or ""
+        title = item.get("title") or sid
+        when = item.get("when_to_use") or item.get("summary") or ""
+        tag_s = ", ".join(str(t) for t in (item.get("tags") or [])[:6])
+        lines.append(f"- `{sid}` — {title}")
+        if when:
+            lines.append(f"  when: {when}")
+        elif tag_s:
+            lines.append(f"  tags: {tag_s}")
+    return "\n".join(lines)
+
+
+def shot_ids_for_errors(errors: Iterable[str] | None) -> list[str]:
+    """由校验/反馈文案映射到应检索的范文 id。"""
+    blob = "\n".join(str(e) for e in (errors or []) if e)
+    if not blob.strip():
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for pat, ids in _ERROR_SHOT_RULES:
+        if not pat.search(blob):
+            continue
+        for sid in ids:
+            if sid in seen:
+                continue
+            seen.add(sid)
+            out.append(sid)
+    return out
+
+
+def retrieve_corpus_snippets(
+    *,
+    errors: Iterable[str] | None = None,
+    explanation: str = "",
+    tags: list[str] | None = None,
+    max_items: int | None = None,
+    reason: str = "fix",
+) -> list[dict]:
+    """困惑时取全文：修码(fix)/评价(evaluate)/写码不确定(write)。
+
+    - fix/evaluate：优先按 errors 映射
+    - write：仅在标签强相关时取 1 条（默认不取范式全文）
+    """
+    try:
+        cfg_path = Path(__file__).parent / "config.json"
+        cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+        default_max = int((cfg.get("defaults") or {}).get("few_shot_retrieve_max") or 2)
+    except Exception:
+        default_max = 2
+    limit = max_items if max_items is not None else default_max
+
+    want_ids = shot_ids_for_errors(errors)
+    if not want_ids and reason in ("fix", "evaluate"):
+        # 无明确错误映射时：结构类困惑仍给范式
+        query_tags = tags_from_text(explanation, tags)
+        if _needs_structure_paradigm(explanation, query_tags):
+            want_ids = [_PARADIGM_ID]
+
+    if reason == "write" and not want_ids:
+        # 首轮写码：不主动塞全文；仅当介绍显式点名范式时
+        if re.search(r"范式|骨架|minimal_multitask|结构范式", explanation or ""):
+            want_ids = [_PARADIGM_ID]
+        else:
+            return []
+
+    out: list[dict] = []
+    for sid in want_ids:
+        if len(out) >= limit:
+            break
+        shot = _shot_by_id(sid)
+        if shot:
+            shot["retrieve_reason"] = reason
+            out.append(shot)
+    return out
+
+
+def format_retrieved_for_prompt(shots: list[dict], *, reason: str = "fix") -> str:
+    if not shots:
+        return ""
+    why = {
+        "fix": "Validation failed — open these library snippets and copy the *wiring pattern* only.",
+        "evaluate": "Unsure how to judge/fix — reference snippets for the failing pattern.",
+        "write": "Explicit structure request — reference skeleton (adapt names/images).",
+    }.get(reason, "Reference snippets from corpus (RAG).")
+    parts = [f"## Corpus retrieve ({reason})\n{why}"]
+    for i, s in enumerate(shots, 1):
+        sid = s.get("id") or ""
+        title = s.get("title") or sid
+        parts.append(
+            f"\n### Retrieved {i}: {title} (`{sid}`)\n```python\n{s['content']}\n```"
+        )
+    return "\n".join(parts)
+
+
+def build_retrieve_block(
+    *,
+    errors: Iterable[str] | None = None,
+    explanation: str = "",
+    tags: list[str] | None = None,
+    reason: str = "fix",
+    max_items: int | None = None,
+) -> str:
+    shots = retrieve_corpus_snippets(
+        errors=errors,
+        explanation=explanation,
+        tags=tags,
+        max_items=max_items,
+        reason=reason,
+    )
+    return format_retrieved_for_prompt(shots, reason=reason)
+
+
 def select_few_shots(
     *,
     explanation: str = "",
@@ -218,6 +472,9 @@ def select_few_shots(
 
     scored: list[tuple[int, dict, str]] = []
     for item in items:
+        # rag：范式不进 select 排名（目录卡 + fix/evaluate 检索再开全文）
+        if item.get("id") == _PARADIGM_ID and _inject_mode() != _INJECT_EAGER:
+            continue
         item_tags = {str(t).lower() for t in (item.get("tags") or [])}
         score = len(query_tags & item_tags)
         # 无标签命中时仍给 unknown_routing 保底分，保证至少有一条范文
@@ -299,7 +556,8 @@ def select_few_shots(
     ):
         _force_shot("match_multi_dict")
 
-    if need_paradigm:
+    # eager：范式置顶塞进列表；rag：范式只在目录/按需检索出现，避免挤掉业务范文
+    if need_paradigm and _inject_mode() == _INJECT_EAGER:
         paradigm = _load_paradigm_few_shot()
         if paradigm:
             out = [o for o in out if o.get("id") != paradigm.get("id")]
@@ -433,6 +691,20 @@ def format_few_shots_for_prompt(shots: list[dict]) -> str:
     return "\n".join(parts)
 
 
+def format_templates_catalog(tmpls: list[dict]) -> str:
+    """模板只给注解卡，不塞完整生产脚本。"""
+    if not tmpls:
+        return ""
+    parts = [
+        "Production v2 template cards (RAG catalog). Full script is retrieved only when "
+        "fixing/evaluating against a matching folder — do not paste wholesale.",
+    ]
+    for i, t in enumerate(tmpls, 1):
+        title = t.get("title") or t.get("id")
+        parts.append(f"\n### Template card {i}: {title}\n{_format_annotation_card(t)}")
+    return "\n".join(parts)
+
+
 def _format_annotation_card(t: dict) -> str:
     copy_bits = t.get("copy") or []
     skip_bits = t.get("do_not_copy") or []
@@ -482,16 +754,51 @@ def build_few_shot_block(
     explanation: str = "",
     tags: list[str] | None = None,
     source_dir: str = "",
+    mode: Optional[str] = None,
+    errors: Iterable[str] | None = None,
 ) -> str:
-    pattern_block = format_few_shots_for_prompt(
-        select_few_shots(explanation=explanation, tags=tags)
+    """组装 few-shot / 模板块。
+
+    rag（默认）：目录卡 + 模板注解卡；若传入 errors 再附加检索全文。
+    eager：旧行为全文注入。
+    """
+    inject = _inject_mode(mode)
+    tmpls = select_templates(
+        explanation=explanation, tags=tags, source_dir=source_dir
     )
-    template_block = format_templates_for_prompt(
-        select_templates(explanation=explanation, tags=tags, source_dir=source_dir)
-    )
-    parts = []
-    if template_block.strip():
-        parts.append("## Production v2 templates (paired explanation + script)\n\n" + template_block)
-    if pattern_block.strip():
-        parts.append(pattern_block)
+    parts: list[str] = []
+
+    if inject == _INJECT_EAGER:
+        pattern_block = format_few_shots_for_prompt(
+            select_few_shots(explanation=explanation, tags=tags)
+        )
+        template_block = format_templates_for_prompt(tmpls)
+        if template_block.strip():
+            parts.append(
+                "## Production v2 templates (paired explanation + script)\n\n"
+                + template_block
+            )
+        if pattern_block.strip():
+            parts.append(pattern_block)
+        return "\n\n".join(parts)
+
+    # --- rag ---
+    catalog = format_corpus_catalog(explanation=explanation, tags=tags)
+    if catalog.strip():
+        parts.append("## Few-shot catalog (RAG)\n\n" + catalog)
+    tmpl_cards = format_templates_catalog(tmpls)
+    if tmpl_cards.strip():
+        parts.append("## Production v2 templates (cards only)\n\n" + tmpl_cards)
+
+    # 显式错误时（或调用方已处于困惑）附全文
+    if errors:
+        retrieved = build_retrieve_block(
+            errors=errors,
+            explanation=explanation,
+            tags=tags,
+            reason="fix",
+        )
+        if retrieved.strip():
+            parts.append(retrieved)
+
     return "\n\n".join(parts)

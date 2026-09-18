@@ -1,0 +1,5 @@
+{
+  "medal_scale_hint": 0.6,
+  "threshold": 0.75,
+  "notes": "行列由命中自动聚类（个人 3x3 / 寮 2x4 等）；scale_hint 优先，弱峰值不重定标"
+}

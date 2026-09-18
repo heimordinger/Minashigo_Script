@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://minashigo.local/pack/manifest.schema.json",
+  "title": "MinashigoPackManifest",
+  "type": "object",
+  "additionalProperties": true,
+  "required": ["schema_version", "id", "name", "version", "platform", "entry"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "0.1" },
+    "id": { "type": "string", "minLength": 1, "pattern": "^[a-zA-Z0-9._-]+$" },
+    "name": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "platform": { "type": "string", "const": "android" },
+    "entry": { "type": "string", "default": "script.json" },
+    "target_package": { "type": "string" },
+    "ref_size": {
+      "type": "object",
+      "required": ["w", "h"],
+      "properties": {
+        "w": { "type": "integer", "minimum": 1 },
+        "h": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "author": { "type": "string" },
+    "created_at": { "type": "string" }
+  }
+}

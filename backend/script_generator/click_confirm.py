@@ -10,7 +10,7 @@ from typing import Optional, Union
 
 
 # 进程级默认；脚本可设 browser.click_confirm = ...
-_CLICK_CONFIRM_DEFAULT = "off"  # off | critical | all
+_CLICK_CONFIRM_DEFAULT = "critical"  # off | critical | all
 
 
 def get_click_confirm_mode(browser=None) -> str:

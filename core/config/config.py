@@ -18,6 +18,10 @@ _DEFAULT_CONFIG = {
     "loading": {
         "topmost": True,
     },
+    "window": {
+        # 窗口模式最小化策略：restore 后台恢复不回缩 | pause 暂停等用户 | fail 直接报错
+        "minimized_policy": "restore",
+    },
 }
 
 
@@ -173,10 +177,20 @@ class Config:
         val = str(val).strip().lower()
         return val if val in ("light", "dark") else "light"
 
+    @property
+    def window_minimized_policy(self) -> str:
+        val = str(self.get("window.minimized_policy") or "restore").strip().lower()
+        return val if val in ("restore", "pause", "fail") else "restore"
+
     def _validate(self, key_path: str, value):
         if key_path == "ui.theme":
             if value not in ("light", "dark"):
                 raise ValueError("主题必须是: light, dark")
+            return
+
+        if key_path == "window.minimized_policy":
+            if value not in ("restore", "pause", "fail"):
+                raise ValueError("最小化策略必须是: restore, pause, fail")
             return
 
         if key_path == "browser.browser_path":

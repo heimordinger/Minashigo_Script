@@ -61,8 +61,7 @@ def main():
     _t0 = time.time()
     def ts(msg):
         print(f"[{time.time()-_t0:7.3f}] {msg}")
-
-    # 演示模式使用独立锁，可与正常实例并存（截图时勿同时跑正式任务）
+   # 演示模式使用独立锁，可与正常实例并存（截图时勿同时跑正式任务）
     demo = (os.getenv("MINASHIGO_DEMO") or "").strip().lower() in ("1", "true", "yes", "on")
     global _LOCK_FILE
     if demo:

@@ -1,0 +1,12 @@
+{
+  "schema_version": "0.1",
+  "id": "demo_pack",
+  "name": "权限引导演示包（非业务）",
+  "version": "0.1.0",
+  "platform": "android",
+  "entry": "script.json",
+  "target_package": "com.android.settings",
+  "ref_size": { "w": 1080, "h": 2400 },
+  "author": "minashigo",
+  "created_at": "2026-09-13T00:00:00+08:00"
+}

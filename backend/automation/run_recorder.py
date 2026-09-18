@@ -2,7 +2,7 @@
 
 启用方式：
   - 环境变量 MINASHIGO_PSEUDO_RECORD=1
-  - 或 browser.enable_pseudo_record(script_name=...)
+  - 或 browser/win.enable_pseudo_record(script_name=...)
 输出：
   screenshots/pseudo_record/{account}_{ts}_{script}/
     timeline.jsonl   每行一个事件
@@ -95,7 +95,7 @@ class _Span:
 
 
 class PseudoRecorder:
-    """线程安全的轻量伪录制器（挂在 UserBrowser 上）。"""
+    """线程安全的轻量伪录制器（挂在 UserBrowser / UserWindow 上）。"""
 
     def __init__(
         self,

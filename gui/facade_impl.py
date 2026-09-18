@@ -138,12 +138,17 @@ class FacadeImpl:
         if not process_dir.exists():
             return []
 
+        def _rel(p: Path) -> str:
+            return str(p.relative_to(process_dir)).replace("\\", "/")
+
+        # _trial/ 是试运行临时件；_collab/ 是协作草稿（用户复制出去后才进正式列表）
+        _hidden_dirs = ("_trial/", "_collab/")
         paths = [
-            str(p.relative_to(process_dir)).replace("\\", "/")
+            _rel(p)
             for p in process_dir.rglob("*.py")
             if p.is_file()
             and p.name != "__init__.py"
-            and not str(p.relative_to(process_dir)).replace("\\", "/").startswith("_trial/")
+            and not _rel(p).startswith(_hidden_dirs)
         ]
         trial_gen = process_dir / "_trial" / "_gen_trial.py"
         if trial_gen.is_file():

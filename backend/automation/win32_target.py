@@ -14,6 +14,7 @@ from __future__ import annotations
 import ctypes
 from ctypes import wintypes
 from typing import Optional, ClassVar
+import time
 import numpy as np
 import cv2
 
@@ -528,8 +529,64 @@ class Win32Target:
         return bool(_IsIconic(self._hwnd))
 
     @property
+    def root_hwnd(self) -> int:
+        """顶层根窗（模拟器常最小化外壳而非渲染子窗）。"""
+        try:
+            root = int(_GetAncestor(self._hwnd, 2) or 0)  # GA_ROOT
+            return root if root else int(self._hwnd)
+        except Exception:
+            return int(self._hwnd)
+
+    @property
+    def is_effectively_minimized(self) -> bool:
+        """自身或根窗处于最小化。"""
+        if self.is_minimized:
+            return True
+        root = self.root_hwnd
+        if root and root != int(self._hwnd):
+            try:
+                return bool(_IsIconic(root))
+            except Exception:
+                return False
+        return False
+
+    @property
     def is_maximized(self) -> bool:
         return bool(_IsZoomed(self._hwnd))
+
+    def ensure_restored(self, *, bottom: bool = True, settle_s: float = 0.2) -> bool:
+        """若最小化则后台恢复（不抢前台），默认保持恢复不回缩。
+
+        Returns:
+            True 表示本次执行了恢复操作。
+        """
+        if not self.is_effectively_minimized:
+            return False
+        root = self.root_hwnd
+        targets = []
+        for h in (root, int(self._hwnd)):
+            if h and h not in targets:
+                targets.append(h)
+        for h in targets:
+            try:
+                if _IsIconic(h):
+                    # 从最小化拉起但不激活
+                    _ShowWindow(h, SW_SHOWNOACTIVATE)
+            except Exception:
+                pass
+        if bottom:
+            try:
+                _SetWindowPos(
+                    root or self._hwnd,
+                    HWND_BOTTOM,
+                    0, 0, 0, 0,
+                    SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                )
+            except Exception:
+                pass
+        if settle_s and settle_s > 0:
+            time.sleep(min(float(settle_s), 1.0))
+        return True
 
     @property
     def is_valid(self) -> bool:
@@ -638,7 +695,9 @@ class Win32Target:
     SCREENSHOT_METHOD_BITBLT = "bitblt"
 
     def screenshot(self, client_only: bool = True,
-                   method: str = "auto") -> np.ndarray:
+                   method: str = "auto",
+                   *,
+                   remimize: bool = False) -> np.ndarray:
         """捕获窗口内容为 OpenCV BGR 图像。
 
         Args:
@@ -649,12 +708,14 @@ class Win32Target:
                 "auto"         — 先 PrintWindow，失败则 BitBlt 从屏幕复制
                 "printwindow"  — 仅 PrintWindow（纯后台，不抢前台）
                 "bitblt"       — 仅 BitBlt 从屏幕复制（窗口需在屏幕上可见）
+            remimize:
+                仅探测工具：截完再缩回。脚本自动化必须 False（默认）。
 
         Returns:
             (H, W, 3) uint8 BGR numpy array
         """
         if method == self.SCREENSHOT_METHOD_AUTO:
-            return self._screenshot_auto(client_only)
+            return self._screenshot_auto(client_only, remimize=remimize)
         elif method == self.SCREENSHOT_METHOD_PRINTWINDOW:
             return self._screenshot_printwindow(client_only)
         elif method == self.SCREENSHOT_METHOD_BITBLT:
@@ -672,16 +733,12 @@ class Win32Target:
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         return float(np.std(gray)) > 5.0  # 有效帧的像素方差远大于5
 
-    def _screenshot_auto(self, client_only: bool) -> np.ndarray:
-        was_minimized = self.is_minimized
+    def _screenshot_auto(self, client_only: bool, *, remimize: bool = False) -> np.ndarray:
+        """截图；最小化时后台恢复。默认不回缩（脚本可持续跑）。"""
+        was_minimized = self.is_effectively_minimized
         try:
             if was_minimized:
-                # 恢复窗口但不激活，并推到最底层，避免抢焦点
-                _ShowWindow(self._hwnd, SW_SHOWNOACTIVATE)
-                _SetWindowPos(self._hwnd, HWND_BOTTOM, 0, 0, 0, 0,
-                              SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE)
-                import time
-                time.sleep(0.15)
+                self.ensure_restored(bottom=True, settle_s=0.15)
 
             try:
                 frame = self._screenshot_printwindow(client_only)
@@ -691,8 +748,11 @@ class Win32Target:
                 pass
             return self._screenshot_bitblt(client_only)
         finally:
-            if was_minimized:
-                _ShowWindow(self._hwnd, SW_MINIMIZE)
+            if remimize and was_minimized:
+                try:
+                    _ShowWindow(self.root_hwnd or self._hwnd, SW_MINIMIZE)
+                except Exception:
+                    pass
 
     # ── PrintWindow（纯后台，不抢前台） ──────────────────────
 

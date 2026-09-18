@@ -49,6 +49,19 @@ class SpecEditorWindow(QWidget):
         QApplication.setOverrideCursor(QCursor(Qt.CursorShape.WaitCursor))
         QApplication.processEvents()
         try:
+            # 先语法检查，避免整包 IndentationError 时只看到难懂 traceback
+            import ast
+            from pathlib import Path
+
+            editor_path = Path(__file__).resolve().parent / "editor.py"
+            try:
+                ast.parse(editor_path.read_text(encoding="utf-8"), filename=str(editor_path))
+            except SyntaxError as se:
+                raise RuntimeError(
+                    f"脚本IDE 源码语法错误（{editor_path.name}:{se.lineno}）：{se.msg}\n"
+                    f"草稿逻辑已拆到 mixin_draft.py / draft_store.py，可重点查最近改动的文件。"
+                ) from se
+
             from script_spec.editor import SpecEditor
 
             panel = SpecEditor()
@@ -62,6 +75,7 @@ class SpecEditorWindow(QWidget):
         except Exception as e:
             if self._placeholder is not None:
                 self._placeholder.setText(f"加载失败: {e}")
+                self._placeholder.setWordWrap(True)
             print(f"[SpecEditorWindow] 面板加载失败: {e}")
         finally:
             QApplication.restoreOverrideCursor()

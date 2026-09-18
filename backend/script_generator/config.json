@@ -39,7 +39,8 @@
     "deepseek": {
       "label": "DeepSeek",
       "api": "openai",
-      "supports_images": true,
+      "supports_images": false,
+      "supports_tools": true,
       "models": [
         "deepseek-chat",
         "deepseek-reasoner",
@@ -48,7 +49,7 @@
         "deepseek-v4-pro"
       ],
       "default_endpoint": "https://api.deepseek.com",
-      "hint": "官方 https://api.deepseek.com。已按 OpenAI 兼容格式发图；不支持多模态的模型会报错。"
+      "hint": "官方 https://api.deepseek.com。已开工具调用（临时脚本、查窗口）；看图仍请配「辅助识图」。deepseek-reasoner 不走工具。"
     },
     "google": {
       "label": "Google Gemini",
@@ -558,10 +559,12 @@
     "revise_tools": true,
     "revise_text_tools": true,
     "revise_feedback_review_mode": "offline",
-    "click_confirm": "off",
+    "click_confirm": "critical",
     "execution_checklist": true,
     "checklist_llm_coverage": true,
     "architecture_enforce": true,
+    "few_shot_inject": "rag",
+    "few_shot_retrieve_max": 2,
     "revise_tool_assist": {
       "enabled": true,
       "prefer_provider": "qwen",

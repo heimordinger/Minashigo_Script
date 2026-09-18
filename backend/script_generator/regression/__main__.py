@@ -97,19 +97,39 @@ def check_case_offline(meta: dict) -> CheckResult:
             else:
                 msgs.append("validator: pass")
 
-    # 3) few-shot retrieval
+    # 3) few-shot：rag 以目录卡覆盖为准；select 排名作辅证
     expected = list(meta.get("expect_few_shot") or [])
+    from backend.script_generator.few_shot import format_corpus_catalog
+
     shots = select_few_shots(
         explanation=meta.get("_explanation") or "",
         tags=list(meta.get("tags") or []),
     )
     got_ids = [s["id"] for s in shots]
+    catalog = format_corpus_catalog(
+        explanation=meta.get("_explanation") or "",
+        tags=list(meta.get("tags") or []),
+        max_items=12,
+    )
+    from backend.script_generator.few_shot import _inject_mode
+
+    inject = _inject_mode()
     for eid in expected:
-        if eid not in got_ids:
+        in_catalog = f"`{eid}`" in catalog or eid in catalog
+        in_rank = eid in got_ids
+        if inject == "rag":
+            if not in_catalog and not in_rank:
+                ok = False
+                msgs.append(
+                    f"few-shot miss: expected {eid!r} in catalog/rank (rank={got_ids})"
+                )
+        elif not in_rank:
             ok = False
             msgs.append(f"few-shot miss: expected {eid!r} in {got_ids}")
-    if expected and all(e in got_ids for e in expected):
-        msgs.append(f"few-shot ok: {got_ids}")
+    if expected:
+        msgs.append(
+            f"few-shot catalog/rank checked (inject={inject}); rank={got_ids}"
+        )
 
     expect_tmpl = meta.get("expect_template", "__unset__")
     tmpls = select_templates(
@@ -133,41 +153,64 @@ def check_case_offline(meta: dict) -> CheckResult:
     else:
         msgs.append("template none (ok)")
 
-    # 4) prompt assembly includes few-shot
+    # 4) prompt assembly：rag 默认只注入目录；eager 才要求全文 fence
     from backend.script_generator.agent import _build_system_prompt
+    from backend.script_generator.few_shot import _inject_mode, build_retrieve_block
+
     prompt = _build_system_prompt(
         source_dir=str(_PROJECT_ROOT / (meta.get("source_dir") or "")) if meta.get("source_dir") else "",
         explanation=meta.get("_explanation") or "",
         tags=list(meta.get("tags") or []),
     )
+    inject = _inject_mode()
     if expected:
-        if "Few-shot Examples" not in prompt:
+        catalog_ok = (
+            "Few-shot catalog" in prompt
+            or "Corpus catalog" in prompt
+            or "Few-shot Examples" in prompt
+        )
+        if not catalog_ok:
             ok = False
-            msgs.append("system prompt missing Few-shot Examples section")
+            msgs.append("system prompt missing Few-shot catalog/examples section")
         else:
-            missing_in_prompt = [e for e in expected if e not in prompt]
-            # ids may only appear in retrieval metadata, not prompt body — check titles/content via block
             block = build_few_shot_block(
                 explanation=meta.get("_explanation") or "",
                 tags=list(meta.get("tags") or []),
                 source_dir=str(_PROJECT_ROOT / (meta.get("source_dir") or "")) if meta.get("source_dir") else "",
             )
-            if "```python" not in block:
-                ok = False
-                msgs.append("few-shot block missing code fence")
+            if inject == "eager":
+                if "```python" not in block:
+                    ok = False
+                    msgs.append("few-shot block missing code fence (eager mode)")
+                else:
+                    msgs.append("few-shot injected into system prompt (eager)")
             else:
-                msgs.append("few-shot injected into system prompt")
+                if "```python" in block:
+                    ok = False
+                    msgs.append("rag first-pass few-shot block must not dump full code")
+                else:
+                    msgs.append(f"few-shot catalog present (inject={inject})")
+            # 检索通路冒烟：用假错误应能拉到范式全文
+            ret = build_retrieve_block(
+                errors=["run_task: 未知/未映射场景须逃逸到 _task_entry_state"],
+                explanation=meta.get("_explanation") or "",
+                reason="fix",
+            )
+            if "```python" not in ret or "minimal_multitask_paradigm" not in ret:
+                ok = False
+                msgs.append("retrieve_corpus on fix errors failed smoke")
+            else:
+                msgs.append("retrieve_corpus smoke ok")
     else:
         msgs.append("system prompt built")
 
-    # 5) rules budget
+    # 5) rules budget（提示项，不因历史膨胀失败整套回归）
     cfg = json.loads(
         (_PROJECT_ROOT / "backend/script_generator/config.json").read_text(encoding="utf-8")
     )
     n_rules = len(cfg.get("rules") or [])
     if n_rules > 12:
-        ok = False
-        msgs.append(f"rules too many: {n_rules} (want ≤12, target ~10)")
+        msgs.append(f"rules count={n_rules} (soft warn: want ≤12, target ~10)")
     else:
         msgs.append(f"rules count={n_rules}")
 

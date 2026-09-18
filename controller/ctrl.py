@@ -336,10 +336,15 @@ class Controller(QObject):
         if hwnd:
             from backend.automation.user_window import UserWindow
             from backend.automation.win32_target import Win32Target
-            target = Win32Target.from_hwnd(hwnd)
+            target = Win32Target.from_hwnd(int(hwnd))
             user_window = UserWindow(target=target, task_ctrl=self._task_ctrls[name])
             user_window.account = account
             self._window_instances[name] = user_window
+            if int(user_window.hwnd) != int(hwnd):
+                print(
+                    f"[Controller] 模拟器渲染窗重定向: {hwnd} → {user_window.hwnd} "
+                    f"({getattr(user_window._target, 'title', '')})"
+                )
 
             # 注册到 TaskFlow 的全局 browsers 池，让 WebSocket 命令也能找到窗口目标
             # 注册到 TaskFlow 全局池
@@ -703,22 +708,35 @@ class Controller(QObject):
             )
         )
 
-    def capture_screenshot(self, account: dict):
-        """按 account['_target'] 选择截图来源。"""
+    def capture_screenshot(self, account: dict) -> bool:
+        """按 account['_target'] 选择截图来源。成功提交异步抓帧返回 True，否则 False。"""
         account_name = account["name"]
+        target = account.get("_target")
+        win = self._window_instances.get(account_name)
+        browser = self._browsers.get(account_name)
 
-        if account.get("_target") == "window":
-            win = self._window_instances.get(account_name)
+        # 显式 browser 走浏览器；显式 window / 仅有窗口 / 未标明但有窗口 → 走窗口
+        # （协作「用当前窗口」曾漏写 _target，旧逻辑会静默找浏览器并卡住）
+        if target == "browser":
+            use_window = False
+        elif target == "window" or win is not None:
+            use_window = True
+        else:
+            use_window = False
+
+        if use_window:
             if not win:
-                return
+                print(f"[Controller] 截图未开始: {account_name} 无窗口实例")
+                return False
             future = self.submit(win.update_frame())
         else:
-            browser = self._browsers.get(account_name)
             if not browser:
-                return
+                print(f"[Controller] 截图未开始: {account_name} 无浏览器实例 (target={target!r})")
+                return False
             future = self.submit(browser.update_frame())
 
         future.add_done_callback(lambda f: self._on_screenshot_done(account_name, f))
+        return True
 
     def _on_screenshot_done(self, account_name: str, future):
         try:

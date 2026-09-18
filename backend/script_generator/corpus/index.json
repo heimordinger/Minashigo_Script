@@ -73,6 +73,7 @@
       "file": "few_shot/12_minimal_multitask_paradigm.py",
       "tags": ["paradigm", "minimal", "structure", "multi", "run_task", "scene", "routing", "fsm", "architecture", "v2", "semantic"],
       "title": "【结构范式】最小多任务：scene + SCENE_TO_STEP + bootstrap run_task",
+      "when_to_use": "校验报 run_task/未知/过场/_task_entry_state，或介绍多任务但不会接线时再打开全文；首轮生成只看目录卡。",
       "pin": "multi_scene"
     },
     {

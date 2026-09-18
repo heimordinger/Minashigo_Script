@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Minashigo Mobile</string>
+    <string name="main_hint">Phase 0 壳工程：仅非业务地基（权限引导 / 脚本包契约）。识图与点击执行器尚未接入。</string>
+    <string name="open_permission_guide">打开权限引导</string>
+    <string name="permission_guide_title">权限引导</string>
+    <string name="permission_guide_body">执行器需要的系统能力在此集中引导。录屏与无障碍服务将在业务阶段注册；当前可先打开悬浮窗与通知权限。</string>
+    <string name="perm_overlay_label">悬浮窗</string>
+    <string name="perm_overlay_action">去开启悬浮窗</string>
+    <string name="perm_notif_label">通知</string>
+    <string name="perm_notif_action">申请通知权限</string>
+    <string name="perm_notif_ok">通知权限已授予</string>
+    <string name="perm_notif_denied">通知权限未授予</string>
+    <string name="perm_notif_legacy">当前系统无需运行时申请通知权</string>
+    <string name="perm_a11y_label">无障碍（占位）</string>
+    <string name="perm_a11y_action">打开无障碍设置</string>
+    <string name="perm_a11y_placeholder">状态：服务未注册（业务阶段再做）</string>
+    <string name="perm_capture_label">录屏 MediaProjection（占位）</string>
+    <string name="perm_capture_placeholder">状态：未实现（业务阶段再做）</string>
+    <string name="refresh_status">刷新状态</string>
+    <string name="status_on">状态：已开启</string>
+    <string name="status_off">状态：未开启</string>
+</resources>

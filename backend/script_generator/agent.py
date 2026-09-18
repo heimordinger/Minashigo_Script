@@ -7810,8 +7810,9 @@ def validate_script_local(
     source_dir: str = "",
     explanation: str = "",
     free_mode: Optional[bool] = None,
+    require_fsm: bool = True,
 ) -> list[str]:
-    """本地脚本检查（写入试运行 / 保存前）：结构语义 + 素材，自动执行。"""
+    """本地脚本检查。试运行传 require_fsm=False，只查运行器要的入口和素材。"""
     return validate_generated_code(
         code,
         plan=plan,
@@ -7820,6 +7821,7 @@ def validate_script_local(
         explanation=explanation,
         free_mode=free_mode,
         check_image_files=True,
+        require_fsm=require_fsm,
     )
 
 
@@ -7863,8 +7865,13 @@ def validate_generated_code(
     free_mode: Optional[bool] = None,
     check_image_files: Optional[bool] = None,
     relax_semantic: bool = False,
+    require_fsm: bool = True,
 ) -> list[str]:
-    """本地校验生成代码，返回错误列表（空表示通过）。"""
+    """本地校验生成代码，返回错误列表（空表示通过）。
+
+    require_fsm：经典状态机生成才查 STATES / 超时表 / 「未知」。
+    试运行只依赖 do_work，应传 False。
+    """
     errors: list[str] = []
     if not (code or "").strip():
         return ["生成结果为空"]
@@ -7967,49 +7974,50 @@ def validate_generated_code(
     for msg in _none_browser_image_arg_errors(tree):
         errors.append(msg)
 
-    # 自由模式：生成宽松，但以下结构与语义校验全部执行
-
-    has_states = "STATES" in assigned
-    has_task_states = any(name.endswith("_STATES") for name in assigned)
-    has_run_task = "run_task" in top_names
-    has_timeout = "STATE_TIMEOUT" in assigned or any(
-        name.endswith("_TIMEOUT") for name in assigned
-    )
-
-    if kind == "multi_task":
-        if not has_run_task:
-            errors.append("multi_task 计划要求定义 run_task(...)")
-        if not has_task_states and not has_states:
-            errors.append("multi_task 计划要求 TASK*_STATES（或 STATES）")
-    elif kind == "utility":
-        # utility 允许只有 helpers；仍建议有 do_work 入口（上面已查）
-        pass
-    else:
-        # single_fsm / unknown
-        if not has_states and not (has_task_states and has_run_task):
-            errors.append("缺少 STATES 字典（或 TASK*_STATES + run_task）")
-
-    expl_tasks = _count_explanation_tasks(explanation or "")
-    # scene_driven：编号块是场景 handler，不要求 run_task 多任务队列
-    if expl_tasks >= 2 and not has_run_task and arch != "scene_driven":
-        errors.append(
-            f"介绍含 {expl_tasks} 个子任务，须定义 run_task(...)"
+    # 状态机形状只约束经典生成。试运行只要求 do_work 能被运行器调用。
+    if require_fsm:
+        has_states = "STATES" in assigned
+        has_task_states = any(name.endswith("_STATES") for name in assigned)
+        has_run_task = "run_task" in top_names
+        has_timeout = "STATE_TIMEOUT" in assigned or any(
+            name.endswith("_TIMEOUT") for name in assigned
         )
 
-    if not has_timeout and (has_states or has_task_states):
-        errors.append("缺少 STATE_TIMEOUT（或 TASK*_TIMEOUT）")
+        if kind == "utility" or "minashigo-collab-linear" in (code or ""):
+            pass
+        elif kind == "multi_task":
+            if not has_run_task:
+                errors.append("multi_task 计划要求定义 run_task(...)")
+            if not has_task_states and not has_states:
+                errors.append("multi_task 计划要求 TASK*_STATES（或 STATES）")
+        elif kind != "utility":
+            if not has_states and not (has_task_states and has_run_task):
+                errors.append("缺少 STATES 字典（或 TASK*_STATES + run_task）")
 
-    # 未知 状态键
-    unknown_keys = {"未知", "\u672a\u77e5"}
-    found_unknown = False
-    for dict_name in list(assigned):
-        if dict_name == "STATES" or dict_name.endswith("_STATES"):
-            d = _find_module_dict_assign(tree, dict_name)
-            if d and (_dict_literal_keys(d) & unknown_keys):
-                found_unknown = True
-                break
-    if (has_states or has_task_states) and not found_unknown:
-        errors.append("STATES / TASK*_STATES 中缺少「未知」恢复状态")
+        expl_tasks = _count_explanation_tasks(explanation or "")
+        if (
+            expl_tasks >= 2
+            and not has_run_task
+            and arch != "scene_driven"
+            and "minashigo-collab-linear" not in (code or "")
+        ):
+            errors.append(
+                f"介绍含 {expl_tasks} 个子任务，须定义 run_task(...)"
+            )
+
+        if not has_timeout and (has_states or has_task_states):
+            errors.append("缺少 STATE_TIMEOUT（或 TASK*_TIMEOUT）")
+
+        unknown_keys = {"未知", "\u672a\u77e5"}
+        found_unknown = False
+        for dict_name in list(assigned):
+            if dict_name == "STATES" or dict_name.endswith("_STATES"):
+                d = _find_module_dict_assign(tree, dict_name)
+                if d and (_dict_literal_keys(d) & unknown_keys):
+                    found_unknown = True
+                    break
+        if (has_states or has_task_states) and not found_unknown and "minashigo-collab-linear" not in (code or ""):
+            errors.append("STATES / TASK*_STATES 中缺少「未知」恢复状态")
 
     # browser.xxx 白名单
     allowed_methods = set(ALLOWED_BROWSER_METHODS)
@@ -8858,6 +8866,77 @@ async def _text_revise_tools_loop(
     return cleaned or last_text, total_in, total_out
 
 
+class _DsmlToolCall:
+    """把正文里的 DSML 调用装成与 OpenAI tool_calls 相同的形状。"""
+
+    def __init__(self, call_id: str, name: str, arguments: str):
+        self.id = call_id
+        self.function = type("Fn", (), {})()
+        self.function.name = name
+        self.function.arguments = arguments
+
+
+_DSML_BAR = r"[|\uFF5C]"
+_DSML_INVOKE = re.compile(
+    rf"<\s*{_DSML_BAR}+\s*DSML\s*{_DSML_BAR}+[^>]*\binvoke\b[^>]*\bname\s*=\s*\"([^\"]+)\"[^>]*>"
+    rf"(.*?)"
+    rf"<\s*/\s*{_DSML_BAR}+\s*DSML\s*{_DSML_BAR}+[^>]*\binvoke\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_DSML_PARAM = re.compile(
+    rf"<\s*{_DSML_BAR}+\s*DSML\s*{_DSML_BAR}+[^>]*\bparameter\b[^>]*\bname\s*=\s*\"([^\"]+)\"([^>]*)>"
+    rf"(.*?)"
+    rf"<\s*/\s*{_DSML_BAR}+\s*DSML\s*{_DSML_BAR}+[^>]*\bparameter\s*>",
+    re.IGNORECASE | re.DOTALL,
+)
+_DSML_TAG = re.compile(
+    rf"<\s*/?\s*{_DSML_BAR}+\s*DSML\s*{_DSML_BAR}+[^>]*>",
+    re.IGNORECASE,
+)
+
+
+def strip_dsml_markup(text: str) -> str:
+    """去掉 DeepSeek 写在正文里的 DSML 工具标记，避免显示给用户。"""
+    raw = text or ""
+    if "DSML" not in raw and "dsml" not in raw.lower():
+        return raw
+    cleaned = _DSML_INVOKE.sub("", raw)
+    cleaned = _DSML_TAG.sub("", cleaned)
+    return cleaned.strip()
+
+
+def parse_dsml_tool_calls(text: str) -> tuple[list, str]:
+    """正文里的 DSML invoke → 工具调用。没有则原样返回。"""
+    raw = text or ""
+    calls: list[_DsmlToolCall] = []
+    for i, match in enumerate(_DSML_INVOKE.finditer(raw)):
+        name = (match.group(1) or "").strip()
+        if not name:
+            continue
+        args: dict = {}
+        for param in _DSML_PARAM.finditer(match.group(2) or ""):
+            key = (param.group(1) or "").strip()
+            attrs = param.group(2) or ""
+            val = param.group(3) or ""
+            if re.search(r"string\s*=\s*\"true\"", attrs, re.IGNORECASE):
+                args[key] = val
+            else:
+                try:
+                    args[key] = json.loads(val.strip() or "null")
+                except Exception:
+                    args[key] = val.strip()
+        calls.append(
+            _DsmlToolCall(
+                f"dsml_{i}",
+                name,
+                json.dumps(args, ensure_ascii=False),
+            )
+        )
+    if not calls:
+        return [], raw
+    return calls, strip_dsml_markup(raw)
+
+
 async def _openai_tools_loop(
     *,
     provider: str,
@@ -8926,12 +9005,18 @@ async def _openai_tools_loop(
         text = message.content or ""
         tool_calls = list(getattr(message, "tool_calls", None) or [])
         if not tool_calls:
+            parsed, stripped = parse_dsml_tool_calls(text)
+            if parsed:
+                tool_calls = parsed
+                text = stripped
+        if not tool_calls:
+            text = strip_dsml_markup(text)
             if on_partial and text:
                 on_partial(text)
             return text, total_in, total_out
         assistant_msg: dict = {
             "role": "assistant",
-            "content": message.content,
+            "content": text or None,
             "tool_calls": [
                 {
                     "id": tc.id,

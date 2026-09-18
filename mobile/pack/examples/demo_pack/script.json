@@ -1,0 +1,28 @@
+{
+  "schema_version": "0.1",
+  "initial": "idle",
+  "states": {
+    "idle": {
+      "label": "空闲（仅演示结构）",
+      "detect": [
+        {
+          "image": "placeholder.png",
+          "threshold": 0.85,
+          "goto": "done"
+        }
+      ],
+      "actions": [
+        { "type": "log", "message": "demo_pack: idle — 执行器未实现前只校验结构" },
+        { "type": "sleep", "ms": 500 }
+      ],
+      "on_miss": "idle"
+    },
+    "done": {
+      "label": "结束",
+      "actions": [
+        { "type": "log", "message": "demo_pack: done" },
+        { "type": "exit", "ok": true }
+      ]
+    }
+  }
+}

@@ -20,8 +20,8 @@ class Matcher:
         self._template_cache = {}   # path -> (img, gray)
         self._orb_cache = {}        # bytes -> (kp, des)
 
-        # 多尺度搜索范围
-        self.scales = [0.8, 0.9, 1.0, 1.1, 1.2]
+        # 无定标命中时的兜底多尺度
+        self.scales = [0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 1.0, 1.15, 1.3, 1.5]
 
     # =========================
     # 主入口
@@ -44,6 +44,9 @@ class Matcher:
             max_count: Optional[int] = None,
             use_orb: bool = True,
             pixel_tol: float = 8.0,
+            scale_hint: Optional[float] = None,
+            scales: Optional[list] = None,
+            fallback_wide_scales: bool = True,
     ):
 
         t = threshold if threshold is not None else 0.9
@@ -81,6 +84,8 @@ class Matcher:
             else:
                 raise ValueError("No valid match input")
 
+        search_scales = self._resolve_scales(scale_hint=scale_hint, scales=scales)
+
         # =========================
         # IMAGE MATCH
         # =========================
@@ -103,7 +108,26 @@ class Matcher:
                 frame_color=frame,
                 templ_color=templ,
                 color_tol=color_tol,
+                scales=search_scales,
             )
+
+            # 窄带未命中时回退宽搜（仅当显式给了 scale_hint/scales）
+            if (
+                not results
+                and fallback_wide_scales
+                and (scale_hint is not None or scales is not None)
+            ):
+                results += self._template_multi_scale_match(
+                    frame_gray,
+                    templ_gray,
+                    threshold=effective_t,
+                    offset=(x1, y1),
+                    use_color_check=use_color_check,
+                    frame_color=frame,
+                    templ_color=templ,
+                    color_tol=color_tol,
+                    scales=list(self.scales),
+                )
 
             if use_orb:
                 results += self._orb_match(
@@ -132,6 +156,11 @@ class Matcher:
         # =========================
         elif mtype in ("pixel", "pixel_multi"):
             templ, _templ_gray = self._load_template_cached(template)
+            # 像素匹配无多尺度：有 scale_hint 时先把模板缩到当前帧
+            if scale_hint is not None and abs(float(scale_hint) - 1.0) > 1e-3:
+                nh = max(1, int(round(templ.shape[0] * float(scale_hint))))
+                nw = max(1, int(round(templ.shape[1] * float(scale_hint))))
+                templ = cv2.resize(templ, (nw, nh), interpolation=cv2.INTER_AREA)
             if templ.shape[0] > frame.shape[0] or templ.shape[1] > frame.shape[1]:
                 return [] if mtype == "pixel_multi" else MatchResult(None, None, 0.0, False)
 
@@ -253,6 +282,20 @@ class Matcher:
     # =========================
     # TEMPLATE MATCH CORE
     # =========================
+    def _resolve_scales(
+            self,
+            *,
+            scale_hint: Optional[float] = None,
+            scales: Optional[list] = None,
+    ) -> list:
+        if scales is not None:
+            out = [float(s) for s in scales if float(s) > 0]
+            return out or list(self.scales)
+        if scale_hint is not None and float(scale_hint) > 0:
+            hint = float(scale_hint)
+            return [hint * f for f in (0.95, 1.0, 1.05)]
+        return list(self.scales)
+
     def _template_multi_scale_match(
             self,
             frame_gray,
@@ -263,12 +306,17 @@ class Matcher:
             frame_color=None,
             templ_color=None,
             color_tol=30.0,
+            scales=None,
     ):
         """在多个尺度下执行模板匹配，返回全分辨率坐标"""
         results = []
-        print(f"[_template_multi_scale_match] frame={frame_gray.shape}, template={templ_gray.shape}, threshold={threshold}")
+        scale_list = list(scales) if scales is not None else list(self.scales)
+        print(
+            f"[_template_multi_scale_match] frame={frame_gray.shape}, "
+            f"template={templ_gray.shape}, threshold={threshold}, scales={scale_list}"
+        )
 
-        for s in self.scales:
+        for s in scale_list:
             resized = cv2.resize(templ_gray, None, fx=s, fy=s)
 
             # 防崩：模板不能大于图（缩小后可能就合法了）

@@ -818,6 +818,13 @@ async def fix_node(state: ScriptGenState) -> dict[str, Any]:
         state.get("image_selection") or {},
         state.get("image_parts") or [],
     )
+    from backend.script_generator.few_shot import build_retrieve_block
+
+    retrieve_blk = build_retrieve_block(
+        errors=errors,
+        explanation=explanation,
+        reason="fix",
+    )
     system = (
         "You fix Minashigo automation Python scripts.\n"
         "Output ONLY the full corrected Python source. No markdown fences, no explanation.\n"
@@ -833,10 +840,11 @@ async def fix_node(state: ScriptGenState) -> dict[str, Any]:
         "Scene wiring: hub states 主界面/出击界面 belong in every task table; "
         "task-specific scenes (房间界面/竞技场/塔) only in the matching TASK_* table. "
         "You may alias a scene key to an existing handler (same function, two keys).\n"
-        "If errors mention 未知+unknown_state / _task_entry_state: in run_task after "
-        "_resolve_state, use `if resolved and resolved != '未知'` and on 未知/未映射 "
-        "set `state_name = _task_entry_state(states, task_name)` — never stay on 未知 "
-        "only calling unknown_state. Prefer a small surgical edit, not a full rewrite.\n"
+        "run_task has TWO contexts (do not collapse them):\n"
+        "1) bootstrap / resolve landing on 未知 → escape via `_task_entry_state`.\n"
+        "2) step-timeout re-identify with `unknown_state` returning None → treat as "
+        "过场: keep state_name, reset se_time; do NOT call `_task_entry_state` unless "
+        "already on 未知. Prefer a small surgical edit; use Retrieved corpus snippets.\n"
         + (
             "Keep _img('stem') from IMAGE PARTS / SELECTED; folder filename alignment is local.\n"
             if img_id_only
@@ -848,7 +856,8 @@ async def fix_node(state: ScriptGenState) -> dict[str, Any]:
         + (f"IMG_DIR MUST be exactly: {img_dir_hint}\n" if img_dir_hint else "")
         + (
             "\nFREE MODE: introduction requires full multitask skeleton "
-            "(run_task + TASK1_STATES, TASK2_STATES, …). Do NOT leave a STATES-only stub.\n"
+            "(run_task + TASK_task1_STATES, TASK_task2_STATES, …). "
+            "Do NOT leave a STATES-only stub.\n"
             if free
             else ""
         )
@@ -856,6 +865,7 @@ async def fix_node(state: ScriptGenState) -> dict[str, Any]:
     )
     user = (
         f"## Validation errors\n{err_block}\n\n"
+        f"{retrieve_blk}\n\n"
         f"{plan_block}\n\n"
         f"{checklist}\n\n"
         f"{sel_blk}\n"

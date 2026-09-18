@@ -14,9 +14,39 @@ from core.logging.events import LogLevel
 def _resolve_type_name(annot) -> str:
     """从类型注解中提取可读的名称字符串。"""
     if isinstance(annot, str):
-        return annot
+        return annot.strip()
     # 尝试取 __name__（常规类）或 _name（GenericAlias）
     return getattr(annot, '__name__', getattr(annot, '_name', str(annot)))
+
+
+def _annotation_member_names(annot) -> set[str] | None:
+    """解析 do_work 参数注解为类型名集合。
+
+    支持：
+      - UserBrowser / UserWindow（含字符串推迟注解）
+      - UserBrowser | UserWindow / Union[...]（含 `from __future__ import annotations`）
+    返回 None 表示无法解析。
+    """
+    if annot is inspect.Parameter.empty:
+        return None
+
+    # 推迟注解：整段是字符串
+    if isinstance(annot, str):
+        text = annot.strip().replace(" ", "")
+        if not text:
+            return None
+        if "|" in text:
+            return {p.strip() for p in text.split("|") if p.strip()}
+        return {text}
+
+    origin = get_origin(annot)
+    if origin is not None:
+        return {_resolve_type_name(a) for a in get_args(annot)}
+
+    return {_resolve_type_name(annot)}
+
+
+_VALID_DO_WORK_TYPES = frozenset({"UserBrowser", "UserWindow", "Browser"})
 
 
 class TaskStopped(Exception):
@@ -269,34 +299,18 @@ class TaskController:
             )
 
         annot = params[0].annotation
-        if annot is inspect.Parameter.empty:
+        names = _annotation_member_names(annot)
+        if names is None:
             raise RuntimeError(
                 f"{module_name}.do_work 的第一个参数缺少类型标注，"
                 f"请添加 (browser: UserBrowser) 或 (win: UserWindow)"
             )
 
-        # 解析 Union 类型（UserBrowser | UserWindow）
-        from typing import get_origin, get_args
-        origin = get_origin(annot)
-        if origin is not None:
-            # Union / UnionType → 取出所有成员类型名
-            member_names = {_resolve_type_name(a) for a in get_args(annot)}
-            if not member_names.issubset({'UserBrowser', 'UserWindow', 'Browser'}):
-                invalid = member_names - {'UserBrowser', 'UserWindow', 'Browser'}
-                raise RuntimeError(
-                    f"{module_name}.do_work 的 Union 标注中包含了不支持的类型: {invalid}"
-                )
-            return  # Union 类型通过校验
-
-        # 单个类型
-        type_name = _resolve_type_name(annot)
-        valid_types = ('UserBrowser', 'UserWindow')
-        if type_name == 'Browser':  # 旧式标注，兼容
-            return
-        if type_name not in valid_types:
+        if not names.issubset(_VALID_DO_WORK_TYPES):
+            invalid = names - _VALID_DO_WORK_TYPES
             raise RuntimeError(
-                f"{module_name}.do_work 的参数类型标注必须为 UserBrowser 或 UserWindow，"
-                f"当前为 {type_name}"
+                f"{module_name}.do_work 的参数类型标注必须为 UserBrowser 或 UserWindow"
+                f"（可用 UserBrowser | UserWindow），不支持: {invalid or names}"
             )
 
     @staticmethod
@@ -309,20 +323,13 @@ class TaskController:
         if not params:
             return False
 
-        annot = params[0].annotation
-        if annot is inspect.Parameter.empty:
+        names = _annotation_member_names(params[0].annotation)
+        if not names:
             return False
-
-        # Union 类型 → 兼容两者
-        origin = get_origin(annot)
-        if origin is not None:
+        # 联合类型 → 兼容两者
+        if len(names) > 1:
             return None
-
-        # 单个类型
-        type_name = _resolve_type_name(annot)
-        if type_name == 'UserWindow':
-            return True
-        return False
+        return next(iter(names)) == "UserWindow"
 
     def stop(self):
         self._stopped = True

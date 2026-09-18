@@ -1,6 +1,16 @@
 # ========== IDE / Editor ==========
 .idea/
 .vscode/
+.cursor/
+
+# ========== Mobile / Android ==========
+mobile/android/.gradle/
+mobile/android/build/
+mobile/android/app/build/
+mobile/android/local.properties
+mobile/android/.idea/
+mobile/android/*.iml
+mobile/android/capture/
 
 # ========== VS Code Local History (大量备份) ==========
 .history/
@@ -45,14 +55,17 @@ json/accounts.json
 user/config.json
 user_data/match_hotspots.json
 user_data/match_hotspots.tmp
+backend/script_generator/corpus/collab_sessions/
 
 # ========== Local caches / tooling ==========
 .freebuff/
 **/.vision_cache/
 
 # ========== Local backups / scratch ==========
+_tmp_*
 scripts/_backup/
 scripts/_trial/
+scripts/_collab/
 gui/styles/_backup_*/
 scripts/测试/_*.py
 
