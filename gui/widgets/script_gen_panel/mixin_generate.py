@@ -83,6 +83,10 @@ class GenerateMixin:
             "compress_images": self._compress_img_cb.isChecked(),
             "max_tokens": int(self._max_tokens.value()),
             "free_mode": bool(self._free_mode_cb.isChecked()),
+            # 决定 1：V2 生成也要带**权威执行目标**（与 V3 同一个解析入口）。
+            # 拿不到具体目标时这里是 unresolved → 生成期按 portable 交集处理，
+            # 绝不默认 desktop/browser。
+            "execution_target": self._execution_target_payload(),
         }
         if (
             self._send_img_cb.isChecked()
@@ -156,6 +160,17 @@ class GenerateMixin:
                     self._gen_ctx = data
             except Exception as e:
                 print(f"[ScriptGenerator] gen_ctx 解析失败: {e}")
+            return
+        if kind == "llm_call":
+            # 按次记录每次 LLM 调用的输入/输出与上下文体积，便于事后查 token 爆炸
+            try:
+                import json as _json
+
+                data = _json.loads(payload or "{}")
+                if isinstance(data, dict) and getattr(self, "_archive", None) is not None:
+                    self._archive.append_event("llm_call", **data)
+            except Exception as e:
+                print(f"[ScriptGenerator] llm_call 记录失败: {e}")
             return
         if kind == "plan":
             # 计划正文并入轨迹「规划」步骤，不再单独占一块面板

@@ -146,6 +146,22 @@ class UtilsMixin:
             kwargs["clip"] = clip
         return await self.page.screenshot(**kwargs)
 
+    async def capture_region(
+            self, x: float, y: float, width: float, height: float,
+    ) -> np.ndarray:
+        """Capture a fresh viewport region through Playwright's native clip."""
+        clip = {
+            "x": max(0.0, float(x)),
+            "y": max(0.0, float(y)),
+            "width": max(1.0, float(width)),
+            "height": max(1.0, float(height)),
+        }
+        png = await self._screenshot_viewport(clip=clip)
+        frame = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+        if frame is None or frame.size == 0:
+            raise RuntimeError(f"局部截图解码失败: {clip}")
+        return frame
+
     async def _locator_page_box(self, frame, selector: str) -> Optional[dict]:
         """locator 的 bounding_box 已是相对顶层页面的 CSS 坐标（含 iframe 内元素）。"""
         try:

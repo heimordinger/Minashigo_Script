@@ -43,6 +43,8 @@ class FrameObserver:
         self._demands: dict[str, float] = {}
         self._task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
+        # 同一目标绝不能并发截图；不同目标由全局 capture limiter 有限并行。
+        self._capture_lock = asyncio.Lock()
         self._wake = asyncio.Event()
         self._stale = True
         self._frame_id = 0
@@ -110,13 +112,13 @@ class FrameObserver:
         """标记缓存不可用（点击 / sleep 后）。不立刻截图。"""
         self._stale = True
 
-    async def ensure_frame(self, *, force: bool = False) -> Any:
+    async def ensure_frame(self, *, force: bool = False, priority: int = 20) -> Any:
         """保证有可用帧：非 force 且未 stale 则复用；否则截一张。"""
         if not force and not self._stale:
             frame = self.current_frame()
             if frame is not None:
                 return frame
-        return await self.capture_once()
+        return await self.capture_once(priority=priority)
 
     async def wait_next_frame(self, timeout: float = 2.0) -> Any:
         """等到 frame_id 前进（grabber 或主动 capture）。"""
@@ -132,11 +134,17 @@ class FrameObserver:
             await asyncio.sleep(0.01)
         return await self.capture_once()
 
-    async def capture_once(self) -> Any:
+    async def capture_once(self, *, priority: int = 20) -> Any:
         """强制截一帧并清除 stale。"""
-        frame = await self._capture()
-        self._note_new_frame(frame)
-        return frame
+        from .vision_resource import vision_resource
+
+        async with self._capture_lock:
+            async with vision_resource(
+                kind="capture", priority=priority, owner=self._name
+            ):
+                frame = await self._capture()
+                self._note_new_frame(frame)
+                return frame
 
     def _note_new_frame(self, frame: Any) -> None:
         self._stale = False
@@ -182,7 +190,7 @@ class FrameObserver:
                 if fps <= 0:
                     return
                 try:
-                    await self.capture_once()
+                    await self.capture_once(priority=50)
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:

@@ -144,6 +144,51 @@ class OptimizeWorker(QThread):
             loop.close()
 
 
+class CollabCodegenWorker(QThread):
+    """协作确认后的出码：跑经典 generate 管线（plan / 架构 / 清单 / few-shot / 校验）。"""
+
+    finished = Signal(dict)  # generate_from_logic 的返回 dict
+    status = Signal(str)
+    partial = Signal(str)
+    error = Signal(str)
+    token_info = Signal(int, int)
+
+    def __init__(self, params: dict):
+        super().__init__()
+        self.params = params
+
+    def run(self):
+        _reload_generator_modules()
+        from backend.script_generator.collaborator.codegen_bridge import generate_from_logic
+        from backend.script_generator.collaborator.session import CollabSession
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            session = CollabSession.from_dict(dict(self.params.get("session") or {}))
+            result = loop.run_until_complete(
+                generate_from_logic(
+                    session=session,
+                    provider=str(self.params.get("provider") or ""),
+                    api_key=str(self.params.get("api_key") or ""),
+                    model=str(self.params.get("model") or ""),
+                    api_endpoint=self.params.get("api_endpoint"),
+                    max_tokens=self.params.get("max_tokens"),
+                    vision_assist=self.params.get("vision_assist"),
+                    free_mode=bool(self.params.get("free_mode", False)),
+                    on_status=lambda m: self.status.emit(str(m or "")),
+                    on_partial=lambda p: self.partial.emit(str(p or "")),
+                )
+            )
+            inp, out = result.get("tokens") or (0, 0)
+            self.token_info.emit(int(inp or 0), int(out or 0))
+            self.finished.emit(result if isinstance(result, dict) else {})
+        except Exception as e:
+            self.error.emit(str(e))
+        finally:
+            loop.close()
+
+
 class CollabLlmWorker(QThread):
     """协作页一轮 LLM（含可选 tools / JSON 协议）。"""
 
@@ -190,6 +235,7 @@ class CollabLlmWorker(QThread):
                     on_status=_status,
                     on_partial=_partial,
                     resume_permission=str(self.params.get("resume_permission") or ""),
+                    supplement_box=self.params.get("supplement_box"),
                 )
             )
             self.token_info.emit(int(inp or 0), int(out or 0))
@@ -198,3 +244,64 @@ class CollabLlmWorker(QThread):
             self.error.emit(str(e))
         finally:
             loop.close()
+
+
+class CollabV3Worker(QThread):
+    """V3 预览运行时；保持与 CollabLlmWorker 相同的 GUI 信号契约。"""
+
+    finished = Signal(str, object, object)
+    status = Signal(str)
+    partial = Signal(str)
+    error = Signal(str)
+    token_info = Signal(int, int)
+
+    def __init__(self, params: dict):
+        super().__init__()
+        self.params = params
+
+    def run(self):
+        from backend.script_generator.collaborator_v3.adapters.gui_bridge import run_v3_gui_turn
+
+        try:
+            self.status.emit("V3 · 建立本轮工作区…")
+            payload = dict(self.params)
+
+            def _partial(piece: str) -> None:
+                if piece:
+                    self.partial.emit(str(piece))
+
+            payload["on_partial"] = _partial
+            payload["on_status"] = lambda message: self.status.emit(str(message or ""))
+            visible, meta, session_dict, inp, out = run_v3_gui_turn(payload)
+            self.token_info.emit(int(inp or 0), int(out or 0))
+            self.finished.emit(visible, meta, session_dict)
+        except Exception as exc:
+            self.error.emit(str(exc))
+
+
+class CollabV4Worker(QThread):
+    """V4 form-driven MVP; keeps the established GUI signal contract."""
+
+    finished = Signal(str, object, object)
+    status = Signal(str)
+    partial = Signal(str)
+    error = Signal(str)
+    token_info = Signal(int, int)
+
+    def __init__(self, params: dict):
+        super().__init__()
+        self.params = params
+
+    def run(self):
+        from backend.script_generator.collaborator_v4.adapters.gui_bridge import run_v4_gui_turn
+
+        try:
+            self.status.emit("V4 · 建立表单主轮…")
+            payload = dict(self.params)
+            payload["on_partial"] = lambda piece: self.partial.emit(str(piece)) if piece else None
+            payload["on_status"] = lambda message: self.status.emit(str(message or ""))
+            visible, meta, session_dict, inp, out = run_v4_gui_turn(payload)
+            self.token_info.emit(int(inp or 0), int(out or 0))
+            self.finished.emit(visible, meta, session_dict)
+        except Exception as exc:
+            self.error.emit(str(exc))

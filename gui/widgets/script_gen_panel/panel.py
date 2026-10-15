@@ -39,6 +39,15 @@ from gui.widgets.script_gen_panel.workers import (
 )
 
 
+def path_under_scripts(path) -> bool:
+    """保存目标是否落在 scripts/ 下（含子目录）。"""
+    try:
+        Path(path).resolve().relative_to(Path(SCRIPTS_PATH).resolve())
+        return True
+    except Exception:
+        return False
+
+
 class ScriptGenerator(
     CollabMixin, SettingsMixin, AssetsMixin, GenerateMixin, RuntimeMixin, QWidget
 ):
@@ -70,6 +79,8 @@ class ScriptGenerator(
         self._revise_worker: ReviseWorker | None = None
         self._optimize_worker: OptimizeWorker | None = None
         self._optimize_code: str = ""
+        self._optimize_source_path: Path | None = None
+        self._optimize_source_mtime: float = 0.0
         self._optimize_script_path: Path | None = None
         self._optimize_script_files: list[Path] = []
         self._optimize_page = 0
@@ -405,7 +416,7 @@ class ScriptGenerator(
         _vl = QLabel(
             "主模型若不支持看图，可在此单独配置识图模型。"
             "「经典」生成选「辅助识图」时先识图再写代码；"
-            "「协作」在主模型看不了图且右侧有画面时，会自动用此处模型描述截图再交给主模型。"
+            "「协作」优先让支持视觉的主模型按需查看共同视口；主模型不支持或查看失败时，才回退到这里。"
             "另外：主模型（如 DeepSeek）无修订 tools 时，若此处填了千问等 Key，"
             "会自动用「qwen3.5-flash」代查函数/日志，再交给主模型写补丁。"
         )
@@ -783,6 +794,15 @@ class ScriptGenerator(
         self._stop_trial_btn.setEnabled(False)
         self._stop_trial_btn.clicked.connect(self._on_stop_trial)
         acc_row.addWidget(self._stop_trial_btn)
+        # 查看"这次真正跑的那份代码"：写盘文件（含伪录制注入/回退）优先，
+        # 还没写过盘时退回当前生成代码。只读快照，不给编辑入口。
+        self._view_trial_code_btn = QPushButton("查看试运行代码")
+        self._view_trial_code_btn.setToolTip(
+            "查看当前试运行的脚本代码（实际写盘并运行的那一份；还没试运行过则显示当前生成代码）"
+        )
+        self._view_trial_code_btn.setEnabled(False)
+        self._view_trial_code_btn.clicked.connect(self._view_trial_code)
+        acc_row.addWidget(self._view_trial_code_btn)
         layout.addLayout(acc_row)
 
         # 试运行 Live HUD：状态点 / 当前状态 / 最近动作 / 计时 / L1 结论
@@ -1222,7 +1242,39 @@ class ScriptGenerator(
             "3. 仍无法解决时，可把原始错误发给开发者协助查看",
         )
 
-    def _save_script(self):
+    def _ask_script_save_target(self, default_name: str) -> Path | None:
+        """确认完成并保存：让用户选 scripts/ 下的位置与文件名。
+
+        只允许落在 scripts/（含子目录）；选到外面会提示重选。取消返回 None。
+        """
+        start_dir = self._output_dir.text().strip() or str(SCRIPTS_PATH)
+        if not Path(start_dir).is_dir():
+            start_dir = str(SCRIPTS_PATH)
+        start = Path(start_dir) / default_name
+        while True:
+            picked, _flt = QFileDialog.getSaveFileName(
+                self,
+                "确认完成：保存脚本到 scripts/",
+                str(start),
+                "Python 脚本 (*.py)",
+            )
+            if not picked:
+                return None
+            path = Path(picked)
+            if path.suffix.lower() != ".py":
+                path = path.with_suffix(".py")
+            if not path_under_scripts(path):
+                QMessageBox.warning(
+                    self,
+                    "请保存到 scripts 目录",
+                    "脚本要放在 scripts/ 下（可以选任意子目录，也可以新建文件夹）。\n"
+                    f"当前选择：{path}",
+                )
+                start = path
+                continue
+            return path
+
+    def _save_script(self, *, ask_path: bool = False):
         # 正式落盘前去掉试运行伪录制（确认保存 / 生成页保存共用）
         code = self._strip_pseudo_from_working_code()
         # 保存前语法闸门：剥离/手改后若语法坏了，绝不落盘（历史事故：存进去才发现 SyntaxError）
@@ -1243,23 +1295,86 @@ class ScriptGenerator(
         if not name.endswith(".py"):
             name += ".py"
 
-        out_dir = Path(self._output_dir.text().strip())
-        out_dir.mkdir(parents=True, exist_ok=True)
+        if ask_path:
+            picked = self._ask_script_save_target(name)
+            if picked is None:
+                return
+            out_path = picked
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+        else:
+            out_dir = Path(self._output_dir.text().strip())
+            out_dir.mkdir(parents=True, exist_ok=True)
 
-        # 自动处理重名
-        base = out_dir / name
-        stem = name.rsplit(".py", 1)[0]
-        counter = 1
-        out_path = base
-        while out_path.exists():
-            out_path = out_dir / f"{stem} ({counter}).py"
-            counter += 1
+            # 自动处理重名
+            base = out_dir / name
+            stem = name.rsplit(".py", 1)[0]
+            counter = 1
+            out_path = base
+            while out_path.exists():
+                out_path = out_dir / f"{stem} ({counter}).py"
+                counter += 1
 
         try:
+            side_note = ""
+            try:
+                code, side_note = self._bundle_assets_for_save(
+                    code, out_path.stem, before_line=True
+                )
+            except Exception as e:  # noqa: BLE001 - 打包失败不该挡住保存，但要说出来
+                print(f"[保存] 素材打包失败，按原样保存: {e}")
             out_path.write_text(code, encoding="utf-8")
-            QMessageBox.information(self, "保存成功", f"已保存到:\n{out_path}")
+            # 记住这次选择：后续保存默认落到同一目录 / 同一文件名
+            self._output_dir.setText(str(out_path.parent))
+            self._script_name.setText(out_path.name)
+            self._generated_code = code
+            self._stream_buf = code
+            if hasattr(self, "_live_code") and self._live_code is not None:
+                self._live_code.setPlainText(code)
+            img_note = ""
+            if side_note:
+                img_note = "\n\n" + side_note
+            elif "_collab" in code:
+                img_note = (
+                    "\n\n提示：这份脚本的 IMG_DIR 指向 assets/images/_collab/ 下的会话素材；"
+                    "要清理那个目录的话，先把素材一起搬走并改 IMG_DIR。"
+                )
+            QMessageBox.information(
+                self,
+                "保存成功",
+                f"已保存到:\n{out_path}\n\n"
+                "脚本列表在下次打开选择器时会自动刷新。"
+                + img_note,
+            )
         except Exception as e:
             QMessageBox.critical(self, "保存失败", str(e))
+
+    def _collab_session(self):
+        """协作会话对象；没开协作页/没会话时为 None。"""
+        collab = getattr(self, "_collab", None)
+        engine = getattr(collab, "engine", None)
+        return getattr(engine, "session", None)
+
+    def _bundle_assets_for_save(
+        self, code: str, stem: str, *, before_line: bool = False
+    ) -> tuple[str, str]:
+        """保存时把脚本用到的素材收进 assets/images/<脚本名>/ 并改写路径。
+
+        返回 ``(新代码, 给人看的说明)``；没有协作会话时原样返回。
+        """
+        session = self._collab_session()
+        if session is None:
+            return code, ""
+        from backend.script_generator.collaborator.asset_bundle import (
+            bundle_script_assets,
+        )
+
+        new_code, res = bundle_script_assets(code, session=session, script_stem=stem)
+        if not res.changed and not res.errors:
+            return code, ""
+        lines = res.summary_lines()
+        if before_line:
+            lines.append("（脚本已自带素材，不再依赖截图目录。）")
+        return new_code, "\n".join(lines)
 
     def _copy_code(self):
         QApplication.clipboard().setText(self._generated_code)

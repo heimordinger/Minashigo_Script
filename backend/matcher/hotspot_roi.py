@@ -239,6 +239,23 @@ class HotspotStore:
             self._dirty = True
         self.flush(force=True)
 
+    def clear_frame_size(self, frame_w: int, frame_h: int) -> int:
+        """只丢掉某个帧尺寸下的热点样本，返回删掉的 bucket 数。
+
+        窗口尺寸变了，只有这个尺寸的样本是过期的；别的尺寸（另一个账号 /
+        另一种抓帧模式）的样本仍然有效，不该一起清掉。
+        """
+        token = f":{int(frame_w)}x{int(frame_h)}"
+        with self._lock:
+            drop = [k for k in self._buckets if k.endswith(token)]
+            for k in drop:
+                del self._buckets[k]
+            if drop:
+                self._dirty = True
+        if drop:
+            self.flush(force=True)
+        return len(drop)
+
     def propose_rois(
         self,
         *,
@@ -459,6 +476,9 @@ def adaptive_match(
     capture_mode: str = "full",
     enabled: bool = True,
     multi: bool = False,
+    log_account: str = "",
+    cheap: bool = False,
+    force_wide: bool = False,
 ):
     """
     自适应 ROI 匹配。
@@ -490,8 +510,26 @@ def adaptive_match(
         frame_w=fw,
         frame_h=fh,
         capture_mode=capture_mode,
+        log_account=log_account,
     )
-    fallback_wide = True
+    # 宽搜（10 个尺度）很贵：按 template|帧尺寸 限流，别每次未命中都全搜一遍。
+    # 首次 / 冷却到期才允许宽搜；其余走窄带（3 个尺度）。
+    skey = cache_key(tkey, fw, fh, capture_mode)
+    if force_wide:
+        # 动作事务的点击前/后验证：宁可多付一次完整尺度搜索，也不能因为
+        # 早先在别的场景学到错误窄带而把“仍在”误判成“已消失”。
+        fallback_wide = True
+    elif cheap:
+        # 空帧里的"看一眼"：明确不做宽搜。宽搜实测 1.5~1.8s（窄带的 3~4 倍），
+        # 而空帧的定义就是"没有素材可匹配" —— 全尺度兜底在这种帧上纯浪费。
+        fallback_wide = False
+    else:
+        try:
+            fallback_wide = bool(get_scale_cache().allow_wide(skey))
+        except Exception:
+            fallback_wide = True
+    # 本次是否**真的**走了宽搜：只有真走了，才该为「没找到」记一次退避。
+    wide_used = bool(fallback_wide)
     print(
         f"[scale] src={scale_src} hint={scale_hint} band={scales} "
         f"frame={fw}x{fh} tpl={tkey}"
@@ -534,6 +572,9 @@ def adaptive_match(
         ok = _ok_result(result)
         if ok:
             cache.note_hit(skey)
+            # 找到了 → 立刻解除宽搜退避（退避只用来表示"目标确实不在画面上"）
+            if fallback_wide:
+                cache.note_wide_result(skey, found=True)
             store.record_hit(
                 template_key=tkey,
                 frame_key=fkey,
@@ -544,33 +585,17 @@ def adaptive_match(
             )
             return result
 
-        # 缓存尺度连续未命中 → 强制重定标再试一次
-        if scale_src in ("cache", "calibrate", "match_ref") and cache.note_miss(skey):
-            hint2, scales2, src2 = resolve_scale_scales(
-                matcher=matcher,
-                frame=frame,
-                template=template,
-                template_key=tkey,
-                frame_w=fw,
-                frame_h=fh,
-                capture_mode=capture_mode,
-                force_recalibrate=True,
-            )
-            print(f"[scale] recalibrate after miss → src={src2} hint={hint2}")
-            retry = _call(None, None, force_scales=scales2, force_hint=hint2)
-            if _ok_result(retry):
-                cache.note_hit(skey)
-                store.record_hit(
-                    template_key=tkey,
-                    frame_key=fkey,
-                    x=float(retry.x),
-                    y=float(retry.y),
-                    score=float(
-                        getattr(retry, "max_val", None) or getattr(retry, "score", 0) or 0
-                    ),
-                    via_roi=False,
-                )
-                return retry
+        # 固定尺寸 profile 一旦建立，就不因普通未命中而冷定标。循环脚本里
+        # “挑战”在战斗阶段消失、“金币”在挑战界面消失都是正常场景变化，不能
+        # 当成尺度失效。恢复能力交给限流宽搜。真正的新
+        # 帧尺寸/截图模式会使用不同 key，自然触发一次新的冷定标。
+        # 这一轮走到头都没找到：如果确实用了宽搜，就记一次退避
+        # （连续宽搜都空 → 目标多半真的不在画面上，别再每 8 秒花 1.5s 全尺度搜）
+        if wide_used:
+            try:
+                cache.note_wide_result(skey, found=False)
+            except Exception:
+                pass
         return result
 
     use_roi = bool(enabled and store.enabled and tkey)

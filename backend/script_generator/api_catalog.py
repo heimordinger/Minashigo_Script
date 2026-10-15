@@ -1,223 +1,149 @@
-"""Short UserBrowser API contract cards for generate-time lookup.
+"""旧 API 卡片入口 —— 兼容 facade（设计 §9 阶段 A、§29）。
 
-Models see signatures and do/don't — not full UserBrowser source.
-Coordinate click(x,y) is allowed ONLY with coords from match_image_multi.
+⚠️ **事实源已经不在本文件**：API 契约单一事实源是
+``backend/script_generator/api_contracts``（registry + render）。
+本模块只保留旧函数名与返回形状，内部全部转发，供既有的生成/修订/优化 prompt
+继续使用；Phase 7 清理重复事实源时再评估删除。
+
+历史遗留：这里的卡片曾与 ``agent.ALLOWED_BROWSER_METHODS``、
+``graph.plan_schema._ALLOWED_BROWSER_METHODS`` 三份名单互相矛盾
+（如 ``invalidate_frame`` 在此被判"不允许"、在别处允许）。现在统一取自 registry。
 """
 
 from __future__ import annotations
 
 import json
-import re
+from typing import Any, Mapping
 
-ALLOWED_METHODS = (
-    "match_image",
-    "match_image_multi",
-    "click_image",
-    "click",
-    "wait_image",
-    "b_sleep",
-    "update_frame",
-    "request_fps",
-    "release_fps",
-    "script_log",
-    "note_state",
-    "note_progress",
-    "enable_pseudo_record",
-    "finish_pseudo_record",
-)
+from .api_contracts import registry, render
+from .api_contracts import ticket_service
+from .execution_profile import profile_from_target
 
-LOGIN_METHODS = frozenset({"goto", "dmm_login"})
+#: ⚠️ 模块级 ``RUNTIME_PROFILE`` 已**删除**。
+#: 旧值是硬编码的 ``browser_user_browser``，与交付闸那边硬编码的 desktop 方向相反，
+#: 且都不看任务真正的执行目标（决定 §13.1：清除两个相反的默认）。
+#: 现在旧调用方必须显式传 ``profile=``；无法判定时由 ``render`` 落到
+#: ``portable_common`` 安全交集，对单端能力返回结构化 ``PROFILE_REQUIRED``。
+_LEGACY_PROFILE = registry.PORTABLE_PROFILE
 
-_LOGIN_HINT_RE = re.compile(
-    r"登录|登入|网页|dmm|goto|打开游戏页|跳转.*http|浏览器地址",
-    re.I,
-)
 
+def _legacy_spec():
+    """旧模块常量用的 profile：安全交集（不是某个具体执行目标）。"""
+    return registry.get_profile(_LEGACY_PROFILE)
+
+
+#: 旧元组形状：**安全交集**里已批准的方法名。
+#: 不再等于 browser 的方法表 —— 需要 browser 专有能力的调用方必须显式传 profile。
+ALLOWED_METHODS: tuple[str, ...] = _legacy_spec().approved_names()
+
+#: 旧集合形状：需要 allow_login 才放行的方法名。
+LOGIN_METHODS: frozenset[str] = frozenset(_legacy_spec().login_methods)
+
+#: 旧 ``_CARDS`` 形状：方法名 → 卡片正文（由 registry 渲染）。
 _CARDS: dict[str, str] = {
-    "match_image": (
-        "await browser.match_image(path, threshold=...) -> falsy OR MatchResult\n"
-        "MatchResult has ATTRIBUTES: .x .y .max_val (object, NOT a dict).\n"
-        "Usually only use as boolean: if await browser.match_image(...):\n"
-        "DO: scene ids (logo/rank/*_logo) use CFG.nav_threshold.\n"
-        "DO: buttons use CFG.threshold or CFG.icon_threshold.\n"
-        "DON'T: confuse with match_image_multi (that returns list[dict]).\n"
-        "DON'T: use_color_check unless the explanation asks."
-    ),
-    "match_image_multi": (
-        "await browser.match_image_multi(path, threshold=...) -> list[dict]\n"
-        "Each item is a DICT with keys 'x','y','score' (CSS coords).\n"
-        "CRITICAL: use m['y'] / m['x'] / m['score'] — NEVER m.y / m.x "
-        "(AttributeError).\n"
-        "Pick max-y (e.g. 段位) then click that hit:\n"
-        "  matches = await browser.match_image_multi(_img('jjc_段位'), "
-        "threshold=CFG.threshold)\n"
-        "  if not matches: return '未知'  # or None\n"
-        "  best = max(matches, key=lambda m: m['y'])\n"
-        "  await browser.click(best['x'], best['y'])\n"
-        "DON'T: treat items as MatchResult objects.\n"
-        "DON'T: click_image after multi when you need a specific hit "
-        "(click_image picks one template match, not your max-y)."
-    ),
-    "click": (
-        "await browser.click(x, y, pianyi=(0,0)) -> None\n"
-        "DO: ONLY with x,y from match_image_multi dicts "
-        "(max-y / max-x selection).\n"
-        "DON'T: hardcode magic numbers.\n"
-        "DON'T: use for normal single-template buttons "
-        "(use click_image instead)."
-    ),
-    "click_image": (
-        "await browser.click_image(path, threshold=CFG.threshold, "
-        "pianyi=(0,0), expect='none', appear_path=None) -> bool\n"
-        "DO: single-template buttons; if scene changes, wait_image / "
-        "match_image the next id in the SAME state fn, OR set "
-        "expect='appear' + appear_path / expect='gone'.\n"
-        "DON'T: use to select among several multi hits (use match_image_multi "
-        "+ click).\n"
-        "NOTE: successful click invalidates frame; b_sleep also invalidates. "
-        "Default expect='none' (no confirm wait)."
-    ),
-    "wait_image": (
-        "await browser.wait_image(path, timeout=seconds, threshold=0.9) "
-        "-> True if seen else False\n"
-        "timeout<=0 means wait forever — prefer STATE_TIMEOUT.get(state, 30) "
-        "on single_fsm; on multi_task use that task's TASK_*_TIMEOUT.get(...) "
-        "or a numeric timeout (shared handlers may merge into STATE_TIMEOUT).\n"
-        "DO: after a scene-changing click; if False, return '未知'.\n"
-        "DON'T: busy-loop match_image yourself for the same purpose."
-    ),
-    "b_sleep": (
-        "await browser.b_sleep(lo, hi=None)  # seconds; if hi given, "
-        "uniform random in [lo,hi]\n"
-        "DO: unknown_state miss path: b_sleep(1.5, 2.5) then return None.\n"
-        "NOTE: marks the screenshot cache stale; next match_image will refresh.\n"
-        "DON'T: time.sleep / asyncio.sleep in scripts."
-    ),
-    "update_frame": (
-        "await browser.update_frame()  # force one fresh screenshot + clear "
-        "polling match cache\n"
-        "OPTIONAL now: runtime auto-refreshes after click/b_sleep and before "
-        "match when stale.\n"
-        "DO: when you need an explicit same-tick multi-template snapshot, "
-        "or debugging.\n"
-        "DON'T: spam update_frame before every single match."
-    ),
-    "request_fps": (
-        "await browser.request_fps(hz, key='script')  # demand continuous "
-        "observe Hz\n"
-        "Runtime takes max of demands (hard cap 60). Idle => 0 capture.\n"
-        "DO: only when this script needs higher than default observe rate.\n"
-        "DON'T: forget that runner releases 'script' on do_work exit."
-    ),
-    "release_fps": (
-        "await browser.release_fps(key='script')  # drop a prior request_fps\n"
-        "Usually unnecessary — TaskController releases on script end."
-    ),
-    "script_log": (
-        "browser.script_log(msg: str)  # sync; appears in trial log\n"
-        "DO: log state entry and key click/wait outcomes."
-    ),
-    "note_state": (
-        "browser.note_state(name: str)  # sync; report current FSM state\n"
-        "DO: call every main-loop / run_task iteration (stuck detection)."
-    ),
-    "note_progress": (
-        "browser.note_progress()  # optional manual progress heartbeat"
-    ),
-    "enable_pseudo_record": (
-        "browser.enable_pseudo_record(script_name=..., force=True)  # sync\n"
-        "Starts timeline+keyframe recording under screenshots/pseudo_record/.\n"
-        "DO: call once at do_work start when measuring performance.\n"
-        "DON'T: remove during optimize; instrumentation is always allowed."
-    ),
-    "finish_pseudo_record": (
-        "browser.finish_pseudo_record(status='ok'|'error')  # sync\n"
-        "Flushes summary.json / timeline; call in finally."
-    ),
-    "goto": (
-        "await browser.goto(url: str, retries=3)  # LOGIN / web navigation ONLY\n"
-        "DO: open the game/login page before image FSM.\n"
-        "DON'T: use in daily/sortie image scripts."
-    ),
-    "dmm_login": (
-        "await browser.dmm_login(timeout=30_000)  # milliseconds; LOGIN ONLY\n"
-        "Fills DMM email/password from the account and submits.\n"
-        "DON'T: scrape the login form with match_image."
-    ),
+    item.name: render.card_text(_LEGACY_PROFILE, item)
+    for item in _legacy_spec().approved_contracts(allow_login=True)
 }
 
 
 def allow_login_from_explanation(explanation: str) -> bool:
-    return bool(_LOGIN_HINT_RE.search(explanation or ""))
+    return render.allow_login_from_explanation(explanation)
 
 
-def lookup_api(name: str, *, allow_login: bool = False) -> str:
-    key = (name or "").strip()
-    if not key:
-        return "lookup_api requires name (e.g. wait_image)."
-    # tolerate browser.wait_image
-    if "." in key:
-        key = key.rsplit(".", 1)[-1]
-    key = key.strip("() ")
-    allowed = set(ALLOWED_METHODS)
-    if allow_login:
-        allowed |= LOGIN_METHODS
-    card = _CARDS.get(key)
-    if key not in allowed:
-        listed = ", ".join(sorted(allowed))
-        extra = f"\nKnown card (not allowed for this task):\n{card}" if card else ""
-        return (
-            f"'{key}' is NOT allowed in this script. Allowed methods: {listed}."
-            f"{extra}"
+def lookup_api(
+    name: str,
+    *,
+    allow_login: bool = False,
+    profile: str | None = None,
+    execution_target: Mapping[str, Any] | None = None,
+    service=None,
+) -> str:
+    """旧接口。``profile`` 缺失 → 只按 ``portable_common`` 回答，
+    单端/签名分歧的方法返回 ``PROFILE_REQUIRED``（禁止静默选 desktop/browser）。
+
+    ``execution_target`` 是**权威执行目标事实**（决定 1，形状见
+    ``execution_profile.resolve_execution_target``）：给了就由它决定 profile、
+    来源与目标版本；没给就走 portable 语义（**绝不**默认 desktop/browser）。
+
+    另：这次"查看契约"由**本地** ticket 服务记录（``CONTRACT_VIEWED`` + 尽量签发 ticket）。
+    V2 与 V3 走同一个 ``TicketService``（用户决定 9）；留痕失败**不**影响返回值
+    （Phase 1 不接交付硬闸）。
+    """
+    text = render.lookup_text(profile, name, allow_login=allow_login)
+    record_contract_view(
+        name, profile=profile, service=service, execution_target=execution_target
+    )
+    return text
+
+
+def record_contract_view(
+    name: str,
+    *,
+    profile: str | None = None,
+    service=None,
+    execution_target: Mapping[str, Any] | None = None,
+    main_turn_id: str = "",
+    subturn_id: str = "",
+    run_id: str = "",
+    action_id: str = "",
+    task_id: str = "",
+):
+    """把"模型查看过这个契约"写进本地时间线，并在能确定接收者时签发 ticket。
+
+    返回 ``ContractViewResult``；没有登记服务、或记录过程出错时返回 ``None``
+    （**故意**不抛：留痕是加固，不是闸门）。
+    """
+    target = service or ticket_service.default_service()
+    if target is None:
+        return None
+    source_profile, profile_source, target_revision = profile_from_target(execution_target)
+    if source_profile is None and profile:
+        # 调用方直接给了具体 profile（老调用形状）：只认它，依旧不猜
+        source_profile, profile_source = profile, ""
+    try:
+        return target.view_contracts(
+            names=(name,),
+            profile=source_profile,
+            profile_source=profile_source,
+            main_turn_id=main_turn_id,
+            subturn_id=subturn_id,
+            run_id=run_id,
+            action_id=action_id,
+            task_id=task_id,
+            environment_revision=target_revision,
         )
-    if not card:
-        return f"No card for '{key}'. Allowed: {', '.join(sorted(allowed))}."
-    return f"## {key}\n{card}"
+    except Exception:  # noqa: BLE001 - 见 docstring：留痕失败不得打断生成
+        return None
 
 
-def compact_catalog(*, allow_login: bool = False) -> str:
-    names = list(ALLOWED_METHODS)
-    if allow_login:
-        names.extend(sorted(LOGIN_METHODS))
-    parts = [lookup_api(n, allow_login=allow_login) for n in names]
-    return "\n\n".join(parts)
+def compact_catalog(*, allow_login: bool = False, profile: str | None = None) -> str:
+    return render.compact_catalog(profile, allow_login=allow_login)
 
 
 def api_return_types_banner() -> str:
-    """短对照条：放进 system / revise，避免 match vs multi 搞混。"""
-    return (
-        "## Return-type contrast (CRITICAL)\n"
-        "- match_image -> MatchResult object (.x .y) or falsy — usually `if hit:`\n"
-        "- match_image_multi -> list[dict] with keys 'x','y','score' — "
-        "use m['y'], NEVER m.y\n"
-        "- max-y / max-x among hits: max(...); then browser.click(best['x'], "
-        "best['y'])\n"
-        "- click_image: single-template button only; not for picking one of "
-        "several multi hits\n"
-    )
+    """**已废弃**：旧 profile 无关对照条已删除（它会教 desktop 用 match_image_multi）。
+
+    保留这个名字只为兼容旧调用方，返回空串；能力/返回语义由
+    ``api_contracts_block()`` 按 profile 渲染。
+    """
+    return ""
 
 
-def api_contracts_block(*, explanation: str = "", allow_login: bool | None = None) -> str:
+def api_contracts_block(
+    *,
+    explanation: str = "",
+    allow_login: bool | None = None,
+    profile: str | None = None,
+) -> str:
     """生成/修订 prompt 共用的 API 契约全文。"""
-    if allow_login is None:
-        allow_login = allow_login_from_explanation(explanation or "")
-    login_line = (
-        "Login APIs goto / dmm_login are available because this looks like a login/web task.\n"
-        if allow_login
-        else "Do NOT call page APIs (goto, dmm_login, get_element).\n"
-    )
-    return (
-        "\n## Allowed API contracts (MUST follow; do not invent methods)\n"
-        + api_return_types_banner()
-        + login_line
-        + compact_catalog(allow_login=allow_login)
-        + "\n"
-    )
+    return render.contracts_block(profile, explanation=explanation, allow_login=allow_login)
 
 
-def generate_tool_hint(*, allow_login: bool, supports_tools: bool) -> str:
+def generate_tool_hint(
+    *, allow_login: bool, supports_tools: bool, profile: str | None = None
+) -> str:
     """始终附带完整 API 卡片；支持 tools 时额外允许 lookup_api 复查。"""
-    block = api_contracts_block(allow_login=allow_login)
+    block = api_contracts_block(allow_login=allow_login, profile=profile)
     if supports_tools:
         return (
             block

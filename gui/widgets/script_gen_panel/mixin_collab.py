@@ -8,10 +8,10 @@ from pathlib import Path
 from PySide6.QtCore import Qt, QTimer, Signal, QPoint, QRect, QMimeData, QUrl, QSize
 from PySide6.QtGui import (
     QFont, QPixmap, QPainter, QPen, QColor, QMouseEvent, QDrag, QDragEnterEvent, QDropEvent,
-    QTextOption, QIntValidator,
+    QTextOption, QIntValidator, QShortcut, QKeySequence,
 )
 from PySide6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame,
+    QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QFrame, QComboBox,
     QScrollArea, QLineEdit, QSizePolicy, QSplitter,
     QFileDialog, QMessageBox, QApplication, QMenu, QToolButton, QInputDialog,
     QTextEdit, QLayout,
@@ -29,6 +29,67 @@ _STATUS_TEXT = {
 
 _COLLAB_IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".webp"}
 _MIME_ASSET_ID = "application/x-minashigo-collab-asset"
+
+
+def collab_api_error_notice(error: str) -> tuple[str, str] | None:
+    """把可直接处理的 API 错误翻成简短提示；原始错误仍由运行日志保存。"""
+    text = str(error or "").strip()
+    lowered = text.casefold()
+    is_payment_required = any(
+        marker in lowered
+        for marker in (
+            "error code: 402",
+            "status code: 402",
+            "http 402",
+            "http status 402",
+        )
+    )
+    if is_payment_required or "insufficient balance" in lowered or "余额不足" in text:
+        return (
+            "API 余额不足",
+            "当前 API 账户余额不足，无法继续调用模型。\n\n"
+            "请充值，或在「1. API 配置」中更换可用的账号 / Key。",
+        )
+    return None
+
+
+def copy_image_to_clipboard(path: Path) -> str:
+    """把图片放进剪贴板（位图）。返回给用户看的结果说明。"""
+    from PySide6.QtGui import QImage
+
+    p = Path(path)
+    if not p.is_file():
+        return "复制失败：文件不在了（可能已被移走或删除）。"
+    try:
+        img = QImage(str(p))
+        if img.isNull():
+            return "复制失败：这张图读不出来。"
+        QApplication.clipboard().setImage(img)
+        return f"已复制图片到剪贴板：{p.name}（可直接粘到聊天框、文档或画图）"
+    except Exception as e:
+        return f"复制失败：{e}"
+
+
+def reveal_in_file_manager(path: Path) -> str:
+    """在系统文件管理器里定位这个文件。返回错误说明，空串表示已打开。"""
+    p = Path(path)
+    if not p.is_file():
+        return "文件不在了（可能已被移走或删除）。"
+    try:
+        import subprocess
+        import sys
+
+        if sys.platform.startswith("win"):
+            # explorer 成功也常返回非 0，这里不检查返回值
+            subprocess.Popen(["explorer", "/select,", str(p)])
+            return ""
+        from PySide6.QtCore import QUrl
+        from PySide6.QtGui import QDesktopServices
+
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(p.parent)))
+        return ""
+    except Exception as e:
+        return f"打不开文件夹：{e}"
 
 
 def _hold(widget) -> None:
@@ -177,6 +238,28 @@ def _mime_has_images(mime) -> bool:
     return bool(_image_paths_from_mime(mime))
 
 
+def _save_clipboard_image(image) -> Path | None:
+    """把剪贴板里的位图存成文件（聊天区粘贴 → 素材区）。"""
+    try:
+        from PySide6.QtGui import QImage
+
+        if not isinstance(image, QImage) or image.isNull():
+            return None
+        out_dir = PROJECT_ROOT / "screenshots" / "collab_snips"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        path = out_dir / f"paste_{stamp}.png"
+        n = 2
+        while path.exists():
+            path = out_dir / f"paste_{stamp}_{n}.png"
+            n += 1
+        if not image.save(str(path), "PNG"):
+            return None
+        return path
+    except Exception:
+        return None
+
+
 _SYSTEM_TEXT_HINTS = (
     "已有画面",
     "已载入画面",
@@ -204,6 +287,13 @@ _SYSTEM_TEXT_HINTS = (
 )
 
 
+def _now_iso() -> str:
+    """气泡时间戳（与消息落库用的格式一致）。"""
+    from datetime import datetime
+
+    return datetime.now().isoformat(timespec="seconds")
+
+
 def _infer_bubble_role(role: str, text: str) -> str:
     r = (role or "").strip() or "agent"
     if r in ("user", "system", "process"):
@@ -214,10 +304,50 @@ def _infer_bubble_role(role: str, text: str) -> str:
     return "agent"
 
 
+def _disable_markdown_strikethrough(text: str) -> str:
+    """Escape tildes in prose while leaving fenced/inline code untouched.
+
+    Qt's Markdown parser treats even ordinary numeric ranges such as
+    ``10~16 ... 0.83~0.90`` as strike-through delimiters.  Collaboration
+    messages do not use deletion markup, so prose tildes are always literal.
+    """
+    source = str(text or "")
+    out: list[str] = []
+    index = 0
+    code_fence = False
+    inline_ticks = 0
+    while index < len(source):
+        if source.startswith("```", index):
+            code_fence = not code_fence
+            out.append("```")
+            index += 3
+            continue
+        if not code_fence and source[index] == "`":
+            run = 1
+            while index + run < len(source) and source[index + run] == "`":
+                run += 1
+            if run < 3:
+                inline_ticks = 0 if inline_ticks == run else run
+            out.append("`" * run)
+            index += run
+            continue
+        if source[index] == "~" and not code_fence and not inline_ticks:
+            preceding_slashes = 0
+            pos = len(out) - 1
+            while pos >= 0 and out[pos] == "\\":
+                preceding_slashes += 1
+                pos -= 1
+            if preceding_slashes % 2 == 0:
+                out.append("\\")
+        out.append(source[index])
+        index += 1
+    return "".join(out)
+
+
 def _set_md_label(label: QLabel, text: str) -> None:
-    """Agent/用户气泡：用 Qt 内置 Markdown 渲染（**粗体**、列表等）。"""
+    """Agent/用户气泡：保留常用 Markdown，但禁用易误判的删除线。"""
     label.setTextFormat(Qt.TextFormat.MarkdownText)
-    label.setText(text or "")
+    label.setText(_disable_markdown_strikethrough(text))
 
 
 # 与右侧「画面预览」工具条重复的芯片，对话区不再展示，避免挤占输入区
@@ -243,6 +373,21 @@ _SKILL_MENU_CHIPS = frozenset(
         "选一个技能",
     }
 )
+# 页面本身已经有对应 Tab / 主按钮；这些是导航提示，不是需要用户权衡的选项。
+# 把它们塞进 A/B/C 卡不仅重复，还会长期占住输入区上方的空间。
+_NAVIGATION_CHIPS = frozenset(
+    {
+        "去经典生成",
+        "去试运行",
+        "打开试运行",
+        "去 API 配置",
+        "打开 API 配置",
+    }
+)
+
+# 协作页默认运行时。V3 已可灰度：新会话/旧会话（没存过模式）都从它开始，
+# 用户手动切过才按存的来。
+_DEFAULT_RUNTIME_MODE = "v3"
 
 
 def _filter_chat_chips(labels: list[str] | None) -> list[str]:
@@ -250,7 +395,13 @@ def _filter_chat_chips(labels: list[str] | None) -> list[str]:
     seen: set[str] = set()
     for raw in labels or []:
         t = str(raw or "").strip()
-        if not t or t in _FRAME_ACTION_CHIPS or t in _SKILL_MENU_CHIPS or t in seen:
+        if (
+            not t
+            or t in _FRAME_ACTION_CHIPS
+            or t in _SKILL_MENU_CHIPS
+            or t in _NAVIGATION_CHIPS
+            or t in seen
+        ):
             continue
         if t.endswith("技能") and ("选" in t or "选择" in t):
             continue
@@ -276,37 +427,47 @@ def _draft_target_path(root: Path, stem: str, code: str = "") -> Path:
     return root / f"{stem}_{int(time.time())}.py"
 
 
-class CollabChipBar(QWidget):
-    """选项芯片条。"""
+class CollabChoiceCard(QFrame):
+    """LLM 本轮给出的 A/B/C 选项：固定样式的内联卡，随消息流出现。"""
 
     chip_clicked = Signal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setObjectName("CollabChipBar")
+        self.setObjectName("CollabChoiceCard")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self.setMinimumWidth(0)
-        self._lay = QHBoxLayout(self)
-        self._lay.setContentsMargins(0, 0, 0, 0)
-        self._lay.setSpacing(4)
-        self._lay.addStretch(1)
+        self._lay = QVBoxLayout(self)
+        self._lay.setContentsMargins(12, 9, 12, 10)
+        self._lay.setSpacing(7)
+        self._head = QLabel("请选择下一步")
+        self._head.setObjectName("CollabChoiceHead")
+        self._lay.addWidget(self._head)
+        self._buttons = QVBoxLayout()
+        self._buttons.setContentsMargins(0, 0, 0, 0)
+        self._buttons.setSpacing(6)
+        self._lay.addLayout(self._buttons)
 
     def set_chips(self, labels: list[str]) -> None:
-        while self._lay.count() > 1:
-            item = self._lay.takeAt(0)
-            w = item.widget()
-            if w is not None:
-                w.deleteLater()
-        for text in labels:
-            btn = QPushButton(text)
-            btn.setObjectName("CollabChip")
+        while self._buttons.count():
+            item = self._buttons.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        items = [str(t).strip() for t in (labels or []) if str(t).strip()][:3]
+        letters = "ABC"
+        for index, text in enumerate(items):
+            btn = QPushButton(f"{letters[index]}   {text}")
+            btn.setObjectName("CollabChoiceOption")
+            # QSplitter has its own resize hint.  Without a child tooltip Qt may
+            # surface that inherited hint while the pointer is over an option.
+            # Keep the hover text identical to the visible choice instead.
+            btn.setToolTip(btn.text())
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
-            btn.setFixedHeight(26)
-            btn.setSizePolicy(
-                QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed
-            )
-            btn.clicked.connect(lambda _=False, t=text: self.chip_clicked.emit(t))
-            self._lay.insertWidget(self._lay.count() - 1, btn)
-        self.setVisible(bool(labels))
+            btn.setMinimumHeight(30)
+            btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+            btn.clicked.connect(lambda _checked=False, t=text: self.chip_clicked.emit(t))
+            self._buttons.addWidget(btn)
 
 
 class CollabChatInput(QTextEdit):
@@ -316,6 +477,8 @@ class CollabChatInput(QTextEdit):
     """
 
     send_requested = Signal()
+    image_pasted = Signal(object)  # 剪贴板位图（QImage）
+    files_pasted = Signal(list)  # 剪贴板里的图片文件路径
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -336,6 +499,20 @@ class CollabChatInput(QTextEdit):
 
     def text(self) -> str:
         return self.toPlainText()
+
+    def insertFromMimeData(self, source) -> None:  # noqa: N802
+        """粘贴：剪贴板里是图片（或图片文件）时交给素材区，不往输入框塞内容。"""
+        if source is not None:
+            paths = _image_paths_from_mime(source)
+            if paths:
+                self.files_pasted.emit([str(p) for p in paths])
+                return
+            if source.hasImage():
+                image = source.imageData()
+                if image is not None and not image.isNull():
+                    self.image_pasted.emit(image)
+                    return
+        super().insertFromMimeData(source)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
@@ -365,6 +542,10 @@ class CollabChatInput(QTextEdit):
             self.setFixedHeight(h)
 
 
+# 判定「已在最底」的像素容差：最后一行的部分可见也算贴底
+_CHAT_PIN_SLACK = 2
+
+
 class CollabChatPane(QFrame):
     """左侧对话轨（Cursor 风：上记录、下 composer / switch）。"""
 
@@ -377,6 +558,8 @@ class CollabChatPane(QFrame):
     history_menu_about_to_show = Signal()
     permission_resolved = Signal(str, bool)  # key, allowed
     stop_requested = Signal()
+    supplement_requested = Signal(str)  # 思考途中的补充，下一个检查点注入
+    images_pasted = Signal(list)  # 粘贴得到的图片文件路径 → 素材区
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -391,6 +574,13 @@ class CollabChatPane(QFrame):
         self._activity_timer = QTimer(self)
         self._activity_timer.setInterval(420)
         self._activity_timer.timeout.connect(self._pulse_activity)
+        # 卡住提示：活动条长时间没有新内容就提醒一次
+        self._activity_ts = 0.0
+        self._activity_text = ""
+        self._stall_warned = False
+        self._watch_timer = QTimer(self)
+        self._watch_timer.setInterval(1000)
+        self._watch_timer.timeout.connect(self._check_stall)
         self._pulse_on = False
         self._stream_body = None
         self._stream_holder = None
@@ -401,6 +591,9 @@ class CollabChatPane(QFrame):
         self._last_bubble_key = None
         self._pending_perm_key = ""
         self._sending = False
+        # 贴底跟随：用户翻到上面看历史时不再自动滚（见 _on_chat_scrolled）
+        self._follow_tail = True
+        self._following = False
 
         # ── 上：会话记录 ──
         self._scroll = QScrollArea()
@@ -420,6 +613,9 @@ class CollabChatPane(QFrame):
         self._bubble_lay.setSpacing(8)
         self._bubble_lay.addStretch(1)
         self._scroll.setWidget(self._bubble_host)
+        _bar = self._scroll.verticalScrollBar()
+        _bar.valueChanged.connect(self._on_chat_scrolled)
+        _bar.rangeChanged.connect(self._on_chat_range_changed)
         lay.addWidget(self._scroll, 1)
         self.setMinimumWidth(0)
 
@@ -479,6 +675,11 @@ class CollabChatPane(QFrame):
         self._perm_deny_btn.clicked.connect(self._on_perm_deny)
         lay.addWidget(self._perm_ask)
 
+        # 选项卡不常驻输入区上方；由 set_chips 按需插入消息流末尾
+        self._chips = None
+        self._chips_holder = None
+        self._chips_labels: tuple[str, ...] = ()
+
         # ── 下：Cursor 风 composer（switch + 输入）──
         self._composer = QFrame()
         self._composer.setObjectName("CollabComposer")
@@ -487,14 +688,11 @@ class CollabChatPane(QFrame):
         comp.setContentsMargins(10, 8, 10, 8)
         comp.setSpacing(6)
 
-        self._chips = CollabChipBar()
-        self._chips.chip_clicked.connect(self.chip_clicked.emit)
-        self._chips.hide()
-        comp.addWidget(self._chips)
-
         self._input = CollabChatInput()
         self._input.setObjectName("CollabChatInput")
         self._input.send_requested.connect(self._emit_send)
+        self._input.image_pasted.connect(self._on_image_pasted)
+        self._input.files_pasted.connect(self._on_pasted_files)
         self._input.document().contentsChanged.connect(self._refresh_send_label)
         comp.addWidget(self._input)
 
@@ -572,11 +770,18 @@ class CollabChatPane(QFrame):
             elif name in ("CollabBubbleSystem", "CollabBubbleProcess"):
                 frame.setMaximumWidth(sys_w)
                 frame.setMinimumWidth(0)
+            elif name == "CollabChoiceCard":
+                frame.setMaximumWidth(agent_w)
+                frame.setMinimumWidth(0)
+            elif name == "CollabBubbleSupplement":
+                frame.setMaximumWidth(max(120, int(vw * 0.84)))
+                frame.setMinimumWidth(0)
         for lab in self._bubble_host.findChildren(QLabel):
             if lab.objectName() in (
                 "CollabBubbleBody",
                 "CollabBubbleSystemBody",
                 "CollabProcessBody",
+                "CollabBubbleSupplementBody",
             ):
                 lab.setMinimumWidth(0)
                 lab.setWordWrap(True)
@@ -588,51 +793,70 @@ class CollabChatPane(QFrame):
             QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum
         )
 
-    def set_sending(self, busy: bool) -> None:
-        """等待模型时，发送钮改成停止。"""
-        self._sending = bool(busy)
-        btn = self._send_btn
-        if self._sending:
-            btn.setText("停止")
-            btn.setToolTip("停止当前回答")
-            btn.setProperty("busy", "true")
-        else:
-            btn.setText("发送")
-            btn.setToolTip("Enter 发送 · Shift+Enter 换行")
-            btn.setProperty("busy", "false")
+    def _apply_send_button_style(self, text: str, tip: str, *, busy: str) -> None:
+        btn = getattr(self, "_send_btn", None)
+        if btn is None:
+            return
+        btn.setText(text)
+        btn.setToolTip(tip)
+        btn.setProperty("busy", busy)
         btn.style().unpolish(btn)
         btn.style().polish(btn)
         btn.update()
+
+    def set_sending(self, busy: bool) -> None:
+        """等待模型时：输入框空 → 停止；有内容 → 补充。"""
+        self._sending = bool(busy)
+        self._refresh_send_label()
 
     def set_continue_step(self, step: str) -> None:
         """计划没做完时，空输入的发送钮变成继续。"""
         self._continue_step = (step or "").strip()
         self._refresh_send_label()
 
+    def _input_has_text(self) -> bool:
+        line = getattr(self, "_input", None)
+        if line is None:
+            return False
+        try:
+            return bool(line.text().strip())
+        except Exception:
+            return False
+
     def _refresh_send_label(self) -> None:
+        """按「是否在等模型」×「输入框有没有字」决定按钮语义。
+
+        等待中：有字=补充（把这话补进正在思考的那轮），无字=停止。
+        空闲：跟着计划给出「继续」，否则「发送」。
+        """
         if getattr(self, "_sending", False):
-            return
-        btn = getattr(self, "_send_btn", None)
-        if btn is None:
+            if self._input_has_text():
+                self._apply_send_button_style(
+                    "补充", "把输入框里的话补充给正在思考的模型", busy="supplement"
+                )
+            else:
+                self._apply_send_button_style("停止", "停止当前回答", busy="true")
             return
         step = getattr(self, "_continue_step", "") or ""
-        typed = bool(self._input.text().strip()) if getattr(self, "_input", None) else False
-        if step and not typed:
-            btn.setText("继续")
-            btn.setToolTip(step or "继续计划里的下一步")
+        if step and not self._input_has_text():
+            self._apply_send_button_style("继续", step or "继续计划里的下一步", busy="false")
         else:
-            btn.setText("发送")
-            btn.setToolTip("Enter 发送 · Shift+Enter 换行")
-        btn.setProperty("busy", "false")
-        btn.style().unpolish(btn)
-        btn.style().polish(btn)
-        btn.update()
+            self._apply_send_button_style(
+                "发送", "Enter 发送 · Shift+Enter 换行", busy="false"
+            )
 
     def _emit_send(self) -> None:
-        if getattr(self, "_sending", False):
-            self.stop_requested.emit()
-            return
         text = self._input.text().strip()
+        if getattr(self, "_sending", False):
+            # 想停止就先清空输入框：补充只对「有话要说」生效，避免两种语义抢同一个键。
+            # 注意别清 _continue_step——计划还没走完，轮结束后仍要给「继续」入口。
+            if text:
+                self._input.clear()
+                self._input._adjust_height()
+                self.supplement_requested.emit(text)
+            else:
+                self.stop_requested.emit()
+            return
         step = getattr(self, "_continue_step", "") or ""
         if not text and step:
             text = "继续：" + step
@@ -642,6 +866,20 @@ class CollabChatPane(QFrame):
         self._input.clear()
         self._input._adjust_height()
         self.send_requested.emit(text)
+
+    def _on_image_pasted(self, image) -> None:
+        """剪贴板位图 → 落盘 → 通知素材区。"""
+        path = _save_clipboard_image(image)
+        if path is None:
+            self.add_bubble("system", "剪贴板里的图片没存下来，没能加入素材区。")
+            return
+        self.images_pasted.emit([str(path)])
+
+    def _on_pasted_files(self, paths) -> None:
+        """剪贴板里是图片文件（资源管理器复制）→ 直接进素材区。"""
+        files = [str(p) for p in (paths or []) if Path(str(p)).is_file()]
+        if files:
+            self.images_pasted.emit(files)
 
     def permissions(self) -> dict:
         from backend.script_generator.collaborator.probe_script import default_permissions
@@ -764,12 +1002,100 @@ class CollabChatPane(QFrame):
         self.add_bubble("system", "已收回本会话的升权授权。")
 
     def set_chips(self, labels: list[str]) -> None:
-        self._chips.set_chips(_filter_chat_chips(labels))
+        """把 LLM 本轮的选项卡插到消息流末尾（不再占输入区固定一行）。"""
+        items = _filter_chat_chips(labels)
+        # _apply_view 每轮都会调这里；选项没变就不要再建一次，否则会反复
+        # 触发 scroll_to_bottom，把用户正在看的记录顶下去。
+        if items and self._chips_holder is not None and items == self._chips_labels:
+            return
+        self._clear_choice_card()
+        if not items:
+            return
+        card = CollabChoiceCard()
+        card.chip_clicked.connect(self.chip_clicked.emit)
+        card.set_chips(items)
+        wrap = QHBoxLayout()
+        wrap.setContentsMargins(0, 0, 0, 0)
+        wrap.addWidget(card, 0)
+        wrap.addStretch(1)
+        holder = QWidget()
+        holder.setMinimumWidth(0)
+        holder.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+        holder.setLayout(wrap)
+        holder.setProperty("collabChoiceCard", True)
+        self._bubble_lay.insertWidget(max(0, self._bubble_lay.count() - 1), holder)
+        self._chips = card
+        self._chips_holder = holder
+        self._chips_labels = items
+        QTimer.singleShot(0, self._scroll_to_bottom)
+        QTimer.singleShot(0, self._sync_bubble_widths)
 
-    def add_bubble(self, role: str, text: str) -> None:
-        """role: user | agent | system | process"""
+    def _clear_choice_card(self) -> None:
+        holder = getattr(self, "_chips_holder", None)
+        if holder is not None:
+            self._bubble_lay.removeWidget(holder)
+            holder.deleteLater()
+        self._chips = None
+        self._chips_holder = None
+        self._chips_labels = ()
+        # 移除选项卡会让内容变矮，同样只在贴底时才跟进
+        QTimer.singleShot(0, self._scroll_to_bottom)
+
+    @staticmethod
+    def _bubble_time_text(at: str) -> str:
+        """气泡右上角的时间小字：当天只给 HH:MM，跨天补上 MM-DD。
+
+        ``at`` 是消息落库时写下的 ISO 时间（旧会话可能没有 → 返回空串，不显示）。
+        """
+        raw = str(at or "").strip()
+        if not raw:
+            return ""
+        try:
+            from datetime import datetime
+
+            stamp = datetime.fromisoformat(raw)
+        except Exception:
+            return ""
+        today = datetime.now().date()
+        if stamp.date() == today:
+            return stamp.strftime("%H:%M")
+        if stamp.year == today.year:
+            return stamp.strftime("%m-%d %H:%M")
+        return stamp.strftime("%Y-%m-%d %H:%M")
+
+    def _make_bubble_header(self, who: QLabel, at: str) -> "QHBoxLayout":
+        """角色名靠左、时间小字靠右的一行。"""
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
+        header.addWidget(who)
+        header.addStretch(1)
+        text = self._bubble_time_text(at)
+        if text:
+            stamp = QLabel(text)
+            stamp.setObjectName("CollabBubbleTime")
+            stamp.setAlignment(
+                Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+            )
+            try:
+                stamp.setToolTip(str(at))
+            except Exception:
+                pass
+            header.addWidget(stamp)
+        return header
+
+    def add_bubble(self, role: str, text: str, at: str | None = None) -> None:
+        """role: user | agent | system | process | supplement
+
+        ``at`` 是这条发言的时间：``None`` 表示"刚发出的"（用当前时间），
+        传空串表示"没有时间可显示"（旧会话的消息没记时间），传 ISO 串则用它。
+        """
         if role == "process":
             self.add_process(text)
+            return
+        at = _now_iso() if at is None else str(at)
+        if role == "supplement":
+            self._add_supplement_bubble(text, at=at)
             return
         role = _infer_bubble_role(role, text)
         # 系统信息条不进聊天记录，避免「已写入 / 已抓取」把对话挤满
@@ -806,7 +1132,7 @@ class CollabChatPane(QFrame):
         else:
             body.setTextFormat(Qt.TextFormat.PlainText)
             body.setText(text or "")
-        inner.addWidget(who)
+        inner.addLayout(self._make_bubble_header(who, at))
         inner.addWidget(body)
 
         idx = max(0, self._bubble_lay.count() - 1)
@@ -824,6 +1150,44 @@ class CollabChatPane(QFrame):
             QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum
         )
         holder.setLayout(wrap)
+        self._bubble_lay.insertWidget(idx, holder)
+        QTimer.singleShot(0, self._scroll_to_bottom)
+        QTimer.singleShot(0, self._sync_bubble_widths)
+
+    def _add_supplement_bubble(self, text: str, at: str | None = None) -> None:
+        """思考途中补的话：靠右、但不与普通发言混淆。"""
+        text = (text or "").strip()
+        if not text:
+            return
+        at = _now_iso() if at is None else str(at)
+        card = QFrame()
+        card.setObjectName("CollabBubbleSupplement")
+        card.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        card.setMinimumWidth(0)
+        vw = self._chat_viewport_width()
+        card.setMaximumWidth(max(120, int(vw * 0.84)))
+        inner = QVBoxLayout(card)
+        inner.setContentsMargins(12, 7, 12, 8)
+        inner.setSpacing(3)
+        who = QLabel("你 · 补充")
+        who.setObjectName("CollabBubbleRoleSupplement")
+        body = QLabel()
+        self._prepare_bubble_label(body)
+        body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        body.setObjectName("CollabBubbleSupplementBody")
+        _set_md_label(body, text)
+        inner.addLayout(self._make_bubble_header(who, at))
+        inner.addWidget(body)
+
+        wrap = QHBoxLayout()
+        wrap.setContentsMargins(0, 0, 0, 0)
+        wrap.addStretch(1)
+        wrap.addWidget(card, 0)
+        holder = QWidget()
+        holder.setMinimumWidth(0)
+        holder.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+        holder.setLayout(wrap)
+        idx = max(0, self._bubble_lay.count() - 1)
         self._bubble_lay.insertWidget(idx, holder)
         QTimer.singleShot(0, self._scroll_to_bottom)
         QTimer.singleShot(0, self._sync_bubble_widths)
@@ -846,7 +1210,7 @@ class CollabChatPane(QFrame):
         body.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         body.setObjectName("CollabBubbleBody")
         _set_md_label(body, "…")
-        inner.addWidget(who)
+        inner.addLayout(self._make_bubble_header(who, _now_iso()))
         inner.addWidget(body)
         idx = max(0, self._bubble_lay.count() - 1)
         wrap = QHBoxLayout()
@@ -993,11 +1357,35 @@ class CollabChatPane(QFrame):
         if not text:
             self._activity.hide()
             self._activity_timer.stop()
+            self._watch_timer.stop()
+            self._stall_warned = False
             return
+        if text != self._activity_text:
+            self._activity_text = text
+            self._activity_ts = time.time()
+            self._stall_warned = False
         self._activity_label.setText(text)
         self._activity.show()
         if not self._activity_timer.isActive():
             self._activity_timer.start()
+        if not self._watch_timer.isActive():
+            self._watch_timer.start()
+
+    def _check_stall(self) -> None:
+        """活动条超过 45 秒没有新内容：提示可能卡住，而不是一直装作在跑。"""
+        if not self._activity.isVisible():
+            self._watch_timer.stop()
+            return
+        if not self._activity_ts:
+            self._activity_ts = time.time()
+            return
+        elapsed = time.time() - self._activity_ts
+        if elapsed >= 45 and not self._stall_warned:
+            self._stall_warned = True
+            self._activity_label.setText(
+                f"{self._activity_text} · 已 {int(elapsed)} 秒没有新进展，"
+                "可能卡在等模型/网络；可以点停止重试"
+            )
 
     def _pulse_activity(self) -> None:
         self._pulse_on = not self._pulse_on
@@ -1007,7 +1395,49 @@ class CollabChatPane(QFrame):
         """清掉本轮过程气泡（可选，一般保留作轨迹）。"""
         pass
 
-    def _scroll_to_bottom(self) -> None:
+    def _at_bottom(self) -> bool:
+        """滚动条是否已在最底（留像素容差）。"""
+        try:
+            bar = self._scroll.verticalScrollBar()
+        except RuntimeError:
+            return True
+        return bar.value() >= bar.maximum() - _CHAT_PIN_SLACK
+
+    def _on_chat_scrolled(self, _value: int) -> None:
+        """位置由用户改变时同步跟随开关；程序化贴底不算用户意图。"""
+        if getattr(self, "_following", False):
+            return
+        self._follow_tail = self._at_bottom()
+
+    def _scroll_to_bottom(self, *, force: bool = False) -> None:
+        """贴底跟随时滚到最新；用户翻到上面看历史时原地不动。
+
+        必须在改动布局【之前】调用：贴底判断依赖改动前的 value/maximum。
+        """
+        if not force and not getattr(self, "_follow_tail", True):
+            return
+        self._following = True
+        try:
+            self._apply_bottom()
+        finally:
+            self._following = False
+            self._follow_tail = True
+
+    def _on_chat_range_changed(self, _min: int, _max: int) -> None:
+        """内容高度变化时若仍处于跟随态，继续跟到新的底。
+
+        气泡换行（wordWrap）后高度要等布局跑完才定，range 会滞后更新；
+        靠这一路回调兜住流式增长，比 singleShot 猜时机稳。
+        """
+        if not getattr(self, "_follow_tail", True):
+            return
+        self._following = True
+        try:
+            self._apply_bottom()
+        finally:
+            self._following = False
+
+    def _apply_bottom(self) -> None:
         try:
             bar = self._scroll.verticalScrollBar()
         except RuntimeError:
@@ -1015,10 +1445,15 @@ class CollabChatPane(QFrame):
         bar.setValue(bar.maximum())
 
     def clear_bubbles(self) -> None:
+        # 换会话/重载历史是整屏替换，直接恢复贴底，别被上一屏的位置带着走
+        self._follow_tail = True
         self._stream_body = None
         self._stream_holder = None
         self.clear_turn_hints()
         self._last_bubble_key = None
+        # 选项卡也在 _bubble_lay 里，引用必须一并清掉，否则后面会去碰已销毁的对象
+        self._chips = None
+        self._chips_holder = None
         while self._bubble_lay.count() > 1:
             item = self._bubble_lay.takeAt(0)
             w = item.widget()
@@ -1031,7 +1466,9 @@ class CollabChatPane(QFrame):
             role = str(m.get("role") or "agent")
             text = str(m.get("text") or "")
             if text:
-                self.add_bubble(role, text)
+                # 重载历史时用消息里记下的发送时间（旧会话没有这个字段 → 不显示）
+                self.add_bubble(role, text, at=str(m.get("at") or ""))
+        QTimer.singleShot(0, lambda: self._scroll_to_bottom(force=True))
 
     def fill_history_menu(self, items: list[dict]) -> None:
         self._hist_menu.clear()
@@ -1064,12 +1501,14 @@ class CollabAssetRail(QFrame):
     import_file_clicked = Signal()
     import_dir_clicked = Signal()
     add_current_clicked = Signal()
+    capture_clicked = Signal()  # 获取当前绑定窗口/浏览器视口，结果直接进入素材区
     asset_clicked = Signal(str)  # asset_id — 左键聚焦
     asset_remove_clicked = Signal(str)  # asset_id — 移出素材区
     asset_rename_clicked = Signal(str)  # asset_id — 请求重命名（父级弹对话框）
     files_dropped = Signal(list)  # list[str] 外部拖入的图片路径
     set_frame_requested = Signal(str, str)  # asset_id, path — 设为共同视口底图
     clear_clicked = Signal()
+    notice = Signal(str)  # 一句给用户看的结果（复制/定位文件等）
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1086,21 +1525,13 @@ class CollabAssetRail(QFrame):
         title.setFont(tf)
         title.setObjectName("CollabSectionTitle")
         head.addWidget(title)
-        tools = _FlowHost()
-        self._cur_btn = QPushButton("加入")
-        self._cur_btn.setObjectName("GhostButton")
-        self._cur_btn.setToolTip("把共同视口当前底图加入素材区")
-        self._add_btn = QPushButton("文件")
-        self._add_btn.setObjectName("GhostButton")
-        self._add_btn.setToolTip("加文件")
-        self._dir_btn = QPushButton("目录")
-        self._dir_btn.setObjectName("GhostButton")
-        self._dir_btn.setToolTip("导入目录")
-        self._clear_btn = QPushButton("清空")
-        self._clear_btn.setObjectName("GhostButton")
-        for btn in (self._cur_btn, self._add_btn, self._dir_btn, self._clear_btn):
-            tools.add(btn)
-        head.addWidget(tools, 1)
+        head.addStretch(1)
+        self.capture_button = QPushButton("获取截图")
+        self.capture_button.setObjectName("CollabAssetCaptureButton")
+        self.capture_button.setToolTip("获取当前绑定窗口或浏览器的视口截图，并直接加入素材区")
+        self.capture_button.setAutoDefault(False)
+        self.capture_button.clicked.connect(self.capture_clicked.emit)
+        head.addWidget(self.capture_button)
         lay.addLayout(head)
 
         self._scroll = QScrollArea()
@@ -1116,14 +1547,24 @@ class CollabAssetRail(QFrame):
         self._scroll.setWidget(self._flow)
         lay.addWidget(self._scroll)
 
-        self._hint = QLabel("拖入图片加入素材区；拖缩略图到上方视口可共同讨论")
+        self._hint = QLabel("拖入图片加入 · 右键管理/复制 · 拖缩略图到上方视口讨论")
         self._hint.setObjectName("MutedLabel")
         lay.addWidget(self._hint)
 
-        self._cur_btn.clicked.connect(self.add_current_clicked.emit)
-        self._add_btn.clicked.connect(self.import_file_clicked.emit)
-        self._dir_btn.clicked.connect(self.import_dir_clicked.emit)
-        self._clear_btn.clicked.connect(self.clear_clicked.emit)
+        # 选中（左键/右键点过的缩略图）：Ctrl+C 复制它的图片
+        self._selected_aid: str = ""
+        # 缩略图要能拿键盘焦点，Ctrl+C 才会落在这条快捷键上（否则焦点在聊天输入框，
+        # 那里的 Ctrl+C 是复制选中文字）。上下文限定在素材区子树内，不抢别处。
+        self._copy_shortcut = QShortcut(QKeySequence.StandardKey.Copy, self)
+        self._copy_shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+        self._copy_shortcut.activated.connect(self._copy_selected_image)
+
+        # 标题区不再堆常驻按钮；素材区空白处承担全局右键菜单。
+        for widget in (self, self._flow, self._scroll.viewport()):
+            widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            widget.customContextMenuRequested.connect(
+                lambda pos, w=widget: self._popup_rail_menu(w.mapToGlobal(pos))
+            )
 
         self._drag_start: QPoint | None = None
         self._drag_aid: str = ""
@@ -1181,6 +1622,8 @@ class CollabAssetRail(QFrame):
             btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextUnderIcon)
             btn.setFixedSize(64, 68)
             btn.setCursor(Qt.CursorShape.PointingHandCursor)
+            # 点击后拿焦点，Ctrl+C 才会命中素材区的复制快捷键
+            btn.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
             btn.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
             btn.setProperty("asset_id", aid)
             btn.setProperty("asset_path", str(path) if path.is_file() else "")
@@ -1197,24 +1640,49 @@ class CollabAssetRail(QFrame):
             role_hint = "截图" if role == "screenshot" else "模板"
             btn.setToolTip(
                 f"{name}\n{role_hint}\n{a.get('caption') or ''}\nid={aid}\n"
-                "左键：聚焦　拖到上方视口：设为底图　右键：重命名/移出"
+                "左键：聚焦　双击：放到共同视口　拖到上方视口：放到共同视口\n"
+                "Ctrl+C：复制这张图片　右键：复制/管理"
             )
-            btn.clicked.connect(lambda _=False, i=aid: self.asset_clicked.emit(i))
+            btn.clicked.connect(lambda _=False, i=aid: self._on_thumb_clicked(i))
             btn.customContextMenuRequested.connect(
                 lambda _pos, i=aid, b=btn: self._popup_asset_menu(b, i)
             )
+            # 悬浮角标：右上角小 ×，鼠标移上去才出现
+            del_btn = QToolButton(btn)
+            del_btn.setObjectName("CollabAssetDel")
+            del_btn.setText("×")
+            del_btn.setToolTip("移出素材区")
+            del_btn.setFixedSize(16, 16)
+            del_btn.move(btn.width() - 17, 1)
+            del_btn.clicked.connect(
+                lambda _=False, i=aid: self.asset_remove_clicked.emit(i)
+            )
+            del_btn.installEventFilter(self)
+            del_btn.hide()
             btn.installEventFilter(self)
             if aid in focus:
                 btn.setProperty("focused", True)
+            if aid and aid == self._selected_aid:
+                btn.setProperty("selected", True)
+            if aid in focus or (aid and aid == self._selected_aid):
                 btn.style().unpolish(btn)
                 btn.style().polish(btn)
             self._flow.add(btn, lock=False)
         n = len(assets or [])
+        live = {str(a.get("id") or "") for a in (assets or [])}
+        if self._selected_aid and self._selected_aid not in live:
+            # 选中的那张被移除了：清掉选中，免得 Ctrl+C 复制到别的图
+            self._selected_aid = ""
         self._hint.setText(
-            f"共 {n} 张 · ★焦点 {len(focus)}/2 · 拖入加图 · 拖到视口讨论 · 右键移出"
+            f"共 {n} 张 · ★焦点 {len(focus)}/2 · 双击放到共同视口 · 右键复制/管理"
             if n
-            else "拖入图片加入素材区；拖缩略图到上方视口可共同讨论"
+            else "拖入图片加入 · 右键导入文件/目录 · 双击素材可放到共同视口"
         )
+        # 重建缩略图后若光标仍停在某张图上，保持角标可见
+        for i in range(self._flow.flow.count()):
+            w = self._flow.flow.itemAt(i).widget()
+            if isinstance(w, QToolButton) and w.underMouse():
+                self._set_thumb_hover(w, True)
         self._fit_thumb_height()
 
     def resizeEvent(self, event) -> None:  # noqa: N802
@@ -1234,9 +1702,26 @@ class CollabAssetRail(QFrame):
     def eventFilter(self, obj, event) -> bool:  # noqa: N802
         from PySide6.QtCore import QEvent
 
+        if isinstance(obj, QToolButton) and obj.objectName() == "CollabAssetDel":
+            et = event.type()
+            parent = obj.parentWidget()
+            if isinstance(parent, QToolButton):
+                if et == QEvent.Type.Enter:
+                    self._set_thumb_hover(parent, True)
+                elif et == QEvent.Type.Leave and not parent.underMouse():
+                    self._set_thumb_hover(parent, False)
+            return False
+
         if isinstance(obj, QToolButton) and obj.objectName() == "CollabAssetThumb":
             et = event.type()
-            if et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
+            if et == QEvent.Type.Enter:
+                self._set_thumb_hover(obj, True)
+            elif et == QEvent.Type.Leave:
+                # 光标移到角标 × 上时缩略图会收到 Leave，这里保持出现
+                corner = obj.findChild(QToolButton, "CollabAssetDel")
+                if corner is None or not corner.underMouse():
+                    self._set_thumb_hover(obj, False)
+            elif et == QEvent.Type.MouseButtonPress and event.button() == Qt.MouseButton.LeftButton:
                 self._drag_start = event.position().toPoint()
                 self._drag_aid = str(obj.property("asset_id") or "")
                 self._drag_path = str(obj.property("asset_path") or "")
@@ -1255,13 +1740,23 @@ class CollabAssetRail(QFrame):
                     self._did_drag = False
                     return True  # 吞掉释放，避免拖完还触发聚焦点击
             elif et == QEvent.Type.MouseButtonDblClick:
-                # 双击也可设为底图
+                # 素材区双击的固定语义：把这张素材展示到共同视口。
                 aid = str(obj.property("asset_id") or "")
                 path = str(obj.property("asset_path") or "")
                 if aid and path and Path(path).is_file():
                     self.set_frame_requested.emit(aid, path)
                     return True
         return super().eventFilter(obj, event)
+
+    @staticmethod
+    def _set_thumb_hover(btn: QToolButton, on: bool) -> None:
+        """显示 / 收起缩略图右上角的移出角标。"""
+        corner = btn.findChild(QToolButton, "CollabAssetDel")
+        if corner is None:
+            return
+        corner.setVisible(bool(on))
+        if on:
+            corner.raise_()
 
     def _begin_asset_drag(self, btn: QToolButton) -> None:
         aid = self._drag_aid or str(btn.property("asset_id") or "")
@@ -1280,11 +1775,105 @@ class CollabAssetRail(QFrame):
             drag.setHotSpot(QPoint(24, 20))
         drag.exec(Qt.DropAction.CopyAction)
 
+    def _on_thumb_clicked(self, asset_id: str) -> None:
+        """左键点缩略图：选中（供 Ctrl+C 复制），再走原来的聚焦。"""
+        self._set_selected(asset_id)
+        self.asset_clicked.emit(asset_id)
+
+    def _set_selected(self, asset_id: str) -> None:
+        aid = str(asset_id or "")
+        if aid == self._selected_aid:
+            return
+        self._selected_aid = aid
+        for i in range(self._flow.flow.count()):
+            w = self._flow.flow.itemAt(i).widget()
+            if not isinstance(w, QToolButton):
+                continue
+            on = bool(aid) and str(w.property("asset_id") or "") == aid
+            w.setProperty("selected", on)
+            w.style().unpolish(w)
+            w.style().polish(w)
+
+    def _asset_path_for(self, asset_id: str) -> Path | None:
+        aid = str(asset_id or "")
+        if not aid:
+            return None
+        for i in range(self._flow.flow.count()):
+            w = self._flow.flow.itemAt(i).widget()
+            if isinstance(w, QToolButton) and str(w.property("asset_id") or "") == aid:
+                raw = str(w.property("asset_path") or "")
+                if raw:
+                    p = Path(raw)
+                    if p.is_file():
+                        return p
+        return None
+
+    def _copy_selected_image(self) -> None:
+        """Ctrl+C：复制当前选中缩略图的图片；只素材区有焦点时生效。"""
+        aid = self._selected_aid
+        if not aid:
+            count = self._flow.flow.count()
+            if count == 0:
+                self.notice.emit("素材区是空的，没有可复制的图片。")
+                return
+            if count == 1:
+                w = self._flow.flow.itemAt(0).widget()
+                aid = str(w.property("asset_id") or "") if isinstance(w, QToolButton) else ""
+            if not aid:
+                self.notice.emit("先在素材区点一张图（选中后 Ctrl+C 或右键「复制 → 图片」）。")
+                return
+        self.copy_asset_image(aid)
+
+    def copy_asset_image(self, asset_id: str) -> None:
+        path = self._asset_path_for(asset_id)
+        if path is None:
+            self.notice.emit("复制失败：这张素材的文件不在了。")
+            return
+        self.notice.emit(copy_image_to_clipboard(path))
+
+    def copy_asset_path(self, asset_id: str) -> None:
+        path = self._asset_path_for(asset_id)
+        if path is None:
+            self.notice.emit("复制失败：这张素材的文件不在了。")
+            return
+        QApplication.clipboard().setText(str(path))
+        self.notice.emit(f"已复制文件路径：{path.name}")
+
+    def copy_asset_id(self, asset_id: str) -> None:
+        aid = str(asset_id or "")
+        if not aid:
+            return
+        # 带 [[ ]] 是因为对话里点名素材用的就是这个写法
+        QApplication.clipboard().setText(f"[[{aid}]]")
+        self.notice.emit(f"已复制素材 id：[[{aid}]]（可直接粘到对话里点名）")
+
+    def reveal_asset(self, asset_id: str) -> None:
+        path = self._asset_path_for(asset_id)
+        if path is None:
+            self.notice.emit("找不到这张素材的文件。")
+            return
+        err = reveal_in_file_manager(path)
+        if err:
+            self.notice.emit(err)
+
     def _popup_asset_menu(self, btn: QToolButton, asset_id: str) -> None:
+        # 右键也算"选中"：Ctrl+C 跟最近操作的那张走
+        self._set_selected(asset_id)
         menu = QMenu(btn)
-        act_rename = menu.addAction("重命名…")
         act_view = menu.addAction("设为共同视口底图")
+        act_rename = menu.addAction("重命名…")
+        copy_menu = menu.addMenu("复制")
+        act_cp_img = copy_menu.addAction("图片")
+        act_cp_path = copy_menu.addAction("文件路径")
+        act_cp_id = copy_menu.addAction("素材 id")
+        act_reveal = menu.addAction("在文件夹中显示")
         act_rm = menu.addAction("移出素材区")
+        menu.addSeparator()
+        act_current = menu.addAction("加入共同视口当前底图")
+        act_file = menu.addAction("导入图片文件…")
+        act_dir = menu.addAction("导入图片目录…")
+        menu.addSeparator()
+        act_clear = menu.addAction("清空素材区…")
         chosen = menu.exec(btn.mapToGlobal(btn.rect().bottomLeft()))
         if chosen == act_rm:
             self.asset_remove_clicked.emit(asset_id)
@@ -1294,26 +1883,64 @@ class CollabAssetRail(QFrame):
                 self.set_frame_requested.emit(asset_id, path)
         elif chosen == act_rename:
             self.asset_rename_clicked.emit(asset_id)
+        elif chosen == act_cp_img:
+            self.copy_asset_image(asset_id)
+        elif chosen == act_cp_path:
+            self.copy_asset_path(asset_id)
+        elif chosen == act_cp_id:
+            self.copy_asset_id(asset_id)
+        elif chosen == act_reveal:
+            self.reveal_asset(asset_id)
+        elif chosen == act_current:
+            self.add_current_clicked.emit()
+        elif chosen == act_file:
+            self.import_file_clicked.emit()
+        elif chosen == act_dir:
+            self.import_dir_clicked.emit()
+        elif chosen == act_clear:
+            self.clear_clicked.emit()
+
+    def _popup_rail_menu(self, global_pos: QPoint) -> None:
+        """素材区空白处的全局操作；缩略图自身有对象级菜单。"""
+        menu = QMenu(self)
+        act_current = menu.addAction("加入共同视口当前底图")
+        act_file = menu.addAction("导入图片文件…")
+        act_dir = menu.addAction("导入图片目录…")
+        menu.addSeparator()
+        act_clear = menu.addAction("清空素材区…")
+        chosen = menu.exec(global_pos)
+        if chosen == act_current:
+            self.add_current_clicked.emit()
+        elif chosen == act_file:
+            self.import_file_clicked.emit()
+        elif chosen == act_dir:
+            self.import_dir_clicked.emit()
+        elif chosen == act_clear:
+            self.clear_clicked.emit()
 
 
 class _CollabPreviewLabel(QLabel):
-    """底图预览：支持画排除区（归一化矩形）。"""
+    """底图预览：支持矩形和自由画笔标记。"""
 
-    ban_drawn = Signal(float, float, float, float)  # nx0,ny0,nx1,ny1
+    mark_rect_drawn = Signal(float, float, float, float)
+    mark_stroke_drawn = Signal(object)  # [[nx, ny], ...]
+    edit_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._draw_ban = False
+        self._mark_mode = ""
         self._drag_origin: QPoint | None = None
         self._drag_current: QPoint | None = None
+        self._stroke_points: list[QPoint] = []
         self._content_rect = QRect()  # pixmap 在 label 内的实际区域
 
-    def set_draw_ban(self, enabled: bool) -> None:
-        self._draw_ban = bool(enabled)
+    def set_mark_mode(self, mode: str) -> None:
+        self._mark_mode = mode if mode in ("rect", "brush") else ""
         self._drag_origin = None
         self._drag_current = None
+        self._stroke_points = []
         self.setCursor(
-            Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor
+            Qt.CursorShape.CrossCursor if self._mark_mode else Qt.CursorShape.ArrowCursor
         )
         self.update()
 
@@ -1321,63 +1948,100 @@ class _CollabPreviewLabel(QLabel):
         self._content_rect = QRect(rect)
 
     def mousePressEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if self._draw_ban and event.button() == Qt.MouseButton.LeftButton:
+        if self._mark_mode and event.button() == Qt.MouseButton.LeftButton:
             self._drag_origin = event.position().toPoint()
             self._drag_current = self._drag_origin
+            if self._mark_mode == "brush":
+                self._stroke_points = [self._drag_origin]
             self.update()
             return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802
-        if self._draw_ban and self._drag_origin is not None:
+        if self._mark_mode and self._drag_origin is not None:
             self._drag_current = event.position().toPoint()
+            if self._mark_mode == "brush":
+                self._stroke_points.append(self._drag_current)
             self.update()
             return
         super().mouseMoveEvent(event)
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:  # noqa: N802
         if (
-            self._draw_ban
+            self._mark_mode
             and event.button() == Qt.MouseButton.LeftButton
             and self._drag_origin is not None
             and self._drag_current is not None
         ):
             cr = self._content_rect
             if cr.width() > 4 and cr.height() > 4:
-                x0 = min(self._drag_origin.x(), self._drag_current.x())
-                y0 = min(self._drag_origin.y(), self._drag_current.y())
-                x1 = max(self._drag_origin.x(), self._drag_current.x())
-                y1 = max(self._drag_origin.y(), self._drag_current.y())
-                nx0 = (x0 - cr.x()) / cr.width()
-                ny0 = (y0 - cr.y()) / cr.height()
-                nx1 = (x1 - cr.x()) / cr.width()
-                ny1 = (y1 - cr.y()) / cr.height()
-                if abs(nx1 - nx0) > 0.01 and abs(ny1 - ny0) > 0.01:
-                    self.ban_drawn.emit(nx0, ny0, nx1, ny1)
+                if self._mark_mode == "rect":
+                    x0 = min(self._drag_origin.x(), self._drag_current.x())
+                    y0 = min(self._drag_origin.y(), self._drag_current.y())
+                    x1 = max(self._drag_origin.x(), self._drag_current.x())
+                    y1 = max(self._drag_origin.y(), self._drag_current.y())
+                    nx0 = (x0 - cr.x()) / cr.width()
+                    ny0 = (y0 - cr.y()) / cr.height()
+                    nx1 = (x1 - cr.x()) / cr.width()
+                    ny1 = (y1 - cr.y()) / cr.height()
+                    if abs(nx1 - nx0) > 0.01 and abs(ny1 - ny0) > 0.01:
+                        self.mark_rect_drawn.emit(nx0, ny0, nx1, ny1)
+                elif self._mark_mode == "brush" and len(self._stroke_points) >= 2:
+                    points = []
+                    for point in self._stroke_points:
+                        nx = max(0.0, min(1.0, (point.x() - cr.x()) / cr.width()))
+                        ny = max(0.0, min(1.0, (point.y() - cr.y()) / cr.height()))
+                        if not points or abs(nx - points[-1][0]) + abs(ny - points[-1][1]) > 0.002:
+                            points.append([nx, ny])
+                    if len(points) >= 2:
+                        self.mark_stroke_drawn.emit(points)
             self._drag_origin = None
             self._drag_current = None
+            self._stroke_points = []
             self.update()
             return
         super().mouseReleaseEvent(event)
 
+    def mouseDoubleClickEvent(self, event: QMouseEvent) -> None:  # noqa: N802
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._drag_origin = None
+            self._drag_current = None
+            self._stroke_points = []
+            self.update()
+            self.edit_requested.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
     def paintEvent(self, event) -> None:  # noqa: N802
         super().paintEvent(event)
-        if self._draw_ban and self._drag_origin and self._drag_current:
+        if self._mark_mode and self._drag_origin and self._drag_current:
             p = QPainter(self)
-            pen = QPen(QColor("#e85d5d"))
-            pen.setWidth(2)
-            pen.setStyle(Qt.PenStyle.DashLine)
+            pen = QPen(QColor("#f0a33b"))
+            pen.setWidth(3 if self._mark_mode == "brush" else 2)
+            pen.setStyle(Qt.PenStyle.SolidLine if self._mark_mode == "brush" else Qt.PenStyle.DashLine)
             p.setPen(pen)
-            p.drawRect(QRect(self._drag_origin, self._drag_current).normalized())
+            if self._mark_mode == "rect":
+                p.drawRect(QRect(self._drag_origin, self._drag_current).normalized())
+            else:
+                for a, b in zip(self._stroke_points, self._stroke_points[1:]):
+                    p.drawLine(a, b)
             p.end()
 
 
 class CollabFramePane(QFrame):
     """右侧上方：共同视口底图 + 标注层。"""
 
-    ban_mode_changed = Signal(bool)
-    ban_drawn = Signal(float, float, float, float)
+    mark_mode_changed = Signal(str)
+    mark_rect_drawn = Signal(float, float, float, float)
+    mark_stroke_drawn = Signal(object)
+    mark_finished = Signal()
     clear_overlays_clicked = Signal()
+    use_window_requested = Signal()
+    pick_image_requested = Signal()
+    add_to_assets_requested = Signal()
+    clear_frame_requested = Signal()
+    edit_requested = Signal()
     image_dropped = Signal(str)  # 本地图片路径：外部文件或素材区拖入
 
     def __init__(self, parent=None):
@@ -1396,37 +2060,20 @@ class CollabFramePane(QFrame):
         title.setFont(tf)
         title.setObjectName("CollabSectionTitle")
         head.addWidget(title)
-        tools = _FlowHost()
-        self._use_win_btn = QPushButton("当前窗")
-        self._use_win_btn.setObjectName("GhostButton")
-        self._use_win_btn.setToolTip("用当前窗口")
-        self._pick_btn = QPushButton("截图")
-        self._pick_btn.setObjectName("GhostButton")
-        self._pick_btn.setToolTip("选截图")
-        self._ban_btn = QPushButton("排除")
-        self._ban_btn.setObjectName("GhostButton")
-        self._ban_btn.setCheckable(True)
-        self._ban_btn.setToolTip("在底图上拖拽矩形，标记点击排除区")
-        self._clear_ov_btn = QPushButton("清标")
-        self._clear_ov_btn.setObjectName("GhostButton")
-        self._clear_ov_btn.setToolTip("清标注")
-        self._clear_btn = QPushButton("清空")
-        self._clear_btn.setObjectName("GhostButton")
-        self._clear_btn.setToolTip("清空底图")
-        for btn in (
-            self._use_win_btn,
-            self._pick_btn,
-            self._ban_btn,
-            self._clear_ov_btn,
-            self._clear_btn,
-        ):
-            tools.add(btn)
-        head.addWidget(tools, 1)
+        head.addStretch(1)
         lay.addLayout(head)
+
+        # 标记动作保留为 QAction，但不再占用标题栏；统一放进图片右键。
+        self._mark_menu = QMenu(self)
+        self._mark_rect_action = self._mark_menu.addAction("矩形框")
+        self._mark_brush_action = self._mark_menu.addAction("自由画笔")
+        self._mark_menu.addSeparator()
+        self._mark_done_action = self._mark_menu.addAction("完成标记")
+        self._mark_off_action = self._mark_menu.addAction("关闭标记")
 
         self._image = _CollabPreviewLabel(
             "绑窗口或拖一张图到这里共同讨论\n"
-            "底图=双方共看的场景；下方素材区可拖入图片；匹配/排除区叠在底图上"
+            "右键可选窗口、截图、加入素材区或标记区域"
         )
         self._image.setObjectName("CollabFramePlaceholder")
         self._image.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -1436,7 +2083,12 @@ class CollabFramePane(QFrame):
         )
         self._image.setScaledContents(False)
         self._image.setAcceptDrops(False)
-        self._image.ban_drawn.connect(self.ban_drawn.emit)
+        self._image.setToolTip("双击：1:1 原图窗口　右键：窗口 / 截图 / 加入素材区 / 标记 / 清理")
+        self._image.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self._image.customContextMenuRequested.connect(self._popup_image_menu)
+        self._image.mark_rect_drawn.connect(self.mark_rect_drawn.emit)
+        self._image.mark_stroke_drawn.connect(self.mark_stroke_drawn.emit)
+        self._image.edit_requested.connect(self.edit_requested.emit)
         self._image_host = QWidget()
         self._image_host.setObjectName("CollabViewportHost")
         host_lay = QVBoxLayout(self._image_host)
@@ -1456,8 +2108,10 @@ class CollabFramePane(QFrame):
         self.setMinimumHeight(160)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
-        self._ban_btn.toggled.connect(self._on_ban_toggled)
-        self._clear_ov_btn.clicked.connect(self.clear_overlays_clicked.emit)
+        self._mark_rect_action.triggered.connect(lambda: self._set_mark_mode("rect"))
+        self._mark_brush_action.triggered.connect(lambda: self._set_mark_mode("brush"))
+        self._mark_done_action.triggered.connect(self._finish_marking)
+        self._mark_off_action.triggered.connect(lambda: self._set_mark_mode(""))
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:  # noqa: N802
         if _mime_has_images(event.mimeData()):
@@ -1486,9 +2140,61 @@ class CollabFramePane(QFrame):
             return
         event.ignore()
 
-    def _on_ban_toggled(self, on: bool) -> None:
-        self._image.set_draw_ban(on)
-        self.ban_mode_changed.emit(on)
+    def _set_mark_mode(self, mode: str) -> None:
+        mode = mode if mode in ("rect", "brush") else ""
+        self._image.set_mark_mode(mode)
+        self.mark_mode_changed.emit(mode)
+
+    def _popup_image_menu(self, pos: QPoint) -> None:
+        """共同视口的全部图像/区域操作。"""
+        menu = QMenu(self._image)
+        act_editor = menu.addAction("以 1:1 原图标记…")
+        act_editor.setEnabled(bool(self._image_path and self._image_path.is_file()))
+        menu.addSeparator()
+        act_window = menu.addAction("使用当前窗口")
+        act_pick = menu.addAction("选择截图…")
+        act_add = menu.addAction("加入素材区")
+        act_add.setEnabled(bool(self._image_path and self._image_path.is_file()))
+        menu.addSeparator()
+        mark_menu = menu.addMenu("标记区域")
+        act_rect = mark_menu.addAction("矩形框")
+        act_brush = mark_menu.addAction("自由画笔")
+        mark_menu.addSeparator()
+        act_done = mark_menu.addAction("完成标记")
+        act_off = mark_menu.addAction("关闭标记模式")
+        marking = bool(self._image._mark_mode)
+        act_done.setEnabled(marking)
+        act_off.setEnabled(marking)
+        act_clear_marks = menu.addAction("清除全部标注")
+        act_clear_marks.setEnabled(bool(self._overlays))
+        menu.addSeparator()
+        act_clear = menu.addAction("清空共同视口")
+        act_clear.setEnabled(bool(self._image_path and self._image_path.is_file()))
+        chosen = menu.exec(self._image.mapToGlobal(pos))
+        if chosen == act_editor:
+            self.edit_requested.emit()
+        elif chosen == act_window:
+            self.use_window_requested.emit()
+        elif chosen == act_pick:
+            self.pick_image_requested.emit()
+        elif chosen == act_add:
+            self.add_to_assets_requested.emit()
+        elif chosen == act_rect:
+            self._set_mark_mode("rect")
+        elif chosen == act_brush:
+            self._set_mark_mode("brush")
+        elif chosen == act_done:
+            self._finish_marking()
+        elif chosen == act_off:
+            self._set_mark_mode("")
+        elif chosen == act_clear_marks:
+            self.clear_overlays_clicked.emit()
+        elif chosen == act_clear:
+            self.clear_frame_requested.emit()
+
+    def _finish_marking(self) -> None:
+        self._set_mark_mode("")
+        self.mark_finished.emit()
 
     def set_overlays(self, overlays: list[dict] | None) -> None:
         self._overlays = list(overlays or [])
@@ -1501,7 +2207,7 @@ class CollabFramePane(QFrame):
             self._image.setPixmap(QPixmap())
             self._image.setText(
                 "绑窗口或拖一张游戏截图到这里\n"
-                "底图=双方共看的场景；点「截图」可暗幕框选"
+                "底图=双方共看的场景；右键可选窗口、截图或标记"
             )
             self._caption.setText(caption or "")
             self._image.set_content_rect(QRect())
@@ -1570,6 +2276,29 @@ class CollabFramePane(QFrame):
                 fill.setAlpha(60)
                 p.fillRect(x0, y0, max(1, x1 - x0), max(1, y1 - y0), fill)
                 p.drawRect(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+            elif kind == "mark" and o.get("shape") == "rect" and "nx0" in o:
+                x0 = int(float(o["nx0"]) * bw)
+                y0 = int(float(o["ny0"]) * bh)
+                x1 = int(float(o["nx1"]) * bw)
+                y1 = int(float(o["ny1"]) * bh)
+                pen.setStyle(Qt.PenStyle.DashLine)
+                p.setPen(pen)
+                p.drawRect(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+            elif kind == "mark" and o.get("shape") == "stroke":
+                points = o.get("points") or []
+                pen.setWidth(3)
+                pen.setStyle(Qt.PenStyle.SolidLine)
+                p.setPen(pen)
+                for a, b in zip(points, points[1:]):
+                    try:
+                        p.drawLine(
+                            int(float(a[0]) * bw),
+                            int(float(a[1]) * bh),
+                            int(float(b[0]) * bw),
+                            int(float(b[1]) * bh),
+                        )
+                    except Exception:
+                        continue
             # 匹配框/置信度/文件名不画进底图；名字只留在左下角说明
             continue
         p.end()
@@ -2291,10 +3020,31 @@ class CollabWorkbench(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(8)
 
+        banner_row = QHBoxLayout()
+        banner_row.setContentsMargins(0, 0, 0, 0)
         self._banner = QLabel("")
         self._banner.setObjectName("CollabPreviewBanner")
         self._banner.setWordWrap(True)
-        root.addWidget(self._banner)
+        banner_row.addWidget(self._banner, 1)
+        self._runtime_mode = QComboBox()
+        self._runtime_mode.setObjectName("CollabRuntimeMode")
+        self._runtime_mode.addItem("稳定版", "v2")
+        self._runtime_mode.addItem("V3 预览", "v3")
+        self._runtime_mode.addItem("V4 表单预览", "v4")
+        self._runtime_mode.setToolTip("V4 由本地逐步出表，模型只填写当前表单；可随时切换")
+        # 默认落在 V3：不设的话组合框停在第 0 项（稳定版），
+        # 新会话和没存过模式的旧会话都会被静默带进 V2。
+        self._runtime_mode.setCurrentIndex(
+            max(0, self._runtime_mode.findData(_DEFAULT_RUNTIME_MODE))
+        )
+        self._runtime_mode.currentIndexChanged.connect(self._on_runtime_mode_changed)
+        banner_row.addWidget(self._runtime_mode, 0)
+        self._v4_subturn_btn = QPushButton("副轮")
+        self._v4_subturn_btn.setToolTip("查看 V4 Runtime 与 LLM 的逐次表单交流、工具调用和错误")
+        self._v4_subturn_btn.clicked.connect(self._open_v4_subturn_viewer)
+        _hold(self._v4_subturn_btn)
+        banner_row.addWidget(self._v4_subturn_btn, 0)
+        root.addLayout(banner_row)
 
         split = QSplitter(Qt.Orientation.Horizontal)
         split.setObjectName("CollabSplitter")
@@ -2347,6 +3097,10 @@ class CollabWorkbench(QWidget):
         self._save_timer.timeout.connect(self._persist_session)
         self._llm_worker = None
         self._llm_epoch = 0
+        self._supplement_box = None
+        self._supplement_carry = False
+        self._codegen_worker = None
+        self._codegen_buf = ""
         self._stream_raw = ""
         self._stream_flush = QTimer(self)
         self._stream_flush.setSingleShot(True)
@@ -2355,6 +3109,7 @@ class CollabWorkbench(QWidget):
 
         self.chat.send_requested.connect(self._on_user_send)
         self.chat.stop_requested.connect(self._stop_llm_turn)
+        self.chat.supplement_requested.connect(self._on_user_supplement)
         self.chat.chip_clicked.connect(self._on_chip)
         self.chat.new_session_clicked.connect(self._on_new_session)
         self.chat.history_picked.connect(self._on_history_picked)
@@ -2364,19 +3119,26 @@ class CollabWorkbench(QWidget):
         self.chat.permission_resolved.connect(self._on_permission_resolved)
         self._retry_after_perm: str = ""
         self.chat._attach_btn.clicked.connect(self._start_region_snip)
-        self.frame._pick_btn.clicked.connect(self._pick_image)
-        self.frame._clear_btn.clicked.connect(self._clear_frame)
-        self.frame._use_win_btn.clicked.connect(self._toast_window)
-        self.frame.ban_drawn.connect(self._on_ban_drawn)
+        self.frame.pick_image_requested.connect(self._pick_image)
+        self.frame.clear_frame_requested.connect(self._clear_frame)
+        self.frame.use_window_requested.connect(self._toast_window)
+        self.frame.add_to_assets_requested.connect(self._add_current_frame_as_asset)
+        self.frame.edit_requested.connect(self._open_viewport_editor)
+        self.frame.mark_rect_drawn.connect(self._on_mark_rect_drawn)
+        self.frame.mark_stroke_drawn.connect(self._on_mark_stroke_drawn)
+        self.frame.mark_finished.connect(self._on_mark_finished)
         self.frame.clear_overlays_clicked.connect(self._on_clear_overlays)
         self.assets.import_file_clicked.connect(self._import_asset_file)
         self.assets.import_dir_clicked.connect(self._import_asset_dir)
         self.assets.add_current_clicked.connect(self._add_current_frame_as_asset)
+        self.assets.capture_clicked.connect(self._capture_bound_target_to_assets)
         self.assets.files_dropped.connect(self._on_assets_files_dropped)
         self.assets.set_frame_requested.connect(self._on_asset_set_frame)
         self.assets.asset_clicked.connect(self._on_asset_focus)
         self.assets.asset_remove_clicked.connect(self._on_asset_remove)
         self.assets.asset_rename_clicked.connect(self._on_asset_rename)
+        self.assets.notice.connect(self._on_asset_notice)
+        self.chat.images_pasted.connect(self._on_images_pasted)
         self.assets.clear_clicked.connect(self._on_clear_assets)
         self.frame.image_dropped.connect(self._on_frame_image_dropped)
         self.logic.ack_clicked.connect(self._on_logic_cta)
@@ -2397,8 +3159,41 @@ class CollabWorkbench(QWidget):
             self._apply_view(self.engine.welcome(), clear_chat=True)
             return
         view = self.engine.restore_session(loaded)
+        mode = str(
+            (self.engine.session.artifacts or {}).get("collab_runtime_mode")
+            or _DEFAULT_RUNTIME_MODE
+        )
+        idx = self._runtime_mode.findData(mode)
+        self._runtime_mode.setCurrentIndex(max(0, idx))
         self.chat.set_messages(self.engine.session.messages)
         self._apply_view(view, clear_chat=False)
+
+    def _on_runtime_mode_changed(self) -> None:
+        if not hasattr(self, "engine"):
+            return
+        if not isinstance(self.engine.session.artifacts, dict):
+            self.engine.session.artifacts = {}
+        mode = str(self._runtime_mode.currentData() or _DEFAULT_RUNTIME_MODE)
+        self.engine.session.artifacts["collab_runtime_mode"] = mode
+        self._schedule_persist()
+        if getattr(self, "_llm_worker", None) is None:
+            mode_labels = {
+                "stable": "已切换到稳定版运行时。",
+                "v3": "已切换到 V3 预览运行时。",
+                "v4": "已切换到 V4 表单预览运行时。",
+            }
+            self.chat.add_bubble("system", mode_labels.get(mode, mode_labels["stable"]))
+
+    def _open_v4_subturn_viewer(self) -> None:
+        from gui.widgets.script_gen_panel.v4_subturn_viewer import V4SubturnViewer
+
+        artifacts = self.engine.session.artifacts if isinstance(self.engine.session.artifacts, dict) else {}
+        dialog = V4SubturnViewer(
+            session_id=self.engine.session.ensure_id(),
+            log_path=str(artifacts.get("v4_runtime_log_path") or ""),
+            parent=self,
+        )
+        dialog.exec()
 
     def bind_host(self, panel) -> None:
         self._host_panel = panel
@@ -2419,6 +3214,8 @@ class CollabWorkbench(QWidget):
             return
         if clear_chat:
             self.chat.end_agent_stream(keep_text=False)
+            # 整屏清空＝换会话/欢迎页，跟随开关一并复位
+            self.chat._follow_tail = True
             lay = self.chat._bubble_lay
             while lay.count() > 1:
                 item = lay.takeAt(0)
@@ -2461,12 +3258,15 @@ class CollabWorkbench(QWidget):
                 self.frame.set_image_path(p, caption=view.preview_caption or p.name)
         self._sync_canvas_from_session(view)
 
+        code_pushed = False
         if view.code:
-            self._push_code_to_host(
+            code_pushed = self._push_code_to_host(
                 view.code,
                 intro=view.intro,
                 script_name=view.script_name,
             )
+        if bool(getattr(view, "open_trial", False)) and code_pushed:
+            self._goto_trial_tab()
         self._schedule_persist()
 
     def _sync_logic_pad(self) -> None:
@@ -2491,20 +3291,115 @@ class CollabWorkbench(QWidget):
     def _sync_canvas_from_session(self, view=None) -> None:
         sess = self.engine.session
         assets = list(getattr(view, "assets", None) or sess.assets or [])
+        try:
+            from backend.script_generator.collaborator.resource_registry import active_asset_ids
+
+            active_ids = active_asset_ids(sess)
+            assets = [a for a in assets if str(a.get("id") or "") in active_ids]
+        except Exception:
+            pass
         overlays = list(getattr(view, "overlays", None) or sess.overlays or [])
         focused = list(
             getattr(view, "focused_asset_ids", None) or sess.focused_asset_ids or []
         )
         self.assets.set_assets(assets, focused)
         self.frame.set_overlays(overlays)
+        frame_path = Path(sess.frame_path) if getattr(sess, "frame_path", None) else None
+        if frame_path is not None and frame_path.is_file():
+            current = getattr(self.frame, "_image_path", None)
+            try:
+                same = bool(current and current.resolve() == frame_path.resolve())
+            except Exception:
+                same = current == frame_path
+            if not same:
+                display = next(
+                    (
+                        str(a.get("name") or frame_path.name)
+                        for a in assets
+                        if Path(str(a.get("path") or "")) == frame_path
+                    ),
+                    frame_path.name,
+                )
+                self.frame.set_image_path(frame_path, caption=f"共同视口 · {display}")
 
     def _schedule_persist(self) -> None:
         self._save_timer.start()
 
+    def _workspace(self):
+        """当前会话的工作区句柄（会话还没有 id 时返回 None）。"""
+        try:
+            from backend.script_generator.collaborator.session_workspace import SessionWorkspace
+
+            sid = str(getattr(self.engine.session, "session_id", "") or "")
+            if not sid:
+                return None
+            return SessionWorkspace(sid)
+        except Exception:
+            return None
+
+    def _ensure_workspace(self, *, first_user_text: str = "") -> None:
+        """确保工作区存在（只在用户发出消息时调用；幂等）。
+
+        创建时机就是"这次会话里的第一条消息"——之前的打开页面、切 Tab、
+        换运行模式都不建目录。
+        """
+        ws = self._workspace()
+        if ws is None:
+            return
+        try:
+            goal = str(getattr(self.engine.session, "goal_text", "") or "") or first_user_text
+            ws.ensure(goal_text=goal)
+        except Exception as e:
+            print(f"[Collab] 创建会话工作区失败: {e}")
+
+    def _sync_workspace(self) -> None:
+        """把素材区图片、生成过的图片和会话快照同步进工作区。"""
+        ws = self._workspace()
+        if ws is None or not ws.exists():
+            return
+        try:
+            ws.sync_all(self.engine.session)
+        except Exception as e:
+            print(f"[Collab] 同步会话工作区失败: {e}")
+
+    def _record_workspace_turn(self, agent_text: str, meta: dict) -> None:
+        """把这次用户可见轮次写进工作区轨迹（用户话 + agent 回话 + meta）。"""
+        ws = self._workspace()
+        if ws is None or not ws.exists():
+            return
+        try:
+            user_text = ""
+            for message in reversed(self.engine.session.messages or []):
+                if str(message.get("role") or "") == "user":
+                    user_text = str(message.get("text") or "")
+                    break
+            safe_meta = dict(meta or {})
+            safe_meta.pop("_trace", None)
+            ws.record_turn(
+                {
+                    "runtime": str(
+                        (self.engine.session.artifacts or {}).get("collab_runtime_mode") or _DEFAULT_RUNTIME_MODE
+                    ),
+                    "user_text": user_text,
+                    "agent_text": str(agent_text or ""),
+                    "meta": safe_meta,
+                    "chips": list(safe_meta.get("chips") or []),
+                    "turn": safe_meta.get("turn"),
+                }
+            )
+        except Exception as e:
+            print(f"[Collab] 记录会话轮次失败: {e}")
+
     def _persist_session(self) -> None:
         try:
+            from backend.script_generator.collaborator.resource_registry import (
+                prune_inactive_session_assets,
+            )
+
+            prune_inactive_session_assets(self.engine.session)
             self.engine.session.ensure_id()
             self._history.save(self.engine.session)
+            self._sync_workspace()
         except Exception:
             pass
 
@@ -2516,6 +3411,7 @@ class CollabWorkbench(QWidget):
         self.chat.fill_history_menu(items)
 
     def _on_new_session(self) -> None:
+        runtime_mode = str(self._runtime_mode.currentData() or _DEFAULT_RUNTIME_MODE)
         self._persist_session()
         self.frame.set_image_path(None)
         from backend.script_generator.collaborator.probe_script import default_permissions
@@ -2525,6 +3421,9 @@ class CollabWorkbench(QWidget):
         self.chat._refresh_perm_status()
         self._retry_after_perm = ""
         self._apply_view(self.engine.welcome(), clear_chat=True)
+        if not isinstance(self.engine.session.artifacts, dict):
+            self.engine.session.artifacts = {}
+        self.engine.session.artifacts["collab_runtime_mode"] = runtime_mode
 
     def _on_history_picked(self, session_id: str) -> None:
         self._persist_session()
@@ -2533,6 +3432,14 @@ class CollabWorkbench(QWidget):
             self.chat.add_bubble("system", "无法打开该历史会话。")
             return
         view = self.engine.restore_session(loaded)
+        mode = str(
+            (self.engine.session.artifacts or {}).get("collab_runtime_mode")
+            or _DEFAULT_RUNTIME_MODE
+        )
+        idx = self._runtime_mode.findData(mode)
+        self._runtime_mode.blockSignals(True)
+        self._runtime_mode.setCurrentIndex(max(0, idx))
+        self._runtime_mode.blockSignals(False)
         self.chat.set_messages(self.engine.session.messages)
         self._apply_view(view, clear_chat=False)
 
@@ -2604,20 +3511,102 @@ class CollabWorkbench(QWidget):
         self._retry_after_perm = text
         self.chat.hide_permission_ask()
         self.chat.add_bubble("user", text)
-        params = self._llm_params_from_host()
+        # 会话工作区就在这一刻创建：用户在这条会话里发出了第一条消息。
+        # 打开协作页、切 Tab、换运行模式都只走 ensure（幂等），不会凭空建目录。
+        self._ensure_workspace(first_user_text=text)
+        params = self._llm_params_from_host(reason="user_send")
         if not params:
             print("[Collab] 未读到 LLM 参数，走本地规则路径")
-            self._apply_view(
-                self.engine.on_user_text_local(text, llm_configured=False)
+            view = self.engine.on_user_text_local(text, llm_configured=False)
+            self._apply_view(view)
+            self._record_workspace_turn(
+                str(getattr(view, "agent_message", "") or ""), {"turn": "local"}
             )
             return
-        self.engine.begin_user_turn(text)
+        runtime_mode = str(self._runtime_mode.currentData() or _DEFAULT_RUNTIME_MODE)
+        waiting_v4 = (
+            (self.engine.session.artifacts or {}).get("v4_waiting_turn")
+            if isinstance(self.engine.session.artifacts, dict)
+            else None
+        )
+        if runtime_mode == "v4" and isinstance(waiting_v4, dict):
+            # 这是主轮内等待点的回答，不创建新目标，也不清理原主轮状态。
+            self.engine.session.add_message("user", text)
+        else:
+            self.engine.begin_user_turn(text)
         self._start_llm_turn(params)
 
-    def _llm_params_from_host(self) -> dict | None:
+    def _on_user_supplement(self, text: str) -> None:
+        """模型还在思考时用户补的一句话：进队列，下一个检查点带上。
+
+        队列没被消费（这轮正好收尾）时，轮结束的 flush 会当普通新消息发出去。
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        worker = self._llm_worker
+        if worker is None or not worker.isRunning():
+            # 轮已经结束：按普通新消息发，语义最不突兀
+            self._on_user_send(text)
+            return
+        box = getattr(self, "_supplement_box", None)
+        if box is None:
+            return
+        if str(self._runtime_mode.currentData() or _DEFAULT_RUNTIME_MODE) in {"v3", "v4"}:
+            context = {
+                "frame_path": str(self.engine.session.frame_path or ""),
+                "focused_asset_ids": list(self.engine.session.focused_asset_ids or []),
+                "overlays": list(self.engine.session.overlays or []),
+                "revision": int(time.time() * 1000),
+            }
+            accepted = box.submit_context(text, context)
+        else:
+            accepted = box.submit(text)
+        if not accepted:
+            return
+        self.chat.add_bubble("supplement", text)
+        self.chat.add_process("—— 已记下你的补充，等这步算完就带上 ——")
+        self.chat.set_activity("已收到补充，等这一步结束…")
+
+    def _record_api_param_trace(
+        self, route: str, params: dict | None = None, *, reason: str = "", detail: str = ""
+    ) -> None:
+        """把参数来源写进会话诊断轨迹；绝不记录 Key 内容。"""
+        try:
+            from datetime import datetime
+            import threading
+
+            artifacts = self.engine.session.artifacts
+            if not isinstance(artifacts, dict):
+                artifacts = {}
+                self.engine.session.artifacts = artifacts
+            trace = artifacts.setdefault("api_param_trace", [])
+            if not isinstance(trace, list):
+                trace = []
+                artifacts["api_param_trace"] = trace
+            p = params if isinstance(params, dict) else {}
+            trace.append(
+                {
+                    "at": datetime.now().isoformat(timespec="milliseconds"),
+                    "reason": str(reason or "unknown"),
+                    "route": str(route or "none"),
+                    "provider": str(p.get("provider") or ""),
+                    "model": str(p.get("model") or ""),
+                    "has_api_key": bool(p.get("api_key")),
+                    "has_vision_assist": bool(p.get("vision_assist")),
+                    "thread": threading.current_thread().name,
+                    "detail": str(detail or "")[:160],
+                }
+            )
+            del trace[:-40]
+        except Exception:
+            pass
+
+    def _llm_params_from_host(self, *, reason: str = "") -> dict | None:
         host = self._host_panel
         if host is None:
             print("[Collab] host 未绑定，无法读 API 配置")
+            self._record_api_param_trace("none", reason=reason, detail="host_unbound")
             return None
         getter = getattr(host, "_collab_llm_params", None)
         if callable(getter):
@@ -2627,21 +3616,75 @@ class CollabWorkbench(QWidget):
                 print(f"[Collab] 读取 API 配置异常: {e}")
                 params = None
             if params:
-                return params
+                # 工作台自己保留本会话最后一次真正可用的参数。它不依赖 API 页
+                # 控件是否正在刷新，也不依赖宿主临时属性的生命周期。
+                self._last_good_llm_params = dict(params)
+                self._record_api_param_trace("widgets", params, reason=reason)
+                return dict(params)
+        local_cached = getattr(self, "_last_good_llm_params", None)
+        if isinstance(local_cached, dict) and local_cached.get("api_key") and local_cached.get("model"):
+            print("[Collab] API 控件空读，复用本会话最后一次可用参数")
+            self._record_api_param_trace("workbench_cache", local_cached, reason=reason)
+            return dict(local_cached)
         # 测连成功后的缓存：避免控件瞬时空读误判「未配置」
         cached = getattr(host, "_collab_llm_params_cache", None)
         if isinstance(cached, dict) and cached.get("api_key") and cached.get("model"):
             print("[Collab] 使用测连缓存的 LLM 参数")
+            self._last_good_llm_params = dict(cached)
+            self._record_api_param_trace("host_cache", cached, reason=reason)
             return dict(cached)
+        # 最终回退到磁盘声明的 active_profile + 系统凭据库。这里不拿瞬时
+        # 控件值做一致性拦截；已保存的当前方案才是稳定事实来源。
+        saved_getter = getattr(host, "_collab_saved_llm_params", None)
+        if callable(saved_getter):
+            try:
+                saved = saved_getter()
+            except Exception as e:
+                print(f"[Collab] 读取已保存 API 方案异常: {e}")
+                saved = None
+            if isinstance(saved, dict) and saved.get("api_key") and saved.get("model"):
+                print("[Collab] 使用当前已保存 API 方案")
+                self._last_good_llm_params = dict(saved)
+                self._record_api_param_trace("saved_profile", saved, reason=reason)
+                return dict(saved)
+        self._record_api_param_trace("none", reason=reason, detail="all_sources_empty")
         return None
 
+    def _ensure_supplement_box(self):
+        """取本轮的信箱。每轮换新的，避免上一轮残留串味；
+        例外是等授权时特意留存的（flush 的 requeue），要跨过这次「新一轮」。"""
+        from backend.script_generator.collaborator.supplement import SupplementBox
+
+        carry = getattr(self, "_supplement_carry", False)
+        if not (carry and self._supplement_box is not None):
+            self._supplement_box = SupplementBox()
+        self._supplement_carry = False
+        return self._supplement_box
+
+    def _execution_target_payload(self, account=None, controller=None) -> dict:
+        """委托给宿主面板（``CollabMixin._execution_target_payload``）。
+
+        工作台自己不是 ``ScriptGenerator``：取目标的**唯一实现**在混入类上，
+        这里只转发，避免出现第二份"怎么从账号/Controller 推 profile"的判断。
+        """
+        host = getattr(self, "_host_panel", None)
+        fn = getattr(host, "_execution_target_payload", None)
+        if not callable(fn):
+            return {}
+        return fn(account, controller)
+
     def _start_llm_turn(self, params: dict, *, resume_permission: str = "") -> None:
-        from gui.widgets.script_gen_panel.workers import CollabLlmWorker
+        from gui.widgets.script_gen_panel.workers import (
+            CollabLlmWorker,
+            CollabV3Worker,
+            CollabV4Worker,
+        )
 
         self.chat.set_chips([])
         self._last_process_status = ""
         self._turn_trace: list[str] = []
         self._stream_raw = ""
+        self._ensure_supplement_box()
         self.chat.end_agent_stream(keep_text=False)
         # 用户层不刷「本轮开始」；活动条提示即可
         if resume_permission:
@@ -2663,9 +3706,18 @@ class CollabWorkbench(QWidget):
             "session": self.engine.session.to_dict(),
             "permissions": self.chat.permissions(),
             "resume_permission": resume_permission,
+            "supplement_box": self._supplement_box,
+            # 真实执行目标（Runtime 事实）：账号 + Controller 实例解析，
+            # 贯穿 V3 runner → validator → materializer → receipt（决定 §1）。
+            "execution_target": self._execution_target_payload(),
         }
         self._llm_epoch += 1
-        self._llm_worker = CollabLlmWorker(payload)
+        runtime_mode = str(self._runtime_mode.currentData() or _DEFAULT_RUNTIME_MODE)
+        worker_cls = {
+            "v3": CollabV3Worker,
+            "v4": CollabV4Worker,
+        }.get(runtime_mode, CollabLlmWorker)
+        self._llm_worker = worker_cls(payload)
         self._llm_worker._epoch = self._llm_epoch
         self._llm_worker.status.connect(self._on_llm_status)
         self._llm_worker.partial.connect(self._on_llm_partial)
@@ -2729,6 +3781,8 @@ class CollabWorkbench(QWidget):
     def _stop_llm_turn(self) -> None:
         """用户点停止：丢掉这一轮，不把半截回复写进对话。"""
         self._llm_epoch = int(getattr(self, "_llm_epoch", 0)) + 1
+        # 出码线程不强行 kill：丢引用即可，结果回来时按身份比对直接丢弃
+        self._codegen_worker = None
         worker = self._llm_worker
         self._llm_worker = None
         if worker is not None:
@@ -2750,11 +3804,13 @@ class CollabWorkbench(QWidget):
         self.chat.push_hint("已停止")
         self.chat.set_activity("已停止")
         self._banner.setText("协作 · 已停止")
+        self._flush_supplement("restore_input")
 
     def _on_llm_finished(self, visible: str, meta: object, session_dict: object) -> None:
         if not self._llm_turn_current():
             return
         self.chat.set_sending(False)
+        flush_mode = "new_message"
         try:
             if self._stream_flush.isActive():
                 self._stream_flush.stop()
@@ -2798,16 +3854,35 @@ class CollabWorkbench(QWidget):
                     self.engine.session.focused_asset_ids = list(
                         session_dict.get("focused_asset_ids") or []
                     )
+                if "frame_path" in session_dict:
+                    raw_frame = session_dict.get("frame_path")
+                    self.engine.session.frame_path = Path(raw_frame) if raw_frame else None
                 art = session_dict.get("artifacts")
                 if isinstance(art, dict):
                     if not isinstance(self.engine.session.artifacts, dict):
                         self.engine.session.artifacts = {}
                     self.engine.session.artifacts.update(art)
+                    # V3 的续跑指针语义是"有则 resume、无则开新轮"，所以删除也得传过来。
+                    # `update()` 只增不删：worker 侧 pop 掉的键会在这里诈尸。
+                    # 只对齐这两个键，且只在 V3 载荷上做，别的 artifacts 一律不动。
+                    if "v3_runtime_status" in art:
+                        for key in ("v3_waiting_turn", "v3_resume_token"):
+                            if key not in art:
+                                self.engine.session.artifacts.pop(key, None)
+                    runtime_mode = str(
+                        (self.engine.session.artifacts or {}).get("collab_runtime_mode")
+                        or _DEFAULT_RUNTIME_MODE
+                    )
+                    if runtime_mode == "v4" and "v4_waiting_turn" not in art:
+                        self.engine.session.artifacts.pop("v4_waiting_turn", None)
             final = str(visible or "")
             view = self.engine.apply_llm_reply(final, meta_d)
+            self._record_workspace_turn(final, meta_d)
             self.chat.clear_stream_hint()
             self.chat.end_agent_stream(keep_text=False)
             self._apply_view(view)
+            if getattr(view, "request_codegen", False):
+                self._start_codegen()
             steps_changed = self.logic.take_steps_changed()
             if self.logic._has_steps and (
                 steps_changed or bool((view.code or "").strip())
@@ -2874,9 +3949,51 @@ class CollabWorkbench(QWidget):
                 except Exception:
                     pass
                 self.chat.add_process(f"—— 请授权「{need_perm}」后继续 ——")
+                flush_mode = "requeue"
             self._stream_raw = ""
         finally:
             self._llm_worker = None
+        self._flush_supplement(flush_mode)
+
+    def _flush_supplement(self, mode: str) -> None:
+        """轮结束收尾。已被注入的补充并回会话记录；没被消费的按 mode 处置。
+
+        mode:
+          new_message  — 这轮正常收尾：当普通新消息发出去（用户要求的行为）
+          requeue      — 在等授权，下一轮紧接着来：留着当补充，别重置本轮意图
+          restore_input— 用户叫停/出错：退回输入框，不擅自替他再发一次
+        worker 侧注入时已把补充写进它自己的 session 快照（带「（用户补充）」前缀），
+        但 GUI 的 engine.session.messages 不知道，所以这里补记一次。
+        """
+        box = getattr(self, "_supplement_box", None)
+        if box is None:
+            return
+        self._supplement_box = None
+        self._supplement_carry = False
+        for text in box.take_consumed():
+            self.engine.session.add_message("user", f"（用户补充）{text}")
+        stale = box.take_pending()
+        if not stale:
+            return
+        if mode == "requeue":
+            for text in stale:
+                box.submit(text)
+            self._supplement_box = box
+            self._supplement_carry = True
+            self.chat.add_process("—— 已记下你的补充，授权后一并带上 ——")
+        elif mode == "restore_input":
+            joined = "\n".join(stale)
+            existing = self.chat._input.text().strip()
+            self.chat._input.setPlainText(
+                f"{existing}\n{joined}" if existing else joined
+            )
+            self.chat._input._adjust_height()
+            self.chat._refresh_send_label()
+            self.chat.add_process("—— 本轮已结束，你的补充退回输入框 ——")
+        else:
+            # 合并成一条——连发两条会撞上「上一个刚启动」的等待，第二条被丢。
+            self.chat.add_process("—— 这轮刚好结束，补充改为新消息发出 ——")
+            self._on_user_send("\n".join(stale))
 
     def _resume_after_permission(self, key: str) -> None:
         """授权后只补被拦住的一步，不把上一句用户话再记一遍。"""
@@ -2889,7 +4006,7 @@ class CollabWorkbench(QWidget):
                 if str(m.get("role") or "") == "user":
                     self._retry_after_perm = str(m.get("text") or "")
                     break
-        params = self._llm_params_from_host()
+        params = self._llm_params_from_host(reason="permission_resume")
         if not params:
             return
         self._start_llm_turn(params, resume_permission=key)
@@ -2924,20 +4041,85 @@ class CollabWorkbench(QWidget):
         self.chat.set_activity(None)
         self.chat.end_agent_stream(keep_text=False)
         self._stream_raw = ""
-        self.chat.add_process(f"✗ 失败：{err}")
-        self.chat.add_bubble(
-            "system",
-            f"LLM 调用失败：{err}\n"
-            "请检查「1. API 配置」的端点 / Key / 模型；也可点芯片走本地技能。",
-        )
+        notice = collab_api_error_notice(err)
+        if notice is not None:
+            title, message = notice
+            self.chat.add_process(f"✗ {title}")
+            self.chat.add_bubble("system", message.replace("\n\n", "\n"))
+            QMessageBox.warning(self, title, message)
+        else:
+            self.chat.add_process(f"✗ 失败：{err}")
+            self.chat.add_bubble(
+                "system",
+                f"LLM 调用失败：{err}\n"
+                "请检查「1. API 配置」的端点 / Key / 模型；也可点芯片走本地技能。",
+            )
         self.chat.set_chips(["去经典生成"])
         self._banner.setText("协作 · LLM 调用失败")
         self._schedule_persist()
+        self._flush_supplement("restore_input")
+
+    def _note_chip_selection(self, label: str) -> None:
+        """记下"用户点的是哪个芯片"。
+
+        芯片是我们自己渲染的，选项 id 就在会话里；把它一起带下去，
+        Runtime 就不必拿用户那句话去猜点了哪一个（实况：猜错导致连问 9 次确认）。
+        """
+        try:
+            artifacts = self.engine.session.artifacts
+            if not isinstance(artifacts, dict):
+                return
+            options = artifacts.get("v3_chip_options") or []
+            chosen = ""
+            for option in options:
+                if not isinstance(option, dict):
+                    continue
+                if str(option.get("label") or "").strip() == str(label or "").strip():
+                    chosen = str(option.get("id") or "")
+                    break
+            if not chosen:
+                return
+            artifacts["v3_chip_selection"] = {
+                "option_id": chosen,
+                "label": str(label or ""),
+                "turn_id": str(artifacts.get("v3_waiting_turn") or ""),
+            }
+        except Exception as e:
+            print(f"[Collab] 记录芯片选择失败: {e}")
 
     def _on_chip(self, text: str) -> None:
-        if text == "继续":
+        # 留痕是旁路：它不存在或出错都不能影响芯片原有的路由。
+        note = getattr(self, "_note_chip_selection", None)
+        if callable(note):
+            note(text)
+        if text == "重新生成":
+            from backend.script_generator.collaborator.phases import CollabPhase
+
+            self.chat.add_bubble("user", text)
+            self.engine.session.phase = CollabPhase.CODEGEN
+            self._start_codegen()
+            return
+        if text == "让模型直接写代码":
+            self.chat.add_bubble("user", text)
+            self._fallback_model_script()
+            return
+        if text.startswith("继续"):
             step = getattr(self.chat, "_continue_step", "") or ""
             self._on_user_send("继续：" + step if step else "继续未完成的计划")
+            return
+        if text == "换个做法":
+            self.chat.add_bubble("user", text)
+            self._on_user_send(
+                "刚才那条路走不通了，请换一个做法重试；说明你为什么换，并直接给出下一步动作。"
+            )
+            return
+        if text == "我来手动处理":
+            self.chat.add_bubble("user", text)
+            self.chat.add_bubble(
+                "system",
+                "好的：你手动做完这一步后，告诉我结果（比如「已经裁好并放进素材区了」），我接着往下走。",
+            )
+            self.chat.set_chips([])
             return
         if text == "用当前窗口":
             self.chat.add_bubble("user", text)
@@ -2987,10 +4169,24 @@ class CollabWorkbench(QWidget):
             self.chat.show_permission_ask(key)
             return
 
-        self.chat.add_bubble("user", text)
-        view = self.engine.on_chip(text)
-        if view is not None:
-            self._apply_view(view)
+        # 只有固定 UI 导航/状态动作由本地引擎处理。模型动态生成的 A/B/C
+        # 选项本质上就是一条用户消息，必须与手动输入走同一条 LLM 路径；
+        # 旧逻辑把未知选项送进 on_user_text_local，因而必然误报「API 未配置」。
+        local_engine_chips = {
+            "看起来对",
+            "去经典生成",
+            "再改一改",
+            "有问题再说",
+            "重新分析画面",
+        }
+        if text in local_engine_chips:
+            self.chat.add_bubble("user", text)
+            view = self.engine.on_chip(text)
+            if view is not None:
+                self._apply_view(view)
+            return
+        print(f"[Collab][route] dynamic_choice -> llm text={text[:48]!r}")
+        self._on_user_send(text)
 
     def _on_logic_cta(self) -> None:
         from backend.script_generator.collaborator.phases import CollabPhase
@@ -3006,12 +4202,14 @@ class CollabWorkbench(QWidget):
             self._start_script_write()
 
     def _start_script_write(self) -> None:
-        """确认逻辑后请模型写 script，用户只看到「下一步」那一句。"""
+        """确认逻辑后：先请模型写「生成用介绍」，再交给经典生成器出码。"""
         from backend.script_generator.collaborator.phases import CollabPhase
 
         if self._llm_worker is not None and self._llm_worker.isRunning():
             return
-        params = self._llm_params_from_host()
+        if self._codegen_worker is not None and self._codegen_worker.isRunning():
+            return
+        params = self._llm_params_from_host(reason="script_write")
         if not params:
             self.chat.add_bubble(
                 "system",
@@ -3021,8 +4219,95 @@ class CollabWorkbench(QWidget):
             return
         self.engine.session.add_message(
             "user",
-            "逻辑步骤我确认了。请把当前逻辑写成可运行脚本，填 script 和 script_name。"
-            "reply 只说写完了，下一步去试运行。turn=stop。",
+            "逻辑步骤我确认了。请把当前逻辑写成「生成用介绍」填进 intro："
+            "目的 / 场景标识 / 图片说明 / 任务流程 / 特殊规则，素材写成 `名字.png`。"
+            "script 留空，代码交给生成器写。reply 只说交给出码即可，turn=stop。",
+        )
+        self.engine.session.phase = CollabPhase.CODEGEN
+        self._start_llm_turn(params)
+
+    def _start_codegen(self, params: dict | None = None) -> None:
+        """跑经典生成管线出码（协作确认逻辑之后的主路径）。"""
+        from gui.widgets.script_gen_panel.workers import CollabCodegenWorker
+
+        if self._codegen_worker is not None and self._codegen_worker.isRunning():
+            return
+        p = dict(params or self._llm_params_from_host(reason="codegen") or {})
+        if not p.get("api_key") or not p.get("model"):
+            self.chat.add_bubble(
+                "system",
+                "还没配好模型，出不了码。下一步：去「1. API 配置」。",
+            )
+            self.chat.set_chips(["去经典生成"])
+            return
+        self._codegen_buf = ""
+        self.chat.set_chips([])
+        self.chat.set_activity("经典生成器出码中…")
+        self._banner.setText("协作 · 经典生成器出码中…")
+        host = self._host_panel
+        if host is not None and hasattr(host, "_set_agent_idle"):
+            try:
+                host._set_agent_idle("协作 · 经典生成器出码中…")
+            except Exception:
+                pass
+        payload = {
+            **p,
+            "session": self.engine.session.to_dict(),
+            "free_mode": False,
+        }
+        self._codegen_worker = CollabCodegenWorker(payload)
+        worker = self._codegen_worker
+        worker.status.connect(self._on_codegen_status)
+        worker.partial.connect(self._on_codegen_partial)
+        worker.finished.connect(lambda res, w=worker: self._on_codegen_finished(res, w))
+        worker.error.connect(lambda err, w=worker: self._on_codegen_error(err, w))
+        worker.start()
+
+    def _on_codegen_status(self, msg: str) -> None:
+        text = str(msg or "").strip()
+        if text:
+            self.chat.set_activity(text[:60])
+
+    def _on_codegen_partial(self, piece: str) -> None:
+        self._codegen_buf = (
+            getattr(self, "_codegen_buf", "") + str(piece or "")
+        )[-8000:]
+
+    def _on_codegen_finished(self, result: object, worker=None) -> None:
+        if worker is not None and worker is not self._codegen_worker:
+            return  # 已停止 / 已开新一轮：丢弃这次结果
+        self._codegen_worker = None
+        self.chat.set_activity(None)
+        res = result if isinstance(result, dict) else {}
+        view = self.engine.apply_codegen_result(res)
+        self._apply_view(view)
+        self._schedule_persist()
+        if not res.get("ok"):
+            self._fallback_model_script()
+
+    def _on_codegen_error(self, err: str, worker=None) -> None:
+        if worker is not None and worker is not self._codegen_worker:
+            return
+        self._codegen_worker = None
+        self.chat.set_activity(None)
+        self.chat.add_bubble("system", f"出码失败：{err}")
+        self._fallback_model_script()
+
+    def _fallback_model_script(self) -> None:
+        """经典出码走不通时的兜底：让模型自己填 script。"""
+        from backend.script_generator.collaborator.phases import CollabPhase
+
+        if self._llm_worker is not None and self._llm_worker.isRunning():
+            return
+        params = self._llm_params_from_host(reason="fallback_script")
+        if not params:
+            self.chat.set_chips(["去经典生成"])
+            return
+        self.chat.add_process("—— 改用模型直接写脚本 ——")
+        self.engine.session.add_message(
+            "user",
+            "生成器这条没走通，请你直接写 script：可运行、不要留占位符，并给 script_name。"
+            "reply 只说写完了，turn=stop。",
         )
         self.engine.session.phase = CollabPhase.CODEGEN
         self._start_llm_turn(params)
@@ -3032,8 +4317,98 @@ class CollabWorkbench(QWidget):
         self.chat._input.setFocus()
 
     def _on_step_wrong(self, step_id: str) -> None:
-        self.chat.add_bubble("user", f"步骤不对：{step_id}")
-        self._apply_view(self.engine.on_step_wrong(step_id))
+        """现象级修订：点「这一步不对」→ 自动把上下文发进对话让 Agent 改。
+
+        用户不用写技术反馈（design §4.2）：带上步骤、条件、最近试跑日志，
+        直接走正常对话回合；没有证据（没脚本也没日志）才只引导补一句现象。
+        """
+        sid = str(step_id or "").strip()
+        view = self.engine.on_step_wrong(sid)
+        step = self.engine.session.logic.get(sid)
+        self._apply_view(view)
+
+        from backend.script_generator.collaborator.collab_form import (
+            build_step_revision_request,
+        )
+
+        host = self._host_panel
+        logs = list(getattr(host, "_trial_log_lines", []) or []) if host is not None else []
+        text, ready = build_step_revision_request(step, self.engine.session, logs=logs)
+        if not ready:
+            self.chat.add_bubble("system", text)
+            self.chat.set_chips(["重新分析画面", "重新截图"])
+            self.chat._input.setFocus()
+            return
+        if self._llm_worker is not None and self._llm_worker.isRunning():
+            self.chat.add_bubble("system", "上一轮还在思考，等它做完再把这条发出去。")
+            return
+        if not self._llm_params_from_host(reason="step_revision"):
+            self.chat.add_bubble(
+                "system",
+                "要按这一步改脚本，得先在「经典 → API 配置」填好 Key / 模型。\n"
+                "这条修订请求已经写好，配好后点发送即可：\n" + text,
+            )
+            self.chat._input.setPlainText(text)
+            self.chat._input.setFocus()
+            return
+        self._on_user_send(text)
+
+    # ── 试跑游标（runtime 日志线 → 步骤卡）──────────────────────────
+
+    def note_trial_state(self, name: str) -> None:
+        """host 面板解析出 ``[MINASHIGO_STEP] <name>`` 后调这里。
+
+        日志信号经队列投递到 GUI 线程；用 ``singleShot(0)`` 起一条干净调用栈，
+        避免在信号处理里直接重排步骤卡（会重入）。
+        """
+        raw = str(name or "").strip()
+        if not raw:
+            return
+        QTimer.singleShot(0, lambda n=raw: self._apply_trial_state(n))
+
+    def _apply_trial_state(self, name: str) -> None:
+        try:
+            if not self.engine.note_trial_state(name):
+                return
+        except Exception as e:  # noqa: BLE001 - 游标失败不能影响试跑
+            print(f"[Collab] 试跑游标匹配失败: {e}")
+            return
+        self._render_trial_cursor()
+
+    def reset_trial_cursor(self) -> None:
+        """一次试跑开始：清游标 + 步骤回到「草稿」再重新走。"""
+        try:
+            self.engine.begin_trial_cursor()
+        except Exception as e:  # noqa: BLE001
+            print(f"[Collab] 游标开始失败: {e}")
+            return
+        self._render_trial_cursor()
+        self.logic.open_drawer()
+
+    def finish_trial_cursor(self, status: str = "") -> None:
+        """试跑结束：轨迹留着，当前步落成「已确认」不再高亮。"""
+        try:
+            self.engine.end_trial_cursor_run()
+        except Exception as e:  # noqa: BLE001
+            print(f"[Collab] 游标收尾失败: {e}")
+        self._render_trial_cursor()
+
+    def _render_trial_cursor(self) -> None:
+        """只重画步骤卡（+ 持久化），不重建对话气泡。"""
+        try:
+            raw_steps = self.engine.session.logic.to_ui_steps()
+            from backend.script_generator.collaborator.canvas import (
+                enrich_logic_steps_for_ui,
+            )
+
+            ui_steps = enrich_logic_steps_for_ui(
+                raw_steps, list(self.engine.session.assets or [])
+            )
+            self.logic.set_steps(ui_steps, shape_label=self.engine.session.last_shape_label or "")
+            self.logic.nudge()
+        except Exception as e:  # noqa: BLE001
+            print(f"[Collab] 游标渲染失败: {e}")
+        self._schedule_persist()
 
     def _on_step_param(self, step_id: str, key: str, value: int) -> None:
         from backend.script_generator.logic_graph import apply_step_param
@@ -3055,8 +4430,91 @@ class CollabWorkbench(QWidget):
         self.chat._input.setFocus()
 
     def _clear_frame(self) -> None:
+        from backend.script_generator.collaborator.canvas import save_current_viewport_marks
+
+        save_current_viewport_marks(self.engine.session)
+        self.engine.session.frame_path = None
+        self.engine.session.overlays = []
+        self.engine.session.probe = None
+        if isinstance(self.engine.session.artifacts, dict):
+            for key in (
+                "assist_vision",
+                "last_vision_desc",
+                "vision_groundings",
+                "repeated_region_fits",
+                "canvas_dirty",
+            ):
+                self.engine.session.artifacts.pop(key, None)
+        self.engine.session.touch()
         self.frame.set_image_path(None)
         self.frame.set_overlays([])
+        self.chat.add_bubble("system", "已清空共同视口。")
+        self._schedule_persist()
+
+    def _open_viewport_editor(self) -> None:
+        """双击共同视口：用完整截图预览器检查、匹配和保存当前原图。"""
+        from gui.panels.screenshot_viewer import ScreenshotViewer
+
+        path = getattr(self.frame, "_image_path", None) or self.engine.session.frame_path
+        path = Path(path) if path else None
+        if path is None or not path.is_file():
+            self.chat.add_bubble("system", "共同视口还没有可预览的图片。")
+            return
+        self.frame._set_mark_mode("")
+        pixmap = QPixmap(str(path))
+        if pixmap.isNull():
+            self.chat.add_bubble("system", f"共同视口图片读取失败：{path.name}")
+            return
+
+        viewer_account = {"name": "collab", "email": "collab"}
+        host = getattr(self, "_host_panel", None)
+        if host is not None and hasattr(host, "_selected_account"):
+            try:
+                selected = host._selected_account()
+            except Exception:
+                selected = None
+            if isinstance(selected, dict) and selected:
+                viewer_account = dict(selected)
+                viewer_account.setdefault("name", "collab")
+                viewer_account.setdefault(
+                    "email", str(viewer_account.get("name") or "collab")
+                )
+
+        viewer = ScreenshotViewer(
+            image=pixmap,
+            account=viewer_account,
+            window_title=f"共同视口预览 · {path.name}",
+        )
+
+        def refresh_current_viewport() -> None:
+            current = getattr(self.frame, "_image_path", None) or self.engine.session.frame_path
+            current_path = Path(current) if current else None
+            if current_path is None or not current_path.is_file():
+                viewer.show_error_message("刷新失败", "共同视口当前没有可用图片")
+                return
+            refreshed = QPixmap(str(current_path))
+            if refreshed.isNull():
+                viewer.show_error_message("刷新失败", "共同视口图片读取失败")
+                return
+            viewer._window_title = f"共同视口预览 · {current_path.name}"
+            viewer.update_image(refreshed)
+            viewer._update_title_size()
+
+        viewer.refresh_requested.connect(refresh_current_viewport)
+        viewer.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, True)
+        def clear_viewer_reference(*_args) -> None:
+            if getattr(self, "_viewport_screenshot_viewer", None) is viewer:
+                self._viewport_screenshot_viewer = None
+
+        viewer.destroyed.connect(clear_viewer_reference)
+        previous = getattr(self, "_viewport_screenshot_viewer", None)
+        if previous is not None:
+            previous.close()
+        self._viewport_screenshot_viewer = viewer
+        viewer.setWindowState(viewer.windowState() | Qt.WindowState.WindowMaximized)
+        viewer.show()
+        viewer.raise_()
+        viewer.activateWindow()
 
     def _on_assets_files_dropped(self, paths: list) -> None:
         """外部图片拖入素材区。"""
@@ -3081,6 +4539,48 @@ class CollabWorkbench(QWidget):
         names = "、".join(str(a.get("name") or "") for a in added[:5])
         more = f" 等 {len(added)} 张" if len(added) > 5 else ""
         self.chat.add_bubble("system", f"已拖入素材区：{names}{more}")
+        self._schedule_persist()
+
+    def _on_images_pasted(self, paths: list) -> None:
+        """聊天区粘贴的图片 → 素材区（统一命名「图片_1」「图片_2」…便于引用）。"""
+        from backend.script_generator.collaborator.canvas import (
+            add_asset_from_path,
+            next_paste_asset_names,
+            rename_asset,
+        )
+
+        files = [Path(str(raw)) for raw in (paths or [])]
+        files = [p for p in files if p.is_file()]
+        # 同一批里重复的路径只会得到同一张素材（add_asset_from_path 按路径去重），
+        # 先去重，免得编号跳号或把同一张反复改名。
+        files = list(dict.fromkeys(files))
+        if not files:
+            return
+        # 命名统一走 canvas.next_paste_asset_names：序号在现存素材名上接着排，
+        # 一次粘贴多张就是连续的 图片_n…图片_n+k。
+        names = next_paste_asset_names(
+            list(getattr(self.engine.session, "assets", None) or []), len(files)
+        )
+        added = []
+        for p, name in zip(files, names):
+            item = add_asset_from_path(
+                self.engine.session,
+                p,
+                role="template",
+                caption="粘贴素材",
+                group="粘贴",
+            )
+            renamed = rename_asset(self.engine.session, str(item.get("id") or ""), name)
+            added.append(renamed or item)
+        if not added:
+            return
+        self._sync_canvas_from_session()
+        shown = "、".join(str(a.get("name") or "") for a in added[:5])
+        more = f" 等 {len(added)} 张" if len(added) > 5 else ""
+        self.chat.add_bubble(
+            "system",
+            f"已粘贴到素材区：{shown}{more}（拖到上方视口可一起讨论）",
+        )
         self._schedule_persist()
 
     def _on_asset_set_frame(self, asset_id: str, path: str) -> None:
@@ -3218,6 +4718,12 @@ class CollabWorkbench(QWidget):
         self.chat.add_bubble("system", f"已加入素材区：{item.get('name')}")
         self._schedule_persist()
 
+    def _on_asset_notice(self, text: str) -> None:
+        """素材区复制/定位文件等操作的结果，进聊天区当系统提示。"""
+        msg = str(text or "").strip()
+        if msg:
+            self.chat.add_bubble("system", msg)
+
     def _on_asset_remove(self, asset_id: str) -> None:
         from backend.script_generator.collaborator.canvas import remove_asset
 
@@ -3282,39 +4788,61 @@ class CollabWorkbench(QWidget):
         self.chat.add_bubble("system", "已清空素材区。")
         self._schedule_persist()
 
-    def _on_ban_drawn(self, nx0: float, ny0: float, nx1: float, ny1: float) -> None:
+    def _on_mark_rect_drawn(self, nx0: float, ny0: float, nx1: float, ny1: float) -> None:
         from backend.script_generator.collaborator.canvas import (
-            add_ban_overlay,
-            ban_overlays_as_script_snippet,
+            add_mark_rect_overlay,
         )
 
-        n_ban = len(
-            [o for o in (self.engine.session.overlays or []) if o.get("kind") == "ban"]
+        n_mark = len(
+            [o for o in (self.engine.session.overlays or []) if o.get("kind") == "mark"]
         )
-        item = add_ban_overlay(
+        item = add_mark_rect_overlay(
             self.engine.session,
             nx0=nx0,
             ny0=ny0,
             nx1=nx1,
             ny1=ny1,
-            label=f"排除区{n_ban + 1}",
+            label=f"矩形标记{n_mark + 1}",
         )
         if not item:
             return
-        snippet = ban_overlays_as_script_snippet(self.engine.session.overlays or [])
-        if not isinstance(self.engine.session.artifacts, dict):
-            self.engine.session.artifacts = {}
-        self.engine.session.artifacts["ban_script_snippet"] = snippet
         self._sync_canvas_from_session()
         self.chat.add_bubble(
             "system",
-            f"已标注排除区（归一化 "
+            f"已记录矩形标记（归一化 "
             f"{item.get('nx0'):.2f},{item.get('ny0'):.2f}-"
-            f"{item.get('nx1'):.2f},{item.get('ny1'):.2f}）。"
-            "生成/改脚本时可注入 `_COLLAB_BAN_ZONES`。",
+            f"{item.get('nx1'):.2f},{item.get('ny1'):.2f}），原图未修改。",
         )
-        if self.frame._ban_btn.isChecked():
-            self.frame._ban_btn.setChecked(False)
+        self._schedule_persist()
+
+    def _on_mark_finished(self) -> None:
+        marks = [o for o in (self.engine.session.overlays or []) if o.get("kind") == "mark"]
+        if not marks:
+            return
+        self.chat.add_bubble(
+            "system",
+            f"已完成标记，共 {len(marks)} 个范围；Agent 下次行动时会读取这些标记。",
+        )
+        self._schedule_persist()
+
+    def _on_mark_stroke_drawn(self, points: list) -> None:
+        from backend.script_generator.collaborator.canvas import add_mark_stroke_overlay
+
+        n_mark = len(
+            [o for o in (self.engine.session.overlays or []) if o.get("kind") == "mark"]
+        )
+        item = add_mark_stroke_overlay(
+            self.engine.session,
+            points=list(points or []),
+            label=f"画笔标记{n_mark + 1}",
+        )
+        if not item:
+            return
+        self._sync_canvas_from_session()
+        self.chat.add_bubble(
+            "system",
+            f"已记录自由画笔标记（{len(item.get('points') or [])} 个轨迹点），原图未修改。",
+        )
         self._schedule_persist()
 
     def _on_clear_overlays(self) -> None:
@@ -3365,6 +4893,15 @@ class CollabWorkbench(QWidget):
         self._apply_view(self.engine.on_frame(p))
 
     def _toast_window(self) -> None:
+        self._request_bound_capture("viewport")
+
+    def _capture_bound_target_to_assets(self) -> None:
+        """素材区按钮：获取当前绑定窗口/浏览器客户区，直接加入素材区。"""
+        self._request_bound_capture("assets")
+
+    def _request_bound_capture(self, destination: str) -> None:
+        from backend.script_generator.execution_profile import CONFIDENCE_AUTHORITATIVE
+
         host = self._host_panel
         if host is None or getattr(host, "_facade", None) is None:
             QMessageBox.information(
@@ -3383,14 +4920,19 @@ class CollabWorkbench(QWidget):
             return
         name = str(acc.get("name") or "")
         ctrl = host._facade.controller
+        # 与试运行页共用**同一个**解析入口（旧实现这里查 ctrl._browsers、
+        # 试运行页查 ctrl._browser_instances，可能给出相反倾向）。
+        # 决定 1：连"取目标"本身也只留一个入口（``_execution_target_payload``）。
+        resolution = self._execution_target_payload(acc, ctrl)
         has_win = name in getattr(ctrl, "_window_instances", {})
-        has_browser = name in getattr(ctrl, "_browsers", {})
-        if has_win and not has_browser:
-            acc["_target"] = "window"
-        elif has_browser and not has_win:
-            acc["_target"] = "browser"
-        elif has_win and acc.get("_target") not in ("browser", "window"):
-            acc["_target"] = "window"
+        has_browser = name in getattr(ctrl, "_browser_instances", {})
+        if (
+            resolution.get("runtime_profile") not in ("", None, "unresolved")
+            and resolution.get("confidence") == CONFIDENCE_AUTHORITATIVE
+        ):
+            acc["_target"] = (
+                "window" if resolution.get("runtime_profile") == "desktop_user_window" else "browser"
+            )
         if not has_win and not has_browser:
             self.chat.add_bubble(
                 "system",
@@ -3399,12 +4941,16 @@ class CollabWorkbench(QWidget):
             return
         host._collab_capture_pending = True
         host._collab_capture_account = name
-        self.chat.add_bubble("system", f"正在抓取账号「{name}」的客户区…")
+        self._bound_capture_destination = "assets" if destination == "assets" else "viewport"
+        target_label = "浏览器视口/窗口客户区"
+        suffix = "并加入素材区" if destination == "assets" else ""
+        self.chat.add_bubble("system", f"正在抓取账号「{name}」的{target_label}{suffix}…")
         try:
             ok = ctrl.capture_screenshot(acc)
             if ok is False:
                 host._collab_capture_pending = False
                 host._collab_capture_account = ""
+                self._bound_capture_destination = ""
                 self.chat.add_bubble(
                     "system",
                     "抓取未开始：找不到对应截图实例（请确认顶栏账号是「· 窗口」且已绑定）。",
@@ -3418,6 +4964,7 @@ class CollabWorkbench(QWidget):
                     return
                 host._collab_capture_pending = False
                 host._collab_capture_account = ""
+                self._bound_capture_destination = ""
                 self.chat.add_bubble(
                     "system",
                     "抓取超时。可改用右侧「选截图」，或输入旁「截图」框选。",
@@ -3427,9 +4974,29 @@ class CollabWorkbench(QWidget):
         except Exception as e:
             host._collab_capture_pending = False
             host._collab_capture_account = ""
+            self._bound_capture_destination = ""
             self.chat.add_bubble("system", f"抓取失败：{e}")
 
     def _on_bound_window_frame(self, path: Path, account_name: str) -> None:
+        destination = str(getattr(self, "_bound_capture_destination", "") or "viewport")
+        self._bound_capture_destination = ""
+        if destination == "assets":
+            from backend.script_generator.collaborator.canvas import add_asset_from_path
+
+            item = add_asset_from_path(
+                self.engine.session,
+                path,
+                role="screenshot",
+                caption=f"账号 {account_name} 的窗口/浏览器视口截图",
+                group="截图",
+            )
+            self._sync_canvas_from_session()
+            self.chat.add_bubble(
+                "system",
+                f"已获取「{account_name}」视口截图并加入素材区：{item.get('name')}。",
+            )
+            self._schedule_persist()
+            return
         self.frame.set_image_path(path, caption=f"窗口 · {account_name}")
         if self.engine.session.skill_id:
             self._apply_view(self.engine.on_frame(path))
@@ -3455,17 +5022,27 @@ class CollabWorkbench(QWidget):
         *,
         intro: str | None = None,
         script_name: str | None = None,
-    ) -> None:
+    ) -> bool:
         host = self._host_panel
         if host is None:
-            return
+            return False
         try:
             art = self.engine.session.artifacts if isinstance(
                 self.engine.session.artifacts, dict
             ) else {}
-            ban = str(art.get("ban_script_snippet") or "").strip()
-            if ban and "_COLLAB_BAN_ZONES" not in (code or ""):
-                code = ban + "\n\n" + (code or "")
+            # ⚠️ 禁用区（ban_script_snippet）**不再自动前置**：按用户决定它是
+            # **阻断式 gate**而不是文本变换，由 `script_artifact.materialize_trial_script`
+            # 在试运行/校验时统一判定（缺 `_COLLAB_BAN_ZONES` 就拦下并说明）。
+            # 这里曾经把 snippet 拼到正文前面，等于用变换掩盖缺失，且与校验侧不一致。
+            _ = art
+            # 落盘前先把素材收进 assets/images/<脚本名>/：草稿与试运行都自带图
+            stem_hint = script_name or "collab_script"
+            if stem_hint.lower().endswith(".py"):
+                stem_hint = stem_hint[:-3]
+            bundle_note = ""
+            bundle = getattr(host, "_bundle_assets_for_save", None)
+            if callable(bundle):
+                code, bundle_note = bundle(code, stem_hint)
             host._generated_code = code
             note_origin = getattr(host, "_note_script_origin", None)
             if callable(note_origin):
@@ -3511,14 +5088,18 @@ class CollabWorkbench(QWidget):
             )
             if trial_path:
                 msg += f"\n· 试运行：{trial_path}"
+            if bundle_note:
+                msg += "\n· " + bundle_note.replace("\n", "\n· ")
             self.chat.add_bubble("system", msg)
             if hasattr(host, "_update_trial_availability"):
                 try:
                     host._update_trial_availability()
                 except Exception:
                     pass
+            return True
         except Exception as e:
             self.chat.add_bubble("system", f"写入生成页失败：{e}")
+            return False
 
 
 class CollabMixin:
@@ -3528,6 +5109,30 @@ class CollabMixin:
         self._collab = CollabWorkbench()
         self._collab.bind_host(self)
         return self._collab
+
+    def _execution_target_payload(self, account=None, controller=None) -> dict:
+        """把「账号 + Controller 实例」解析成可序列化的执行目标事实（**唯一实现**）。
+
+        这是 profile 从"注解猜测"升级为"Runtime 事实"的入口（决定 §1）：结果贯穿
+        V3 runner → validator → materializer → receipt，并让**执行目标变化后旧凭证失效**。
+        拿不到账号时返回 ``{}``（→ unresolved，绝不猜 desktop/browser）。
+
+        决定 1：V2 与 V3 共用这一个入口（``execution_profile.resolve_execution_target``）；
+        ``CollabWorkbench`` 里那个同名方法只是**委托**到这里，取目标只有一份实现。
+        调用方可以传入自己的账号/实例（例如试运行账号）。
+        """
+        try:
+            if account is None:
+                getter = getattr(self, "_selected_account", None)
+                account = getter() if callable(getter) else None
+            if controller is None:
+                facade = getattr(self, "_facade", None)
+                controller = getattr(facade, "controller", None) if facade is not None else None
+            from backend.script_generator.execution_profile import resolve_execution_target
+
+            return resolve_execution_target(account, controller)
+        except Exception:  # noqa: BLE001 - 解析失败按"未确定"处理，不猜
+            return {}
 
     def _collab_llm_params(self) -> dict | None:
         """从 API 配置页收集协作 LLM 参数；缺 Key/模型则返回 None。"""
@@ -3550,9 +5155,28 @@ class CollabMixin:
         except Exception as e:
             print(f"[Collab] _collab_llm_params 读取失败: {e}")
             return None
+        missing = []
         if not provider or provider in ("（未选择）", "未选择"):
-            return None
-        if not model or not api_key:
+            missing.append("provider")
+        if not model:
+            missing.append("model")
+        if not api_key:
+            missing.append("api_key")
+        if missing:
+            # 初始化/方案切换期间，Qt 控件可能有一帧尚未同步完成。只在当前控件
+            # 没有与已保存方案冲突时回退，避免把用户正在编辑的另一套配置偷偷替换掉。
+            saved = self._collab_saved_llm_params(
+                current_provider=provider,
+                current_model=model,
+            )
+            if saved:
+                print(
+                    "[Collab] API 控件暂缺 " + ",".join(missing)
+                    + "；使用当前已保存方案"
+                )
+                self._collab_llm_params_cache = dict(saved)
+                return saved
+            print("[Collab] API 配置不完整，缺少: " + ",".join(missing))
             return None
         params = {
             "provider": provider,
@@ -3561,7 +5185,7 @@ class CollabMixin:
             "api_endpoint": endpoint,
             "max_tokens": max_tokens,
         }
-        # 辅助识图：主模型看不了图时协作回合会自动调用
+        # 独立辅助识图：主模型不支持视觉或主视觉失败时才回退调用
         try:
             v_provider = (self._current_vision_provider() or "").strip()
             v_model = (self._vision_model.currentText() or "").strip()
@@ -3578,3 +5202,69 @@ class CollabMixin:
             print(f"[Collab] 读取辅助识图配置失败: {e}")
         self._collab_llm_params_cache = dict(params)
         return params
+
+    def _collab_saved_llm_params(
+        self,
+        *,
+        current_provider: str = "",
+        current_model: str = "",
+    ) -> dict | None:
+        """读取当前已保存方案，作为 API 控件瞬时空值时的安全回退。"""
+        try:
+            data = self._migrate_settings_to_profiles(self._read_settings_file())
+            active = str(data.get("active_profile") or _DEFAULT_PROFILE)
+            payload = (data.get("profiles") or {}).get(active) or {}
+            provider = str(payload.get("provider") or "").strip()
+            model = str(payload.get("model") or "").strip()
+            if not provider or not model:
+                return None
+            cur_provider = str(current_provider or "").strip()
+            cur_model = str(current_model or "").strip()
+            if cur_provider and cur_provider not in ("（未选择）", "未选择", provider):
+                return None
+            if cur_model and cur_model != model:
+                return None
+
+            import keyring
+
+            api_key = keyring.get_password(
+                _KEYRING_SERVICE, self._keyring_slot(active, "api_key")
+            )
+            if not api_key and active == _DEFAULT_PROFILE:
+                api_key = keyring.get_password(_KEYRING_SERVICE, "api_key")
+            if not api_key:
+                return None
+            try:
+                max_tokens = min(int(payload.get("max_tokens") or 2048), 4096)
+            except (TypeError, ValueError):
+                max_tokens = 2048
+            params = {
+                "provider": provider,
+                "model": model,
+                "api_key": api_key,
+                "api_endpoint": str(payload.get("endpoint") or "").strip() or None,
+                "max_tokens": max(1, max_tokens),
+            }
+
+            v_provider = str(payload.get("vision_provider") or "").strip()
+            v_model = str(payload.get("vision_model") or "").strip()
+            if v_provider and v_model:
+                v_key = keyring.get_password(
+                    _KEYRING_SERVICE,
+                    self._keyring_slot(active, "vision_api_key"),
+                )
+                if not v_key and active == _DEFAULT_PROFILE:
+                    v_key = keyring.get_password(_KEYRING_SERVICE, "vision_api_key")
+                if v_key:
+                    params["vision_assist"] = {
+                        "provider": v_provider,
+                        "model": v_model,
+                        "api_key": v_key,
+                        "api_endpoint": (
+                            str(payload.get("vision_endpoint") or "").strip() or None
+                        ),
+                    }
+            return params
+        except Exception as e:
+            print(f"[Collab] 读取已保存 API 方案失败: {e}")
+            return None

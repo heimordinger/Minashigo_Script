@@ -107,21 +107,53 @@ class UserWindow:
             return
         old = self._client_size
         self._client_size = wh
-        self.invalidate_vision_state(reason=f"窗口尺寸 {old[0]}x{old[1]} → {wh[0]}x{wh[1]}")
-
-    def invalidate_vision_state(self, reason: str = "") -> None:
-        """尺寸/目标变化后重校：尺度缓存、hotspot、轮询匹配缓存。"""
+        # 尺度与热点缓存的 key 本身已经包含帧尺寸。切到新尺寸时会自然使用
+        # 新桶；删除旧尺寸桶只会导致以后切回来再次冷定标。这里只清除当前轮询
+        # 快照，保留两个尺寸各自学到的视觉 profile。
         self.polling_temp_cache = {}
+        try:
+            self.script_log(
+                f"[vision] 尺寸 profile 切换：{old[0]}x{old[1]} → "
+                f"{wh[0]}x{wh[1]}（保留旧尺寸缓存）"
+            )
+        except Exception:
+            pass
+
+    def invalidate_vision_state(self, reason: str = "", old_size=None) -> None:
+        """尺寸/目标变化后重校：尺度缓存、hotspot、轮询匹配缓存。
+
+        ``old_size`` 给了旧尺寸时**只清旧尺寸那一桶**：尺度缓存与 hotspot 都是按
+        「模板|帧宽x帧高|抓帧模式」分桶的，旧尺寸的样本固然过期，别的尺寸仍然有效。
+        以前这里一律全清（全局单例、跨账号共用），于是窗口尺寸一变（窗口在
+        1036x583 / 1158x651 / 1730x974 之间切）每个模板都要重新做一次冷定标
+        ——实测一次冷定标 6.6s（见 tools\\_scratch\\bench_yys_match.py）。
+        """
+        self.polling_temp_cache = {}
+        if old_size is not None:
+            try:
+                ow, oh = int(old_size[0]), int(old_size[1])
+            except Exception:
+                ow = oh = None
+        else:
+            ow = oh = None
         try:
             from backend.matcher.scale_calibrate import get_scale_cache
 
-            get_scale_cache().clear()
+            cache = get_scale_cache()
+            if ow is None:
+                cache.clear()
+            else:
+                cache.clear_frame_size(ow, oh)
         except Exception:
             pass
         try:
             from backend.matcher.hotspot_roi import get_hotspot_store
 
-            get_hotspot_store().clear_all()
+            store = get_hotspot_store()
+            if ow is None:
+                store.clear_all()
+            else:
+                store.clear_frame_size(ow, oh)
         except Exception:
             pass
         if reason:
@@ -251,6 +283,18 @@ class UserWindow:
 
     def note_state(self, name: str | None):
         self._stuck.note_state(name)
+        # 状态名变化打一行标记（同一状态每轮都调，不能每轮刷屏）：
+        # 协作页据此把逻辑步骤卡走成「试跑至此」。
+        key = None if name is None else str(name).strip()
+        if key == getattr(self, "_last_noted_state", "__init__"):
+            return
+        self._last_noted_state = key
+        if key:
+            from backend.script_generator.collaborator.trial_cursor import (
+                step_mark_message,
+            )
+
+            self.script_log(step_mark_message(key))
 
     def note_progress(self):
         self._stuck.note_progress(clear_actions=True)
@@ -353,7 +397,40 @@ class UserWindow:
 
     # ── 日志 ──
 
+    def _ensure_cold_calibration_sink(self) -> None:
+        """只登记一次：让 matcher 层的"冷定标耗时"日志能进运行日志。
+
+        以前放在 `script_log` 里每次都登记（靠注册表去重兜着），虽然去重后
+        不会再重复播报，但每条日志都要过一次锁 + 建 WeakMethod，没必要。
+        """
+        try:
+            from backend.matcher.scale_calibrate import register_cold_calibration_sink
+
+            register_cold_calibration_sink(self.script_log, account=self._log_account_name())
+        except Exception:
+            pass
+
+    def _log_account_name(self) -> str:
+        return str((getattr(self, "_account_override", {}) or {}).get("name") or "")
+
+    def unregister_cold_calibration_sink(self) -> None:
+        """注销本窗口的冷定标日志槽（任务结束时调用）。
+
+        不注销的话，脚本停了之后 `adaptive_match` 若还留在
+        `asyncio.to_thread` 的线程里跑完，仍会往 GUI 日志吐冷定标消息。
+        """
+        self._calib_sink_ready = False
+        try:
+            from backend.matcher.scale_calibrate import unregister_cold_calibration_sink
+
+            unregister_cold_calibration_sink(self.script_log)
+        except Exception:
+            pass
+
     def script_log(self, msg: str):
+        if not getattr(self, "_calib_sink_ready", False):
+            self._calib_sink_ready = True
+            self._ensure_cold_calibration_sink()
         rec = self._pseudo
         if rec is not None:
             try:
@@ -404,15 +481,29 @@ class UserWindow:
 
     # ── 截图 ──
 
-    async def update_frame(self, save_screenshot=False):
+    async def update_frame(self, save_screenshot=False, *, priority: int = 20):
         """强制拉一帧并清空轮询缓存（日常 match 会自动 ensure）。"""
         await self._check()
-        frame = await self._observer.capture_once()
+        frame = await self._observer.capture_once(priority=priority)
         self.polling_temp_cache = {}
         rec = self._pseudo
         if rec:
             rec.maybe_keyframe(frame, reason="capture")
         return frame
+
+    async def capture_region(self, x, y, width, height):
+        """用后台 PrintWindow 刷新整帧，再在内存中取指定客户区。"""
+        frame = await self.update_frame()
+        fh, fw = frame.shape[:2]
+        x1 = max(0, int(round(float(x))))
+        y1 = max(0, int(round(float(y))))
+        x2 = min(fw, int(round(float(x) + float(width))))
+        y2 = min(fh, int(round(float(y) + float(height))))
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError(
+                f"局部截图区域无效: ({x}, {y}, {width}, {height}) frame={fw}x{fh}"
+            )
+        return frame[y1:y2, x1:x2].copy()
 
     # ── 点击 ──
 
@@ -479,8 +570,15 @@ class UserWindow:
             pixel_tol: float = 8.0,
             quiet: bool = False,
             use_hotspot_roi: bool | None = None,
+            cheap: bool = False,
+            force_wide: bool = False,
+            vision_priority: int = 20,
     ):
-        """在最新截图中找模板图。"""
+        """在最新截图中找模板图。
+
+        ``cheap=True``：跳过宽搜兜底（省 1.5~1.8s/次）。给"空帧里看一眼"用 ——
+        空帧的定义就是没有素材可匹配，全尺度兜底没有意义。
+        """
         await self._check()
         await self._observer.ensure_frame()
 
@@ -496,6 +594,7 @@ class UserWindow:
             match_select,
             mode,
             pixel_tol,
+            force_wide,
         )
 
         if self.use_polling_temp_cache and key in self.polling_temp_cache:
@@ -523,21 +622,53 @@ class UserWindow:
         stem = Path(str(img_path)).stem if not str(img_path).startswith("data:") else "b64"
         sid = rec.begin("match", stem, threshold=threshold, mode=match_mode) if rec else None
         try:
-            result = adaptive_match(
-                matcher,
-                frame,
-                img_path,
-                threshold=threshold,
-                match_type=mtype,
-                use_color_check=use_color_check if mode == "image" else False,
-                match_select=match_select,
-                use_orb=(mode == "image"),
-                pixel_tol=pixel_tol,
-                template_key=normalize_template_key(img_path),
-                capture_mode=resolve_capture_mode(self),
-                enabled=hotspot_on,
-                multi=False,
-            )
+            # 多开：多个账号共用同一个事件循环，匹配是同步 CPU 活，
+            # 必须丢到线程里跑，否则会卡住另一个账号。
+            from backend.matcher.scale_calibrate import cache_key, get_scale_cache
+            from .vision_resource import vision_resource
+
+            capture_mode = resolve_capture_mode(self)
+            vision_kind = "wide" if force_wide else "hot"
+            if not force_wide:
+                try:
+                    from backend.matcher.match_ref import resolve_scale_for_frame
+
+                    fh, fw = frame.shape[:2]
+                    skey = cache_key(
+                        normalize_template_key(img_path), fw, fh, capture_mode
+                    )
+                    if (
+                        get_scale_cache().get(skey) is None
+                        and resolve_scale_for_frame(img_path, fw, fh) is None
+                    ):
+                        vision_kind = "calibration"
+                except Exception:
+                    pass
+
+            owner = self._log_account_name() or f"hwnd:{self._bound_hwnd}"
+            async with vision_resource(
+                kind=vision_kind, priority=vision_priority, owner=owner
+            ):
+                result = await asyncio.to_thread(
+                    adaptive_match,
+                    matcher,
+                    frame,
+                    img_path,
+                    threshold=threshold,
+                    match_type=mtype,
+                    use_color_check=use_color_check if mode == "image" else False,
+                    match_select=match_select,
+                    use_orb=(mode == "image"),
+                    pixel_tol=pixel_tol,
+                    template_key=normalize_template_key(img_path),
+                    capture_mode=capture_mode,
+                    enabled=hotspot_on,
+                    multi=False,
+                    # 冷定标日志只落进这个账号的日志里（双开时别互相串）
+                    log_account=self._log_account_name(),
+                    cheap=cheap,
+                    force_wide=force_wide,
+                )
 
             score = getattr(result, "score", getattr(result, "max_val", None))
             ok = bool(result and result.x is not None and getattr(result, "match_success", True))
@@ -572,26 +703,147 @@ class UserWindow:
 
         return result
 
+    async def match_image_multi(
+            self,
+            img_path: Union[str, Path],
+            threshold: float = 0.9,
+            use_color_check: bool = False,
+            match_mode: str = "image",
+            pixel_tol: float = 8.0,
+            use_hotspot_roi: bool | None = None,
+    ):
+        """在桌面窗口当前帧中查找模板的全部命中。
+
+        与 ``UserBrowser.match_image_multi`` 使用同一调用模板和返回结构：
+        ``list[dict]``，每项包含客户端坐标 ``x`` / ``y`` 与 ``score``。
+        """
+        await self._check()
+        await self._observer.ensure_frame()
+
+        mode = (match_mode or "image").lower()
+        if mode not in ("image", "pixel"):
+            mode = "image"
+        mtype = "pixel_multi" if mode == "pixel" else "image_multi"
+
+        from backend.matcher.matcher import matcher
+        from backend.matcher.hotspot_roi import (
+            adaptive_match,
+            normalize_template_key,
+            resolve_capture_mode,
+        )
+        from .vision_resource import vision_resource
+
+        frame = self._frame
+        if frame is None:
+            frame = await self._observer.ensure_frame(force=True)
+        hotspot_on = (
+            self.use_hotspot_roi
+            if use_hotspot_roi is None
+            else bool(use_hotspot_roi)
+        )
+        self._emit_match_hud(str(img_path), "matching", action="match_multi")
+        rec = self._pseudo
+        stem = Path(str(img_path)).stem if not str(img_path).startswith("data:") else "b64"
+        sid = rec.begin("match_multi", stem, threshold=threshold, mode=match_mode) if rec else None
+        try:
+            owner = self._log_account_name() or f"hwnd:{self._bound_hwnd}"
+            async with vision_resource(kind="hot", priority=20, owner=owner):
+                results = await asyncio.to_thread(
+                    adaptive_match,
+                    matcher,
+                    frame,
+                    img_path,
+                    threshold=threshold,
+                    match_type=mtype,
+                    use_color_check=use_color_check if mode == "image" else False,
+                    use_orb=(mode == "image"),
+                    pixel_tol=pixel_tol,
+                    template_key=normalize_template_key(img_path),
+                    capture_mode=resolve_capture_mode(self),
+                    enabled=hotspot_on,
+                    multi=True,
+                    log_account=self._log_account_name(),
+                )
+        except Exception:
+            if rec:
+                rec.end(sid, template=stem, error=True)
+            raise
+
+        converted = []
+        for item in results or []:
+            if isinstance(item, dict):
+                x, y = item.get("x"), item.get("y")
+                score = item.get("score", item.get("max_val", 0.0))
+            else:
+                x, y = getattr(item, "x", None), getattr(item, "y", None)
+                score = getattr(item, "score", getattr(item, "max_val", 0.0))
+            if x is None or y is None:
+                continue
+            converted.append({"x": int(x), "y": int(y), "score": float(score or 0.0)})
+
+        if rec:
+            rec.end(sid, template=stem, ok=bool(converted), count=len(converted), threshold=threshold, mode=match_mode)
+        best = max((item["score"] for item in converted), default=None)
+        self._emit_match_hud(
+            str(img_path), "ok" if converted else "fail", best,
+            action="match_multi", detail={"count": len(converted)},
+        )
+        if converted:
+            self._stuck.note_action("match_multi", img_path, True)
+        return converted
+
+    def _hud_account(self) -> str:
+        """当前账号名；取不到返回空串（此时 HUD 事件本就无处归位）。"""
+        return str((getattr(self, "_account_override", {}) or {}).get("name") or "")
+
     def _emit_match_hud(self, img_path: str, status: str, score=None,
-                        action: str = "match", x=None, y=None):
+                        action: str = "match", x=None, y=None, detail=None):
         ctrl = None
         if self._task_ctrl and hasattr(self._task_ctrl, "controller"):
             ctrl = self._task_ctrl.controller
         if not ctrl or not hasattr(ctrl, "emit_match_event"):
             return
-        account = getattr(self, "_account_override", {}) or {}
-        name = account.get("name")
+        name = self._hud_account()
         if not name:
             return
-        ctrl.emit_match_event(
-            account=name,
-            img_path=img_path,
-            status=status,
-            score=score,
-            action=action,
-            x=x,
-            y=y,
-        )
+        try:
+            ctrl.emit_match_event(
+                account=name,
+                img_path=img_path,
+                status=status,
+                score=score,
+                action=action,
+                x=x,
+                y=y,
+                # 执行器自己算出来的补充事实（视觉变化/预期场景/关键帧引用）；
+                # 取不到就传 None，让登记侧一律留 None，不冒充（设计 §19.3）。
+                detail=detail,
+            )
+        except TypeError:
+            # 老控制器（不接受 detail）时退回基础字段，遥测降级但不影响执行
+            ctrl.emit_match_event(
+                account=name,
+                img_path=img_path,
+                status=status,
+                score=score,
+                action=action,
+                x=x,
+                y=y,
+            )
+
+    def _save_hud_key_frame(self, frame, *, source: str) -> str:
+        """把关键帧存进当前试运行；拿不到就返回空串（绝不打断执行）。"""
+        name = self._hud_account()
+        if not name or frame is None:
+            return ""
+        try:
+            from backend.script_generator.collaborator_v3.runtime.trial_frames import (
+                save_key_frame,
+            )
+
+            return str(save_key_frame(name, frame, source=source) or "")
+        except Exception:  # noqa: BLE001 - 关键帧是加固，不是主路径
+            return ""
 
     async def click_image(
             self,
@@ -617,14 +869,24 @@ class UserWindow:
         clicked = False
         score = None
         cx = cy = None
+        # 要确认预期场景时，点击记录必须等确认结果一起写：一次点击 = 一条记录
+        exp = (expect or "none").strip().lower()
+        confirm = exp not in ("", "none", "off")
 
         if not self.use_polling_temp_cache:
-            clicked, score, cx, cy = self._match_and_click(
-                img_path=img_path, pianyi=offset, threshold=threshold,
-                use_color_check=use_color_check, match_select=match_select,
-                match_mode=match_mode, pixel_tol=pixel_tol,
-                down_time=down_time,
-            )
+            # 同上：匹配+点击是同步 CPU 活，放线程里跑，别卡住另一个账号
+            from .vision_resource import vision_resource
+
+            owner = self._log_account_name() or f"hwnd:{self._bound_hwnd}"
+            async with vision_resource(kind="hot", priority=0, owner=owner):
+                clicked, score, cx, cy = await asyncio.to_thread(
+                    self._match_and_click,
+                    img_path=img_path, pianyi=offset, threshold=threshold,
+                    use_color_check=use_color_check, match_select=match_select,
+                    match_mode=match_mode, pixel_tol=pixel_tol,
+                    down_time=down_time,
+                    emit_click_hud=not confirm,
+                )
         else:
             key = (
                 str(img_path),
@@ -655,9 +917,15 @@ class UserWindow:
             cy = match.y + offset[1]
             self._click_client(cx, cy, down_time=down_time)
             clicked = True
-            self._emit_match_hud(
-                str(img_path), "ok", score, action="click", x=cx, y=cy,
-            )
+            if not confirm:
+                self._emit_match_hud(
+                    str(img_path), "ok", score, action="click", x=cx, y=cy,
+                    detail={
+                        "raw_xy": (float(match.x), float(match.y)),
+                        "click_offset": (float(offset[0]), float(offset[1])),
+                        "final_xy": (float(cx), float(cy)),
+                    },
+                )
             print(
                 f"{self._target.title}: 点击图片:{img_path}({cx},{cy}), "
                 f"最大匹配度:{score}"
@@ -671,8 +939,7 @@ class UserWindow:
         self._stuck.note_action("click", img_path, True)
         self.invalidate_frame()
 
-        exp = (expect or "none").strip().lower()
-        if exp not in ("", "none", "off"):
+        if confirm:
             try:
                 from backend.script_generator.click_confirm import confirm_after_click
                 ok = await confirm_after_click(
@@ -684,14 +951,25 @@ class UserWindow:
                     threshold=threshold,
                     stable_ms=stable_ms,
                 )
-                if not ok:
-                    self.script_log(
-                        f"[click_image] 确认失败 expect={exp} path={img_path}"
-                    )
-                    self._stuck.note_action("click", img_path, False)
-                    return False
             except Exception as e:
                 self.script_log(f"[click_image] 确认异常: {e}")
+                ok = None
+            # expected_scene_reached 是**业务步骤成功**的观察，与
+            # visual_effect_observed（区域视觉变化）分开记（设计 §19.3）。
+            # 确认过程中抛异常 → 留 None（没观察到，不等于没达成）。
+            self._emit_match_hud(
+                str(img_path), "ok", score, action="click", x=cx, y=cy,
+                detail={
+                    "expected_scene_reached": (None if ok is None else bool(ok)),
+                    "confirm_policy": exp,
+                    "failed_stage": "" if ok else "confirm",
+                },
+            )
+            if not ok:
+                self.script_log(
+                    f"[click_image] 确认失败 expect={exp} path={img_path}"
+                )
+                self._stuck.note_action("click", img_path, False)
                 return False
 
         try:
@@ -700,12 +978,112 @@ class UserWindow:
             self.polling_temp_cache = {}
         return True
 
+    async def click_image_effect(
+            self,
+            img_path: Union[str, Path],
+            pianyi=(0, 0),
+            down_time=0.12,
+            threshold: float = 0.9,
+            use_color_check: bool = False,
+            match_select: str = "best",
+            max_delay: float | None = None,
+            match_mode: str = "image",
+            pixel_tol: float = 8.0,
+            interval: float = 0.15,
+            effect_threshold: float = 0.75,
+    ) -> bool:
+        """点击图片，并用后台新帧中的原目标区域确认视觉反馈。"""
+        del max_delay
+        await self._check()
+        await self._observer.ensure_frame()
+        match = await self.match_image(
+            img_path=img_path,
+            threshold=threshold,
+            use_color_check=use_color_check,
+            match_select=match_select,
+            match_mode=match_mode,
+            pixel_tol=pixel_tol,
+        )
+        if not match or match.x is None:
+            self._stuck.note_action("click", img_path, False)
+            # 连模板都没命中：这次"点击"根本没发生，但失败事实要留痕
+            self._emit_match_hud(
+                str(img_path), "fail", None, action="click",
+                detail={"failed_stage": "match"},
+            )
+            return False
+
+        width = int(getattr(match, "width", 0) or 0)
+        height = int(getattr(match, "height", 0) or 0)
+        if width <= 0 or height <= 0:
+            self.script_log(
+                f"[click_image_effect] 缺少命中尺寸，无法局部确认: {img_path}"
+            )
+            self._emit_match_hud(
+                str(img_path), "fail", getattr(match, "score", None), action="click",
+                detail={"failed_stage": "no_hit_size"},
+            )
+            return False
+
+        offset = human_offset(pianyi)
+        click_x = match.x + offset[0]
+        click_y = match.y + offset[1]
+        self._click_client(click_x, click_y, down_time=down_time)
+        self._stuck.note_action("click", img_path, True)
+        if interval > 0:
+            await asyncio.sleep(float(interval))
+        await self._check()
+
+        left = float(match.x) - width / 2.0
+        top = float(match.y) - height / 2.0
+        region = await self.capture_region(left, top, width, height)
+        from backend.matcher.effect_match import effect_match_score
+        from backend.matcher.matcher import matcher
+
+        score = await asyncio.to_thread(
+            effect_match_score, matcher, region, img_path,
+        )
+        changed = score < float(effect_threshold)
+        # 这就是"目标区域是否发生可观察视觉变化"的实测结果：落成
+        # visual_effect_observed（设计 §19.3），未生效时附上对照区域关键帧。
+        frame_after = ""
+        if not changed:
+            frame_after = self._save_hud_key_frame(
+                region, source="click_effect_region",
+            )
+        self._emit_match_hud(
+            str(img_path), "ok", score, action="click", x=click_x, y=click_y,
+            detail={
+                "visual_effect_observed": bool(changed),
+                "raw_xy": (float(match.x), float(match.y)),
+                "click_offset": (float(offset[0]), float(offset[1])),
+                "final_xy": (float(click_x), float(click_y)),
+                "frame_after": frame_after,
+                "confirm_policy": "effect",
+                "failed_stage": "" if changed else "effect",
+            },
+        )
+        self.script_log(
+            f"[click_image_effect] {'生效' if changed else '未观察到变化'} "
+            f"path={img_path} score={score:.4f} threshold={effect_threshold:.4f} "
+            f"region={width}x{height} interval={float(interval):.3f}s"
+        )
+        if changed:
+            self._note_progress()
+        return changed
+
     def _match_and_click(
             self, img_path, pianyi, threshold,
             use_color_check, match_select,
             match_mode="image", pixel_tol=8.0, down_time=0.12,
+            emit_click_hud: bool = True,
     ):
-        """同步版找图+点击。返回 (ok, score, x, y)。"""
+        """同步版找图+点击。返回 (ok, score, x, y)。
+
+        ``emit_click_hud=False``：调用方还要做 ``expect`` 确认，点击记录必须**等确认
+        结果一起写**，否则一次点击会落成两条 ``input.click_completed``（一条没有
+        ``expected_scene_reached``），诊断链会把同一次点击数成两次。
+        """
         from backend.matcher.matcher import matcher
         from backend.matcher.hotspot_roi import (
             adaptive_match,
@@ -753,9 +1131,17 @@ class UserWindow:
         x = result.x + pianyi[0]
         y = result.y + pianyi[1]
         self._click_client(x, y, down_time=down_time)
-        self._emit_match_hud(
-            str(img_path), "ok", score, action="click", x=x, y=y,
-        )
+        if emit_click_hud:
+            self._emit_match_hud(
+                str(img_path), "ok", score, action="click", x=x, y=y,
+                # §19.3 三件坐标：命中点 / 偏移 / 实际点。都给出来，
+                # 否则 raw_xy 会被当成"实际点"，模型看不出抖动改了多少。
+                detail={
+                    "raw_xy": (float(result.x), float(result.y)),
+                    "click_offset": (float(pianyi[0]), float(pianyi[1])),
+                    "final_xy": (float(x), float(y)),
+                },
+            )
 
         print(f"{self._target.title}: 点击图片:{img_path}({x},{y}), "
               f"最大匹配度:{score}")

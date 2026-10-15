@@ -1,0 +1,51 @@
+{
+  "tools": [
+    {
+      "name": "annotate_cn",
+      "description": "在图片上画中文标注（自动加载系统中文字体，避免问号乱码）。ARGS：{\"image\": 底图路径, \"labels\": [{\"text\":\"...\",\"box\":[x,y,w,h],\"color\":\"#RRGGBB\"}], \"out\": 输出路径可选}",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "image": {
+            "type": "string",
+            "description": "底图：素材名或完整路径"
+          },
+          "labels": {
+            "type": "array",
+            "description": "标注项：[{text, box:[x,y,w,h], color:'#RRGGBB'}]",
+            "items": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "box": {
+                  "type": "array",
+                  "items": {
+                    "type": "number"
+                  }
+                },
+                "color": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "box"
+              ]
+            }
+          },
+          "out": {
+            "type": "string",
+            "description": "输出文件名（默认落会话探针目录）"
+          }
+        },
+        "required": [
+          "image",
+          "labels"
+        ]
+      },
+      "file": "annotate_cn.py",
+      "uses_at_promotion": 2
+    }
+  ]
+}

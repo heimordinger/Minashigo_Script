@@ -31,6 +31,20 @@ from gui.widgets.script_gen_panel.workers import OptimizeWorker, ReviseWorker
 from core.path import SCRIPTS_PATH
 
 
+def optimize_copy_path(source) -> Path:
+    """优化副本路径：<名>_opt.py；已存在就 _opt_2、_opt_3…，绝不覆盖。"""
+    source = Path(source)
+    parent = source.parent
+    suffix = source.suffix or ".py"
+    base = re.sub(r"_opt(_\d+)?$", "", source.stem) or source.stem
+    cand = parent / f"{base}_opt{suffix}"
+    n = 2
+    while cand.exists():
+        cand = parent / f"{base}_opt_{n}{suffix}"
+        n += 1
+    return cand
+
+
 class RuntimeMixin:
     def _update_trial_availability(self):
         has_code = bool((self._generated_code or "").strip())
@@ -63,6 +77,15 @@ class RuntimeMixin:
         )
         self._trial_btn.setEnabled(can_trial)
         self._stop_trial_btn.setEnabled(bool(has_facade and self._trial_running))
+        # 只要有代码或有写盘过的试运行文件就可查看（不依赖账号/主程序连接）
+        view_btn = getattr(self, "_view_trial_code_btn", None)
+        if view_btn is not None:
+            has_trial_file = False
+            try:
+                has_trial_file = bool((SCRIPTS_PATH / _TRIAL_REL).is_file())
+            except Exception:  # noqa: BLE001
+                has_trial_file = False
+            view_btn.setEnabled(bool(has_code or has_trial_file))
         self._account_combo.setEnabled(has_facade)
         self._refresh_acc_btn.setEnabled(has_facade)
         if hasattr(self, "_global_account_combo"):
@@ -216,21 +239,67 @@ class RuntimeMixin:
             name = name[:-3]
         return name or "trial"
 
-    def _write_trial_file(self) -> Path:
-        raw = (self._generated_code or "").strip()
-        if not raw:
-            raise RuntimeError("没有可试运行的代码")
-        from backend.script_generator.pseudo_codegen import inject_pseudo_record_for_trial
+    def _reconcile_tickets_for_target(self, target: dict) -> int:
+        """试运行前把 portable 凭据核验/重签为具体 profile（决定 1）。
 
-        injected = inject_pseudo_record_for_trial(
-            raw, script_name=self._trial_script_name_hint()
+        只核验/重签，**不**拒绝任何交付（硬闸属 Phase 3）；失败不影响试运行。
+        """
+        try:
+            from backend.script_generator.api_contracts import ticket_service
+            from backend.script_generator.execution_profile import profile_from_target
+
+            service = ticket_service.default_service()
+            if service is None:
+                return 0
+            profile, _source, revision = profile_from_target(target)
+            if profile is None:
+                return 0
+            portable = [t for t in service.list_tickets(limit=200) if t.is_portable()]
+            if not portable:
+                return 0
+            outcomes = service.reconcile_for_target(
+                [t.ticket_id for t in portable],
+                runtime_profile=profile,
+                environment_revision=revision,
+            )
+            return len(outcomes)
+        except Exception:  # noqa: BLE001 - 见 docstring
+            return 0
+
+    def _write_trial_file(self) -> Path:
+        """写试运行脚本 —— 与校验/保存**同一条 materializer 流水线**。
+
+        以前这里自己拼一遍（读 ``_generated_code`` → 注入 → 编译检查 → 回退），
+        而校验侧走 ``script_artifact``，两边可能漂移。现在统一调
+        ``materialize_trial_script``：ban gate → （打包已由交付路径做过，标记
+        ``already_bundled``）→ 伪录制注入 + 编译失败回退，产出 ``build.artifact``。
+        校验侧用同一个函数（``verify_artifact``），因此 receipt 的
+        ``artifact_sha256`` 就是这里写盘的那份文本。
+        """
+        bundled = (self._generated_code or "").strip()
+        if not bundled:
+            raise RuntimeError("没有可试运行的代码")
+        from backend.script_generator.script_artifact import (
+            materialize_trial_script,
+            write_materialized,
         )
-        mode = "injected"
-        chosen = injected
-        if not self._code_compiles(injected):
-            # 注入版语法损坏：回退原文，宁可没有伪录制也不能让试运行直接 SyntaxError
-            mode = "raw-fallback"
-            chosen = raw
+
+        script_name = self._trial_script_name_hint()
+        build = materialize_trial_script(
+            bundled,
+            script_name=script_name,
+            already_bundled=True,   # 交付路径已做过素材打包，避免二次打包
+            dry_run=False,
+            ban_snippet=self._trial_ban_snippet(),
+            with_pseudo_record=True,
+        )
+        chosen = build.artifact
+        mode = "injected" if build.artifact != build.bundled else "raw-fallback"
+        if build.ban_blocked:
+            # 禁用区是**阻断式 gate**（不再自动补写）：明确报出来，别静默试运行
+            self._append_trial_log(f"[试运行] ⛔ {build.ban_message}")
+            raise RuntimeError(build.ban_message)
+        if mode == "raw-fallback" and build.bundled:
             self._append_trial_log("[试运行] ⚠ 伪录制注入版编译失败，已回退未注入版本")
         if not self._code_compiles(chosen):
             raise RuntimeError(
@@ -238,25 +307,87 @@ class RuntimeMixin:
                 "请回生成页查看完整代码或点「重修订」后再试运行。"
             )
         _TRIAL_DIR.mkdir(parents=True, exist_ok=True)
-        init_py = _TRIAL_DIR / "__init__.py"
-        if not init_py.exists():
-            init_py.write_text("# trial package\n", encoding="utf-8")
         path = SCRIPTS_PATH / _TRIAL_REL
-        # 原子写：避免任务在写盘中途 import 到半截文件
-        import os as _os
-
-        tmp = path.with_name(path.name + ".tmp")
-        tmp.write_text(chosen, encoding="utf-8")
-        _os.replace(tmp, path)
+        # 原子写与校验**共用同一个 build**：这样磁盘上的文件 hash 就等于
+        # receipt 的 artifact_sha256（见 tests/test_api_contract_materializer.py 的落盘断言）。
+        written_sha = write_materialized(build, path)
         # 双归档：raw / injected 都留，事后可复现注入问题
         if getattr(self, "_archive", None) is not None and self._archive.session_dir:
             try:
-                self._archive.write_text("code_at_trial_raw.py", raw)
+                self._archive.write_text("code_at_trial_raw.py", build.bundled)
                 self._archive.write_text("code_at_trial_injected.py", chosen)
             except Exception as e:
                 print(f"[ScriptGenerator] 归档试运行文件失败: {e}")
         self._append_trial_log(f"[试运行] 写入模式: {mode}")
+        # 记下本次实际运行的产物 hash，供凭证比对/排障
+        self._trial_artifact_hash = written_sha or build.artifact_sha256
+        self._trial_materializer_version = build.materializer_version
+        if written_sha and written_sha != build.artifact_sha256:
+            # 写盘内容与 materialize 结果不一致 = 凭证会失效，必须吵出来
+            self._append_trial_log(
+                "[试运行] ⚠ 落盘 hash 与 materialize 结果不一致："
+                f"{written_sha[:12]} != {build.artifact_sha256[:12]}"
+            )
         return path
+
+    def _trial_code_snapshot(self) -> tuple[str, str]:
+        """当前试运行脚本的（文本, 说明）。
+
+        优先给**实际写盘并被运行的那一份**（``scripts/_trial`` 下的文件 = ``build.artifact``，
+        含伪录制注入/回退结果）；还没写过盘时退回当前生成代码，并说明这一点。
+        读取失败按"拿不到"处理，不猜内容。
+        """
+        try:
+            path = SCRIPTS_PATH / _TRIAL_REL
+        except Exception:  # noqa: BLE001
+            path = None
+        if path is not None and path.is_file():
+            text = ""
+            for encoding in ("utf-8", "utf-8-sig", "gbk"):
+                try:
+                    text = path.read_text(encoding=encoding)
+                    break
+                except (UnicodeDecodeError, OSError):
+                    continue
+            if text.strip():
+                sha = str(getattr(self, "_trial_artifact_hash", "") or "")
+                note = "试运行实际运行的那一份（写盘文件）\n{}".format(path)
+                if sha:
+                    note += "\nartifact_sha256: {}".format(sha)
+                return text, note
+        text = str(self._generated_code or "")
+        if text.strip():
+            return text, "还没写过试运行文件，下面是当前生成代码（试运行时才会物化成上面那种文件）"
+        return "", ""
+
+    def _view_trial_code(self):
+        """查看当前试运行脚本代码（只读快照）。"""
+        from gui.widgets.script_gen_panel.widgets import FullCodeDialog
+
+        text, note = self._trial_code_snapshot()
+        if not text.strip():
+            QMessageBox.information(
+                self,
+                "暂无试运行代码",
+                "还没有可查看的脚本：请先生成，或先点一次「试运行」写入文件。",
+            )
+            return
+        title = "试运行脚本代码（只读）"
+        if note:
+            title += " — " + note.splitlines()[0]
+        dlg = FullCodeDialog(self, code=text, title=title, editable=False)
+        dlg.exec()
+
+    def _trial_ban_snippet(self) -> str:
+        """取协作会话里的禁用区片段（只作为 **gate 条件**，不再被自动前置）。"""
+        try:
+            art = self.engine.session.artifacts
+            if isinstance(art, dict):
+                return str(art.get("ban_script_snippet") or "").strip()
+        except Exception:  # noqa: BLE001
+            pass
+        return ""
+
 
     @staticmethod
     def _code_compiles(code: str) -> bool:
@@ -435,16 +566,24 @@ class RuntimeMixin:
             self._optimize_log.append(line)
             self._optimize_log.moveCursor(QTextCursor.MoveOperation.End)
 
+    @staticmethod
+    def _source_mtime(path) -> float:
+        try:
+            return float(Path(path).stat().st_mtime)
+        except Exception:
+            return 0.0
+
     def _load_optimize_script(self, path: Path) -> bool:
         path = Path(path)
         if not path.is_file():
             QMessageBox.warning(self, "文件不存在", str(path))
             return False
-        # 点选同一文件不重复读盘
+        # 点选同一原文件且原文件没变过：不重复建副本
         if (
-            self._optimize_script_path is not None
-            and path.resolve() == self._optimize_script_path.resolve()
+            self._optimize_source_path is not None
+            and path.resolve() == Path(self._optimize_source_path).resolve()
             and (self._optimize_code or "").strip()
+            and self._optimize_source_mtime == self._source_mtime(path)
         ):
             return True
         try:
@@ -452,8 +591,24 @@ class RuntimeMixin:
         except Exception as e:
             QMessageBox.warning(self, "读取失败", str(e))
             return False
+        # 优化一律在副本上做：原文件只读，副本才是可写入的工作文件
+        copy_path = optimize_copy_path(path)
+        try:
+            import shutil
+
+            shutil.copy2(path, copy_path)
+        except Exception as e:
+            QMessageBox.warning(
+                self,
+                "创建副本失败",
+                f"无法在原文件旁创建优化副本，已中止加载以免误改原脚本。\n"
+                f"原文件：{path}\n原因：{e}",
+            )
+            return False
         self._optimize_code = code
-        self._optimize_script_path = path
+        self._optimize_source_path = path
+        self._optimize_source_mtime = self._source_mtime(path)
+        self._optimize_script_path = copy_path
         self._generated_code = code
         self._note_script_origin(code)
         self._stream_buf = code
@@ -461,9 +616,16 @@ class RuntimeMixin:
             rel = path.relative_to(SCRIPTS_PATH).as_posix()
         except ValueError:
             rel = path.name
-        self._optimize_path_label.setText(rel)
-        self._script_name.setText(path.name)
+        try:
+            copy_rel = copy_path.relative_to(SCRIPTS_PATH).as_posix()
+        except ValueError:
+            copy_rel = copy_path.name
+        self._optimize_path_label.setText(f"原文件 {rel} → 副本 {copy_rel}")
+        self._script_name.setText(copy_path.name)
         self._append_optimize_log(f"[加载] {rel}（{len(code)} 字符）")
+        self._append_optimize_log(
+            f"[副本] 已创建 {copy_rel} —— 后续优化只写这个副本，原文件不再改动"
+        )
         # 加载只读入内存；写入试跑临时文件 + 本地校验延后到「去试运行」
         self._trial_blocked = False
         self._trial_block_reason = ""
@@ -513,7 +675,11 @@ class RuntimeMixin:
             path.write_text(code, encoding="utf-8")
             self._optimize_script_path = path
             self._append_optimize_log(f"[保存] {path}")
-            QMessageBox.information(self, "已保存", str(path))
+            src = self._optimize_source_path
+            tail = ""
+            if src is not None:
+                tail = f"\n\n原文件未改动：\n{src}"
+            QMessageBox.information(self, "已保存到副本", f"{path}{tail}")
         except Exception as e:
             QMessageBox.warning(self, "保存失败", str(e))
 
@@ -536,6 +702,9 @@ class RuntimeMixin:
         if not (self._optimize_code or "").strip():
             QMessageBox.information(self, "无代码", "请先加载脚本。")
             return
+        # 试跑的是优化副本；保存时默认也用副本名，避免误覆盖原文件
+        if self._optimize_script_path is not None and hasattr(self, "_script_name"):
+            self._script_name.setText(self._optimize_script_path.name)
         self._generated_code = self._optimize_code
         self._sync_trial_code()
         self._tabs.setCurrentIndex(self.TAB_TRIAL)
@@ -566,15 +735,21 @@ class RuntimeMixin:
             )
             self._refresh_accounts()
             return
-        # 试跑：按实际就绪目标写入 _target，避免生成脚本 UserBrowser 注解锁死浏览器
-        has_br = name in getattr(ctrl, "_browser_instances", {})
-        has_win = name in getattr(ctrl, "_window_instances", {})
-        if has_win and not has_br:
-            account["_target"] = "window"
-        elif has_br and not has_win:
-            account["_target"] = "browser"
-        elif has_win and account.get("_target") not in ("browser", "window"):
-            account["_target"] = "window"
+        # 试跑：按**唯一解析入口**写入 _target（旧实现在这里和 mixin_collab 各写一份，
+        # 而且查的字典不同 → 可能给出相反倾向；见 script_generator.execution_profile）。
+        # 决定 1：取目标只经 ``_execution_target_payload``（V2/V3 同一个 resolver），
+        # 并在目标确定后把 portable 凭据核验/重签为具体 profile（试运行前的最后一道解析）。
+        from backend.script_generator.execution_profile import CONFIDENCE_AUTHORITATIVE
+
+        target = self._execution_target_payload(account, ctrl)
+        if (
+            target.get("runtime_profile") not in ("", None, "unresolved")
+            and target.get("confidence") == CONFIDENCE_AUTHORITATIVE
+        ):
+            account["_target"] = (
+                "window" if target.get("runtime_profile") == "desktop_user_window" else "browser"
+            )
+        self._reconcile_tickets_for_target(target)
         task_ctrl = getattr(ctrl, "_task_ctrls", {}).get(name)
         if task_ctrl is not None and getattr(task_ctrl, "_future", None):
             QMessageBox.warning(
@@ -592,9 +767,16 @@ class RuntimeMixin:
         self._trial_log_lines.clear()
         self._trial_log.clear()
         self._trial_account_name = name
+        if collab_trial_ctx := self._begin_v3_trial_record(name):
+            # 交给 TaskController 兜底登记（同一份输入，hash 不分叉）
+            account["_collab_trial"] = collab_trial_ctx
+        else:
+            account.pop("_collab_trial", None)
         self._trial_running = True
         self._last_trial_frame = None
         self._stop_frame_path = ""
+        # 协作来源：清上一跑的步骤游标，这一跑从头走
+        self._reset_collab_trial_cursor()
         self._tabs.setCurrentIndex(self.TAB_TRIAL)
         self._set_trial_chip("write", "done")
         self._set_trial_chip("run", "active")
@@ -622,6 +804,10 @@ class RuntimeMixin:
             self._facade.start_task(account, _TRIAL_REL)
         except Exception as e:
             self._trial_running = False
+            self._append_trial_log(f"[试运行] 启动失败: {e}")
+            # 启动就失败也要留结构化异常事件（设计 §19.6 / 验收场景 11）
+            self._record_trial_exception("start", f"{type(e).__name__}: {e}")
+            self._finish_v3_trial_record("error")
             self._set_trial_pseudo_env(False)
             hud = getattr(self, "_trial_hud", None)
             if hud is not None:
@@ -646,6 +832,145 @@ class RuntimeMixin:
     def _append_trial_log(self, line: str):
         self._trial_log_lines.append(line)
         self._trial_log.append(line)
+        task_id = str(getattr(self, "_trial_run_task_id", "") or "")
+        run_id = str(getattr(self, "_trial_run_id", "") or "")
+        if task_id and run_id:
+            try:
+                from backend.script_generator.collaborator_v3.runtime.trial_runs import append_log
+
+                append_log(task_id, run_id, str(line or ""))
+            except Exception as exc:  # noqa: BLE001 - 诊断留痕不能打断试运行
+                print(f"[Collab] 试运行日志登记失败: {exc}")
+
+    def _current_collab_session(self):
+        """Return the authoritative collaboration session owned by the workbench.
+
+        ``self._collab`` is a :class:`CollabWorkbench`, not a
+        ``CollaboratorEngine``.  The old trial bridge looked for
+        ``self._collab.session`` and therefore silently returned no task id even
+        though the visible workbench had a live V3 task.  Keep this lookup in one
+        place so future trial/diagnostic wiring cannot repeat that object-shape
+        mistake.
+        """
+        workbench = getattr(self, "_collab", None)
+        engine = getattr(workbench, "engine", None)
+        return getattr(engine, "session", None)
+
+    def _begin_v3_trial_record(self, account: str) -> dict | None:
+        """协作脚本试跑时登记 run_id；非协作来源不创建无作用域记录。
+
+        返回交给 **TaskController** 的登记上下文（同一份输入）：面板这条登记路
+        失败时，TaskController 会用完全相同的 task_id / script_name / code 补登记，
+        所以 script_hash 不会分叉（设计 §19.6「TaskController 自动登记」）。
+        """
+        self._trial_run_id = ""
+        self._trial_run_task_id = ""
+        session = self._current_collab_session()
+        artifacts = getattr(session, "artifacts", None)
+        task_id = str((artifacts or {}).get("v3_task_id") or "") if isinstance(artifacts, dict) else ""
+        if not task_id:
+            return None
+        ctx = {
+            "task_id": task_id,
+            "session_id": str(getattr(session, "session_id", "") or ""),
+            "script_name": self._trial_script_name_hint(),
+            "code": str(self._generated_code or ""),
+            # 试运行必须能追回主轮（设计 §14.3）：凭证闸门靠它判断
+            # "本轮有没有覆盖当前交付物的复测证据"。
+            "main_turn_id": str((artifacts or {}).get("v3_turn_id") or ""),
+        }
+        try:
+            from backend.script_generator.collaborator_v3.runtime.trial_runs import (
+                bind_active_run,
+                start_run,
+            )
+
+            self._trial_run_id = start_run(
+                task_id=ctx["task_id"],
+                session_id=ctx["session_id"],
+                script_name=ctx["script_name"],
+                code=ctx["code"],
+                account=str(account or ""),
+                main_turn_id=ctx["main_turn_id"],
+            )
+            self._trial_run_task_id = task_id if self._trial_run_id else ""
+            if self._trial_run_id:
+                # 执行器的 match/click HUD 事件据此归位到这次 run（设计 §19.6）
+                bind_active_run(str(account or ""), task_id, self._trial_run_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Collab] 试运行记录创建失败: {exc}")
+        return ctx
+
+    def _record_trial_exception(self, phase: str, message: str) -> None:
+        """把试运行异常写进结构化事件（面板侧；TaskController 侧有同名方法）。
+
+        ⚠️ 必须在 `_finish_v3_trial_record` **之前**调用 —— 收尾会把 run 标记结束，
+        虽然仍可追加事件，但顺序清楚更好排障。
+        """
+        task_id = str(getattr(self, "_trial_run_task_id", "") or "")
+        run_id = str(getattr(self, "_trial_run_id", "") or "")
+        if not (task_id and run_id):
+            return
+        try:
+            from backend.script_generator.collaborator_v3.runtime import trial_runs
+
+            trial_runs.record_exception(
+                task_id, run_id, phase=str(phase or "unknown"), message=str(message or "")
+            )
+        except Exception as exc:  # noqa: BLE001 - 留痕失败不该打断收尾
+            print(f"[Collab] 试运行异常留痕失败: {exc}")
+
+    def _finish_v3_trial_record(self, status: str) -> None:
+        task_id = str(getattr(self, "_trial_run_task_id", "") or "")
+        run_id = str(getattr(self, "_trial_run_id", "") or "")
+        if not task_id or not run_id:
+            return
+        try:
+            from backend.script_generator.collaborator_v3.runtime import trial_runs
+
+            # 先把伪录制时间线接进结构化遥测，再收尾：否则设计 §19.4 的那些
+            # 关键帧/匹配/点击只有伪录制目录知道，trial.* 查询一条都看不到。
+            self._import_pseudo_record_for_run(task_id, run_id)
+            trial_runs.finish_run(
+                task_id,
+                run_id,
+                status=str(status or "unknown"),
+                stop_frame=str(getattr(self, "_stop_frame_path", "") or ""),
+            )
+            trial_runs.clear_active_run(str(getattr(self, "_trial_account_name", "") or ""))
+            # 清掉"最近一次成功匹配"的记忆：下一次试运行不该继承上一次的 match id
+            trial_runs.clear_match_links(str(getattr(self, "_trial_account_name", "") or ""))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[Collab] 试运行记录收尾失败: {exc}")
+
+    def _import_pseudo_record_for_run(self, task_id: str, run_id: str) -> None:
+        """把本次试运行的伪录制时间线导入结构化事件（失败只记日志，不打断收尾）。"""
+        try:
+            from backend.script_generator.collaborator_v3.runtime import pseudo_import
+
+            hint = ""
+            if getattr(self, "_optimize_script_path", None):
+                hint = self._optimize_script_path.stem
+            stats = pseudo_import.import_pseudo_record_for_run(
+                task_id,
+                run_id,
+                script_hint=hint,
+                account_hint=str(getattr(self, "_trial_account_name", "") or ""),
+            )
+            if stats.get("imported"):
+                self._append_trial_log(
+                    "[试运行] 伪录制已导入：{} 条（{}）".format(
+                        stats["imported"],
+                        ", ".join(
+                            "{}×{}".format(k, v)
+                            for k, v in sorted((stats.get("by_kind") or {}).items())
+                        ) or "无",
+                    )
+                )
+            elif stats.get("reason") not in ("", "ALREADY_IMPORTED"):
+                print(f"[Collab] 伪录制未导入: {stats.get('reason')}")
+        except Exception as exc:  # noqa: BLE001 - 遥测加固不能打断试运行收尾
+            print(f"[Collab] 伪录制导入失败: {exc}")
 
     def _on_trial_log(self, account: str, event):
         if not self._trial_running:
@@ -656,9 +981,52 @@ class RuntimeMixin:
         level = getattr(event, "level", "")
         prefix = f"[{level}] " if level else ""
         self._append_trial_log(f"{prefix}{msg}")
+        # 协作来源的试跑：note_state 标记行 → 逻辑步骤游标
+        self._note_collab_trial_log(msg)
         hud = getattr(self, "_trial_hud", None)
         if hud is not None:
             hud.on_log_line(f"{prefix}{msg}")
+
+    def _note_collab_trial_log(self, msg: str) -> None:
+        """试跑日志里出现 ``[MINASHIGO_STEP] <name>`` → 推进协作页步骤游标。"""
+        from backend.script_generator.collaborator.trial_cursor import parse_step_mark
+
+        name = parse_step_mark(str(msg or ""))
+        if not name:
+            return
+        if not self._trial_script_from_collab():
+            return
+        collab = getattr(self, "_collab", None)
+        if collab is None:
+            return
+        try:
+            collab.note_trial_state(name)
+        except Exception as e:  # noqa: BLE001 - 游标失败不能影响试跑日志
+            print(f"[Collab] 试跑游标更新失败: {e}")
+
+    def _reset_collab_trial_cursor(self) -> None:
+        """一次协作试跑开始：清掉上一跑的游标轨迹。"""
+        if not self._trial_script_from_collab():
+            return
+        collab = getattr(self, "_collab", None)
+        if collab is None:
+            return
+        try:
+            collab.reset_trial_cursor()
+        except Exception as e:  # noqa: BLE001
+            print(f"[Collab] 游标重置失败: {e}")
+
+    def _finish_collab_trial_cursor(self, status: str) -> None:
+        """试跑结束：把游标收成轨迹（当前步不再高亮）。"""
+        if not self._trial_script_from_collab():
+            return
+        collab = getattr(self, "_collab", None)
+        if collab is None:
+            return
+        try:
+            collab.finish_trial_cursor(str(status or ""))
+        except Exception as e:  # noqa: BLE001
+            print(f"[Collab] 游标收尾失败: {e}")
 
     def _on_trial_state(self, event):
         if not self._trial_running:
@@ -683,6 +1051,8 @@ class RuntimeMixin:
             if status in ("finished", "stopped", "error", "idle"):
                 self._trial_running = False
                 self._set_trial_pseudo_env(False)
+                # 协作来源：收尾时把游标落成「走过 = 已确认」，保留最后轨迹
+                self._finish_collab_trial_cursor(status)
                 hud = getattr(self, "_trial_hud", None)
                 if hud is not None:
                     hud.set_terminal(status)
@@ -694,6 +1064,7 @@ class RuntimeMixin:
                     self._persist_stop_frame()
                 self._update_trial_availability()
                 self._append_trial_log(f"[试运行] 结束 ({status})")
+                self._finish_v3_trial_record(status)
                 self._set_trial_chip("run", "done")
                 self._update_trial_frame_preview()
                 self._archive_trial_end(status)
@@ -1069,6 +1440,8 @@ class RuntimeMixin:
             "prior_summary": getattr(self, "_last_revise_summary", "") or "",
             "prior_diagnosis": getattr(self, "_last_diagnosis_json", "") or "",
             "chat_session": getattr(self, "_chat_session", None),
+            # 决定 1：修订入口同样带**权威执行目标**（与生成/V3 同一个解析入口）
+            "execution_target": self._execution_target_payload(),
         }
         v_key = self._vision_api_key.text().strip()
         v_model = self._vision_model.currentText().strip()
@@ -1508,13 +1881,12 @@ class RuntimeMixin:
         reply = QMessageBox.question(
             self,
             "确认保存",
-            "确定将当前脚本保存为正式文件吗？\n"
-            "保存时会去掉试运行用的伪录制开关。\n"
-            "保存后可在脚本列表中使用。",
+            "下一步选保存位置和文件名（scripts/ 下，可选子目录或新建文件夹）。\n"
+            "保存时会去掉试运行用的伪录制开关。",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
         self._strip_pseudo_from_working_code()
-        self._save_script()
+        self._save_script(ask_path=True)

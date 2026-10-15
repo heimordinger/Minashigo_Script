@@ -311,6 +311,23 @@ QToolButton#CollabAssetThumb[focused="true"] {
     border: 1px solid #4a7fd4;
     color: #2a2824;
 }
+QToolButton#CollabAssetThumb[selected="true"] {
+    border: 1px solid #b8863b;
+    background-color: #fdf5e6;
+    color: #2a2824;
+}
+QToolButton#CollabAssetDel {
+    background-color: rgba(0, 0, 0, 0.45);
+    color: #ffffff;
+    border: none;
+    border-radius: 8px;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 0px;
+}
+QToolButton#CollabAssetDel:hover {
+    background-color: #d9534f;
+}
 QFrame#CollabPermAsk {
     background-color: #f0ebe3;
     border: 1px solid #d4cdc0;
@@ -345,6 +362,18 @@ QFrame#CollabBubbleUser {
     background-color: #e8f0fc;
     border: 1px solid #b7c9e8;
     border-radius: 12px;
+}
+QFrame#CollabBubbleSupplement {
+    background-color: #fdf6e0;
+    border: 1px dashed #d4b25a;
+    border-radius: 12px;
+}
+QLabel#CollabBubbleRoleSupplement {
+    color: #8a6a1e;
+    font-size: 10px;
+}
+QLabel#CollabBubbleSupplementBody {
+    color: #3a3222;
 }
 QFrame#CollabBubbleSystem {
     background-color: #f0efec;
@@ -385,6 +414,11 @@ QLabel#CollabBubbleSystemBody {
 QLabel#CollabBubbleBody {
     color: #2a2824;
     font-size: 13px;
+    background: transparent;
+}
+QLabel#CollabBubbleTime {
+    color: #8a857c;
+    font-size: 10px;
     background: transparent;
 }
 QFrame#CollabActivityBar {
@@ -455,18 +489,12 @@ QPushButton#CollabSendBtn[busy="true"] {
 QPushButton#CollabSendBtn[busy="true"]:hover {
     background-color: #a84a3a;
 }
-QPushButton#CollabChip {
-    background-color: #f4f2ed;
-    color: #5c5952;
-    border: 1px solid #ddd8ce;
-    border-radius: 10px;
-    padding: 2px 10px;
-    font-size: 11px;
-    max-height: 26px;
+QPushButton#CollabSendBtn[busy="supplement"] {
+    background-color: #b8862c;
+    color: #ffffff;
 }
-QPushButton#CollabChip:hover {
-    border-color: #3b6fd8;
-    color: #2a2824;
+QPushButton#CollabSendBtn[busy="supplement"]:hover {
+    background-color: #a2761f;
 }
 QLineEdit#CollabChatInput,
 QTextEdit#CollabChatInput {
@@ -516,6 +544,9 @@ QFrame#LogicStepCard[stepStatus="preview"] {
 QFrame#LogicStepCard[stepStatus="acked"] {
     border-color: #2e7d32;
 }
+QFrame#LogicStepCard[stepStatus="running"] {
+    border-color: #b8860b;
+}
 QFrame#LogicStepCard[stepStatus="failed"] {
     border-color: #c0392b;
 }
@@ -531,9 +562,40 @@ QLabel#LogicStepBadge {
 }
 QLabel#LogicStepBadge[stepStatus="preview"] { color: #1d4ed8; }
 QLabel#LogicStepBadge[stepStatus="acked"] { color: #2e7d32; }
+QLabel#LogicStepBadge[stepStatus="running"] { color: #8a6100; }
 QLabel#LogicStepBadge[stepStatus="failed"] { color: #c0392b; }
 QFrame#CollabTrialBar {
     background-color: #faf8f4;
     border: 1px solid #e6e1d6;
     border-radius: 10px;
+}
+
+/* ── LLM 选项卡（随消息流出现） ── */
+QFrame#CollabChoiceCard {
+    background-color: #fbf9f5;
+    border: 1px solid #b7c9e8;
+    border-radius: 10px;
+}
+QLabel#CollabChoiceHead {
+    color: #7a776f;
+    font-size: 11px;
+    font-weight: 600;
+    background: transparent;
+}
+QPushButton#CollabChoiceOption {
+    background-color: #ffffff;
+    border: 1px solid #ddd8ce;
+    border-radius: 8px;
+    color: #2a2a28;
+    font-size: 12px;
+    text-align: left;
+    padding: 6px 12px;
+}
+QPushButton#CollabChoiceOption:hover {
+    background-color: #e8f0fc;
+    border-color: #b7c9e8;
+    color: #1c2b45;
+}
+QPushButton#CollabChoiceOption:pressed {
+    background-color: #dbe8fa;
 }

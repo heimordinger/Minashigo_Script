@@ -28,10 +28,15 @@ def is_already_running():
 
                 if os.name == 'nt':  # Windows
                     import subprocess
+                    # tasklist 在中文 Windows 上输出的是 GBK/mbcs 字节，必须容错解码：
+                    # 若外部设了 PYTHONUTF8=1，严格 utf-8 解码会失败并把 stdout 置为
+                    # None，锁检查随即静默失效（可以重复启动两个实例）。
                     result = subprocess.run(['tasklist', '/FI', f'PID eq {pid}'],
-                                        capture_output=True, text=True)
-                    lines = result.stdout.strip().splitlines()
-                    if str(pid) in result.stdout and any('python' in line.lower() for line in lines):
+                                        capture_output=True, text=True,
+                                        errors='replace')
+                    out = result.stdout or ''
+                    lines = out.strip().splitlines()
+                    if str(pid) in out and any('python' in line.lower() for line in lines):
                         return True
                 else:
                     try:

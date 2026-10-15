@@ -115,7 +115,21 @@ class ImageMatchingMixin:
                 x=x, y=y,
             )
 
-        return MatchResult(x=x, y=y, max_val=result.score, match_success=ok)
+        width = getattr(result, "width", None)
+        height = getattr(result, "height", None)
+        if width and height:
+            x2, y2 = self.device_to_css(result.x + width, result.y + height)
+            width = max(1, x2 - x)
+            height = max(1, y2 - y)
+        return MatchResult(
+            x=x,
+            y=y,
+            max_val=result.score,
+            match_success=ok,
+            width=width,
+            height=height,
+            scale=getattr(result, "scale", None),
+        )
 
     async def match_images_parallel(
             self,
@@ -140,7 +154,7 @@ class ImageMatchingMixin:
         return list(await asyncio.gather(*[_one(s) for s in specs]))
 
     def _emit_match_hud(self, img_path: str, status: str, score=None,
-                        action: str = "match", x=None, y=None):
+                        action: str = "match", x=None, y=None, detail=None):
         ctrl = getattr(self, "controller", None)
         if not ctrl or not hasattr(ctrl, "emit_match_event"):
             return
@@ -148,15 +162,29 @@ class ImageMatchingMixin:
             account = self.account["name"]
         except Exception:
             return
-        ctrl.emit_match_event(
-            account=account,
-            img_path=img_path,
-            status=status,
-            score=score,
-            action=action,
-            x=x,
-            y=y,
-        )
+        try:
+            ctrl.emit_match_event(
+                account=account,
+                img_path=img_path,
+                status=status,
+                score=score,
+                action=action,
+                x=x,
+                y=y,
+                # 执行器自己算出来的补充事实（视觉变化/预期场景/关键帧引用）
+                detail=detail,
+            )
+        except TypeError:
+            # 老控制器（不接受 detail）时退回基础字段，遥测降级但不影响执行
+            ctrl.emit_match_event(
+                account=account,
+                img_path=img_path,
+                status=status,
+                score=score,
+                action=action,
+                x=x,
+                y=y,
+            )
 
     async def match_image_multi(
             self,
@@ -279,10 +307,6 @@ class ImageMatchingMixin:
             f"{self.account['name']}: 点击图片:{img_path}({x},{y}), "
             f"最大匹配度:{match.max_val}"
         )
-        self._emit_match_hud(
-            str(img_path), "ok", match.max_val,
-            action="click", x=x, y=y,
-        )
 
         # 方案 F：可选点击后确认（默认 expect=none 不增耗）
         exp = (expect or "none").strip().lower()
@@ -295,19 +319,43 @@ class ImageMatchingMixin:
             mode = get_click_confirm_mode(self)
         except Exception:
             confirm_after_click = None  # type: ignore
-        if confirm_after_click and exp not in ("", "none", "off"):
-            if mode == "off":
-                # 调用方显式 expect 时仍确认
-                pass
-            ok = await confirm_after_click(
-                self,
-                img_path,
-                expect=exp,
-                appear_path=appear_path,
-                timeout=confirm_timeout,
-                threshold=threshold,
-                stable_ms=stable_ms,
+        confirm = bool(confirm_after_click) and exp not in ("", "none", "off")
+        coords = {
+            "raw_xy": (float(match.x), float(match.y)),
+            "click_offset": (float(pianyi[0]), float(pianyi[1])),
+            "final_xy": (float(x), float(y)),
+        }
+        if not confirm:
+            # 一次点击 = 一条记录：要确认时等确认结果一起写（设计 §19.3）
+            self._emit_match_hud(
+                str(img_path), "ok", match.max_val,
+                action="click", x=x, y=y, detail=dict(coords),
             )
+        if confirm:
+            ok = None
+            try:
+                ok = await confirm_after_click(
+                    self,
+                    img_path,
+                    expect=exp,
+                    appear_path=appear_path,
+                    timeout=confirm_timeout,
+                    threshold=threshold,
+                    stable_ms=stable_ms,
+                )
+            finally:
+                # 确认抛异常时也要留痕（expected_scene_reached 留 None），
+                # 且**不改**异常传播行为：老实现里异常直接抛给调用方。
+                self._emit_match_hud(
+                    str(img_path), "ok", match.max_val,
+                    action="click", x=x, y=y,
+                    detail={
+                        **coords,
+                        "expected_scene_reached": (None if ok is None else bool(ok)),
+                        "confirm_policy": exp,
+                        "failed_stage": "confirm" if ok is False else "",
+                    },
+                )
             if not ok:
                 print(
                     f"[Browser.click_image] 确认失败 expect={exp} path={img_path}",

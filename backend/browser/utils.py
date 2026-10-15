@@ -18,10 +18,13 @@ def get_port(start=9222) -> int:
 
 def kill_by_port(port: int):
     cmd = f'netstat -ano | findstr :{port}'
-    result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+    # netstat 的表头在中文 Windows 上是 GBK 字节，必须容错解码，
+    # 否则（例如外部设了 PYTHONUTF8=1 时）stdout 会变成 None，端口清理静默失效。
+    result = subprocess.run(cmd, shell=True, capture_output=True, text=True,
+                            errors='replace')
 
     pids = set()
-    for line in result.stdout.splitlines():
+    for line in (result.stdout or '').splitlines():
         m = re.search(r'\s+(\d+)$', line)
         if m:
             pids.add(m.group(1))

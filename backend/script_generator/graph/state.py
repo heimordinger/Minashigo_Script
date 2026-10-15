@@ -20,6 +20,9 @@ class ScriptGenState(TypedDict, total=False):
     max_fix_retries: int
     max_tokens: int
     free_mode: bool
+    #: 是否是"状态机脚本"。协作/线性脚本传 False：它们的交付闸（collab_script_issues）
+    #: 本来就不查 STATES / unknown_state，按 FSM 判会把好脚本误杀。
+    require_fsm: bool
 
     # intermediate
     plan: str  # display / fallback text

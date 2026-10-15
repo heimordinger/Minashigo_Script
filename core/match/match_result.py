@@ -10,6 +10,9 @@ class MatchResult:
     y: Optional[int]
     max_val: float
     match_success : bool = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    scale: Optional[float] = None
 
     def __iter__(self):
         yield self.x

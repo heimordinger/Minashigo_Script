@@ -39,17 +39,22 @@
     "deepseek": {
       "label": "DeepSeek",
       "api": "openai",
-      "supports_images": false,
+      "supports_images": true,
+      "image_models": [
+        "deepseek-flash",
+        "deepseek-v4-flash",
+        "deepseek-v4-flash-vision-exp"
+      ],
       "supports_tools": true,
       "models": [
+        "deepseek-flash",
         "deepseek-chat",
         "deepseek-reasoner",
         "deepseek-v4-flash",
-        "deepseek-v4",
         "deepseek-v4-pro"
       ],
       "default_endpoint": "https://api.deepseek.com",
-      "hint": "官方 https://api.deepseek.com。已开工具调用（临时脚本、查窗口）；看图仍请配「辅助识图」。deepseek-reasoner 不走工具。"
+      "hint": "官方 https://api.deepseek.com。deepseek-flash 原生支持视觉；旧 deepseek-v4-flash 暂为兼容别名。其他模型需要辅助识图；deepseek-reasoner 不走工具。"
     },
     "google": {
       "label": "Google Gemini",

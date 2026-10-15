@@ -400,6 +400,9 @@ idle → understand → [clarify] → explore → propose_logic
 | `multi_count` | 帧+模板 / helper | 计数矩阵、best、叠加图 | 结界数章等 |
 | `scale_probe` | 帧+模板 | 推荐 scale | 定标 |
 | `list_assets` | 素材目录 | 清单 | 缺图时引导 |
+| `mark_on_image` | marks(rect / x,y)+图 | 标注图（role=annotation） | 在图上圈出来给人看 |
+| `define_tool` | name/desc/params/code | 登记自造工具 | 手不够用时自己造 |
+| `list_custom_tools` / `delete_custom_tool` | — / name | 自造工具清单 / 删除 | 管理自造工具 |
 | `read_unit` / `patch_unit` | 已有修订 tools | 同现网 | 外科修订 |
 | `pseudo_summary` | record 目录 | 有效耗时摘要 | 优化入口 |
 
@@ -454,12 +457,176 @@ Skill 给模型与内部 Agent 读；**不**当作用户教程塞进主 UI。
 
 ### P1 — 闭环
 
-- [ ] 「看起来对」→ 调 v1 codegen（注入 LogicGraph/自动介绍）  
-- [ ] 试跑 `note_state` ↔ 画布游标  
-- [ ] 现象级修订（点步骤「不对」→ revise）  
-- [ ] 空板/寮 2×N 与个人 3×3 回归  
+- [x] 「看起来对」→ 调 v1 codegen（模型写「生成用介绍」→ 经典 generate 管线出码）  
+- [x] 试跑 `note_state` ↔ 画布游标（2026-09-21，见 §10.2）  
+- [x] 现象级修订（点步骤「不对」→ 自动带上下文进对话，见 §10.2）  
+- [ ] 空板/寮 2×N 与个人 3×3 回归 —— **未完成**：合成帧复现不稳；真图已拿到并定出根因（hint 0.6 vs 实测 0.682，见 §10.3.1），但阈值未改
+- [x] Agent 自查三件套：标准答案 / 异常哨兵 / 尺度对照（2026-09-21，见 §10.7）  
 
-#### 10.1 出码交付兜底（2026-09-19）
+#### 10.1 出码桥：协作确认 → 经典 generate（2026-09-19）
+
+「看起来对」之后不再让模型自由写整份脚本，改成两步：
+
+| 步骤 | 谁做 | 产物 |
+|------|------|------|
+| 写「生成用介绍」 | 协作 LLM（form 新字段 `intro`：目的 / 场景标识 / 图片说明 / 任务流程 / 特殊规则） | `session.intro_text` |
+| 出码 | 经典 `generate_script`（`codegen_bridge.generate_from_logic`） | 脚本 + plan/checklist/架构闸 |
+
+桥接细节：
+
+- 素材物化：会话素材（`role != frame`）拷进 `assets/images/_collab/<session_id>/`，用素材别名做可读文件名，
+  作为经典 `source_dir`；整帧截图不当模板。
+- 主模型看不了图时自动不传图，并改用 API 配置里的辅助识图生成文字目录（复用经典两条路径）。
+- 模型没给 `intro`（或只想聊天）时，用 `build_fallback_intro` 把 LogicGraph 摊成经典介绍格式兜底
+  （已验证能被 `execution_checklist` 抽出步骤 + 素材）。
+- 出码结果仍过协作交付闸（机械归一 + 试运行同闸）；失败则退回 `PROPOSE_LOGIC`，
+  并自动兜底为「模型直接写 script」（chips 也可手动选「重新生成 / 让模型直接写代码」）。
+- 待补：出码期可中止（现在只丢弃结果）；outro 归档（`corpus/sessions`）尚未接协作来源。
+
+#### 10.2 试跑游标与现象级修订（2026-09-21）
+
+**A. `note_state` ↔ 画布游标**
+
+契约（§4.1 C / §6）落地为一条日志协议 + 一个纯逻辑模块：
+
+| 环节 | 落点 | 行为 |
+|------|------|------|
+| 运行层 | `user_window.note_state` / `user_browser.note_state` | 状态名**真变化**时打一行 `[MINASHIGO_STEP] <name>`（FSM 每轮都调，不能每轮刷屏） |
+| 解析/匹配 | `collaborator/trial_cursor.py`（新） | `parse_step_mark` / `match_step_id`（精确 > 前缀 > 词元包含），候选只来自 LogicGraph 自己的 step id —— **认不出就不动卡片**，游标宁可不走也不乱跳 |
+| 引擎 | `engine.begin_trial_cursor` / `note_trial_state` / `end_trial_cursor_run` | 到过的步骤：末位=`running`，其余=`acked`；人工标过的 `failed` 不被覆盖 |
+| GUI | `mixin_runtime._note_collab_trial_log` → `mixin_collab.note_trial_state` | 试跑日志走 `singleShot(0)` 干净栈重画步骤卡；开跑清游标、收尾落成轨迹 |
+| 恢复 | `session.last_trial_trace` | 重开会话重放轨迹，步骤卡接着显示「试跑至此」 |
+
+只对**协作来源**的脚本生效（`_trial_script_from_collab`），经典脚本不受影响。
+样式：dark/light 的 `script_gen.qss` 补 `stepStatus="running"` 一组。
+测试：`tests/test_collab_trial_cursor.py`（18 例，含「运行层→解析→引擎」整链一条）。
+
+**B. 现象级修订（点步骤「不对」）**
+
+- `collab_form.build_step_revision_request(step, session, logs=...)` 替用户写成一条修订请求：
+  「不对：第 N 步「标签」」+ 原条件/说明 + **最近试跑日志节选**（只挑 错误/Traceback/警告/`[状态]`/`[MINASHIGO_STEP]`，≤18 行，≤4000 字符）。
+- 没有证据（没脚本也没日志）时**不自动发**，只回一句人话引导补现象 —— 避免无凭据乱改。
+- `mixin_collab._on_step_wrong`：有证据就 `_on_user_send` 进正常对话回合（走同一套预算/契约/续轮）；
+  上一轮还在跑则排队提示；没配 API 则把写好的请求填进输入框并提示去配。
+- 测试：`tests/test_collab_step_revision.py`（7 例：证据筛选、噪声不算证据、日志切片有界、无证据只引导）。
+
+#### 10.3 结界数章回归：未完成 + 观察到的问题（2026-09-21）
+
+目标是补「空板不误检 / 寮 2×N / 个人 3×3」回归（§10 P1 最后一项）。**结论：没交付**——
+合成帧上聚类行为对「卡内勋章间距 / 卡距 / 行距」的比例极敏感，我画的合成板与真实截图
+（真实模板 39×35、`medal_scale_hint=0.6`）对不上，测试反复在「测试自己的版式误差」上失败。
+`scripts/yys/结界勋章.py` 已**还原原样**，未跑通的测试文件已删除。
+
+过程中在 `scripts/yys/结界勋章.py` 读到三处**可疑行为**（有合成帧证据、未用真图定案）：
+
+1. `_filter_sidebar_hits` 左护栏用「卡内间距 × 3.5」；个人 3×3 只有 3 列、卡内间距又小时，
+   这个值会超过「第一列 → 整块中位」的距离 → **第一列可能被整列丢掉**。
+2. `group_hits_to_grid` 里「单枚 + 本行最左 → 当噪声丢弃」会把**只拿 1 枚勋章的第一张对手卡**
+   丢掉 → 网格少一列、列数据左移一格。
+3. 切行阈值用 `median(全体 y 差值) × 0.5`：三行、每行三张卡（卡内只 1 枚）时差值里没有重复项，
+   中位数被行间距本身带跑 → 三行并成一行。
+
+要定案需要**真实游戏截图**（放到 `screenshots/` 或 `assets/images/yys/结界/` 下即可）。
+拿到图之前不要凭合成帧改这三个阈值 —— 现有识别链在真图上是能用的。
+
+#### 10.3.1 真图证据 + 「Agent 为什么发现不了」（2026-09-21，同批）
+
+后来拿到了真实结界截图（1156×649，3×3 九张对手卡，用户确认**只有第 1 行右卡有 3 枚勋章**，
+即 `003/000/000`）。结论：
+
+| 项 | 实测 |
+|---|---|
+| `layout.json` 的 `medal_scale_hint` | **0.6** |
+| hint=0.6 处的匹配峰值 | **0.414**（远低于 0.75 阈值）→ 数章 **0 命中**、被当成空板 |
+| 模板最佳尺度 | **0.682**，峰值 **0.844** |
+| 仓库自带的 `calibrate_medal_scale()` | 其实**算对了**（0.682 / 0.844） |
+| 但 `resolve_medal_scale()` 没用它 | 被 `_RECALIBRATE_MIN_PEAK = 0.88` 挡住（0.844 < 0.88）→ 回退 hint 0.6 |
+
+也就是说：**不是算法不会算，是一个过严的门槛把正确结果挡掉了。**
+两个 ss 独立检测在两个尺度下都在同一位置（第三列卡名字行）找到那 3 枚，与用户答案一致。
+
+同一批还暴露出协作 Agent 自己的三个能力缺口（这才是本节的重点）：
+
+1. **没有 ground truth 入口** —— 用户说「实际是 003/000/000」这句话在填表协议里没有落点
+   （`EMPTY_FORM` 只有 reply/plan/done_when/...），Agent 即使量错也无从知道，更存不下正确答案。
+2. **没有异常哨兵** —— `rows=1, cols=1, hits=3`（明明有命中却只认出一格）不报错、不抛异常，
+   Agent 看不出「这一栏本该是 9」。空板是合法状态，所以它也没动机去怀疑。
+3. **没有尺度对照** —— `layout.json` 的 hint 过时这件事，代码里已经算出 0.682/0.844，
+   但没有任何地方把「hint 峰值 0.414 vs 最佳 0.844」摆到模型眼前。
+
+#### 10.7 Agent 自查三件套：标准答案 / 异常哨兵 / 尺度对照（2026-09-21）
+
+对应上面三个缺口，新增 `collaborator/tool_sanity.py` 与 `collaborator/scale_ops.py`：
+
+| # | 能力 | 落点 | 行为 |
+|---|------|------|------|
+| ① | **标准答案** | 表单新字段 `answer` + `session.artifacts["ground_truth"]` | 表单新增 `answer`（**只有用户明确给出事实时才填，否则 null**）；`remember_answer` 去重记账（≤8 条）；每轮状态摘要回灌`【用户给的标准答案】（权威，高于工具实测）`；`ground_truth_conflict` 发现"标准答案里的数字在最近实测里一个都找不到"时，`check_done_when` **直接拒绝判完成**并把实测结论退回重查 |
+| ② | **异常哨兵** | `sanitize_tool_result`（`make_tool_resolver` 里统一 `_pack()`） | 网格类：`cols<=1 且有命中` → 明确写出「对手板通常是 3×3 / 2×N，只有一处命中时聚不出网格，**不代表画面里只有一张卡**」；全 0 → 提示"空板 vs 尺度/阈值"两种可能；尺度类：hint 与实测尺度差 >15% 且绝对值差 ≥0.03 → 报失配；匹配类：未命中但分数贴着阈值 → 建议先 `scale_sweep`；探针类：`result` 为空 → 提示"这一轮等于没测"。**只加 `_sanity` 字段，不改任何原值** |
+| ③ | **尺度对照** | `scale_ops.scale_probe/scale_sweep` + 探针命名空间 + `match_template` 返回 | 探针预置 `layout_hint()` / `scale_probe()` / `scale_sweep()` / `calibrate_medal_scale` / `resolve_medal_scale`；`match_template_on_frame` 每次返回都附 `scale_hint` / `best_scale` / `peak_at_hint` / `peak_at_scale`（命中时也带，便于回答"这次用的什么尺度"），未命中且判定 hint 过时才附 `scale_advice` |
+
+另外：`remember_measurement` 把每次实测的关键数字存进 `artifacts["measurements"]`（≤12 条），
+状态摘要里以`【系统实测记录】`回灌，让"我上一轮量到了什么"不再只靠对话历史。
+
+测试：`tests/test_collab_ground_truth.py`（23 例：接得住纠正 / 冲突拦截 done_when / 哨兵五种情形 /
+哨兵不该吵的情形 / 尺度探针能定位最佳尺度 / 探针命名空间与匹配返回带对照）。
+设计原则与既有 `authority.py` 一致：**用户确认 > 自动实测 > 诊断**，这次是把"用户确认"从"口头"变成"可落盘"。
+
+#### 10.8 自造工具 / 图上标注 / 焦点退场（2026-09-22）
+
+一次性收掉四个老毛病，新增 `collaborator/reusable_tools.py` 与 `collaborator/annotation.py`：
+
+| # | 问题 | 改法 |
+|---|------|------|
+| ① | **「手上没这个工具」→ 反问用户** | 新增 `define_tool` / `list_custom_tools` / `delete_custom_tool`。模型先用 `run_probe_script` 把事做出来，再用 `define_tool` 登记（name/description/parameters/code，脚本从 `ARGS` 取参、结论赋 `result`）；`all_collab_tools()` = 内置 + 自造，每轮工具表都带上。持久化 `user_data/collab_tools.json`（≤24 个，20KB/个），执行仍受 `probe_script` 权限约束 |
+| ② | **「在图上标出来」没有正经工具**（只能手写 cv2 或干脆答"做不到"） | 新增 `mark_on_image` + `annotation.py`（rect/circle、颜色名或 #hex、序号、标题横幅），坐标按**原图像素**。探针命名空间同时暴露 `mark_image` / `list_assets` / `save_image` |
+| ③ | **标注产物混进场景素材**，被拿去当识别/匹配对象 | 标注图以 `group=标注` / `role=annotation` 登记，`is_scene_asset()` 把它排除在模板匹配、自动匹配之外；素材摘要里明确标「（标注图，不是场景素材）」 |
+| ④ | **焦点静默回退** —— 省掉 `asset_id` 就悄悄用「焦点素材」，事后归错模板 | `resolve_template_path()` 不再回退，直接报「请提供 asset_id 或 template_path」。`focus_asset` 工具、表单字段 `focus_assets`、状态摘要里的焦点字段全部删除；GUI 里的星星标记保留（纯用户侧观感） |
+
+配套：
+
+- **需求 2：焦点不再进提示**。模型的世界里没有「焦点」这回事；素材一律 id/name 点名。
+  `_infer_need_permission_from_text` 改为**请求语气感知**（同句要有权限名词 + 明确请求口吻，
+  且排除假设语气），修掉「解释性提一句授权就被弹卡」。
+- **素材清单进状态摘要**（`assets_summary_for_prompt` 原本是死代码）：模型看不到界面，
+  不给清单就只能反问「你说的是哪张」。
+- **done_when 新增 `已有标注图`**（`has_mark`），产物校验走素材区里的 `role=annotation`；
+  `ground_truth_block` 措辞从「全局权威」改为**按指标权威**。
+- 能力契约的缺口提示改成「先用 run_probe_script 做出来，再 define_tool 登记」，
+  不再一律劝「请用户操作或换工具」。
+
+测试：`tests/test_collab_custom_tools.py`（24 例：登记/校验/持久化/schema、走真探针执行器的
+执行管线与权限闸、坐标归一与绘制、标注素材与场景素材分离、焦点回退已移除、素材清单与
+标注图进入状态摘要、`has_mark` 需真产物）。
+
+#### 10.4 出码交付兜底（2026-09-19）
+
+**10.5 Agent 能力契约与"手"（2026-09-19，同批）**
+
+**10.6 续轮预算与"继续"语义（2026-09-20）**
+
+起因：模型每轮写 `turn=act`（未做完），系统内部只自动续 3 轮，用完就把"未完成"渲染成一个空洞的
+「继续」丢给用户；用户点一次 = 重跑一整轮 LLM，但若卡在坏点上（例如裁剪产物文件名坏掉）永远同一个结果。
+
+| 项 | 现在 |
+|---|---|
+| 自动续轮 | 上限 8 轮（原 3），并受 token 20 万 / 240 秒预算约束，任一超限即停 |
+| 停下时 | 必须说明原因 + 停在哪一步 + 建议，不再给空洞「继续」 |
+| 无进展检测 | `_progress_fingerprint` 只统计系统侧真产出（素材/匹配 overlay/逻辑步骤/代码长度/裁剪路径/窗口检查/探针/识图）；连续 2 轮指纹不变 → 判定"嘴上推进"，立刻停并汇报 |
+| 芯片语义 | 未完成且系统还能做 → 「继续这一步」（带当前步骤）；判定卡住 → 「换个做法 / 我来手动处理」两条明确出路 |
+
+- **能力契约**：plan 每步可带 `needs`（`tool:xxx` / `permission:xxx` / `user:说明`）。引擎每轮核对：
+  工具不存在 → 不许当成「我去做」，强制再走一轮改计划；权限没给 → 强制 `turn=ask` + 授权芯片。
+  起因：Agent 承诺「裁剪图片4」，而工具箱里没有任何裁剪能力，plan 那一步永远挂着。
+- **完成要证据**：`done_when` 新增 `已有裁剪素材` / `已有匹配结果`，由系统核对真实产物
+  （`artifacts.last_crop`、素材区「裁剪/探针」组、match overlay），没有产物不算完成。
+- **补手**：新增 `crop_asset`（素材 id + 归一化矩形 → `screenshots/collab_crops/<会话>/` →
+  自动进素材区并聚焦）；探针 `save_image` 的产出在执行后自动登记进素材区，并用 `new_assets` 回报给模型。
+- **权限**：`write_files` 默认开——探针脚本本身已能跑任意 Python，卡住 `save_image` 只挡住产出、挡不住风险；
+  `runtime_control` 仍默认关。
+- **上下文与修复**：续写历史加 60k 字符总预算（保首轮介绍 + 最近轮次）；
+  `patch_do_work_dual_target` 改为按符号独立补 import，修掉「已有 UserWindow import 就跳过补 UserBrowser」
+  导致的多轮重修；每次 LLM 调用写 `llm_call` 事件（tokens + 上下文体积）。
+- **可观测**：协作活动条超过 45 秒没有新内容，会提示「可能卡住，可停止重试」。
 
 模型交回的 `script` 先过一遍**机械归一**（`collab_form.normalize_collab_script`），只补不改逻辑：
 
@@ -481,9 +648,88 @@ Skill 给模型与内部 Agent 读；**不**当作用户教程塞进主 UI。
 不进正式任务列表（`scan_process_tasks` 跳过）并加入 `.gitignore`；用户确定要用某个脚本时，
 自己复制到 `scripts/<游戏>/` 即可。
 
-### P2 — 外行打磨
+**转正入口**：试跑通过在试运行页点「确认完成并保存」时弹保存对话框，用户自己选 `scripts/`
+下的目录与文件名（默认预填当前脚本名，可选子目录或新建文件夹）；落在 `scripts/` 之外会被拦下重选。
+保存成功后记住该目录 / 文件名，并提示脚本列表刷新方式。草稿文件保留在 `_collab/`，不自动删除。
+注意：协作脚本的 `IMG_DIR` 仍指向 `assets/images/_collab/<session_id>/`，转正后若清理该目录需同步搬素材。
 
-- [ ] 澄清题库（选项化）+ 连续提问上限  
+#### 10.9 会话体检首批修复（2026-09-24）
+
+起因：`tools\_scratch\diag_collab_session.py` 对着实况会话 `20260922_101614_chat.json`
+逐条复现了 6 项已知缺陷，外加 5 项体检没覆盖到的。判据一律**回到根因**，不只压症状。
+
+| # | 现象（实况数据） | 改法 | 测试 |
+|---|---|---|---|
+| ① | 表外英文 CoT 整段当 `reply` 上屏（第 193/199/201/203 条） | `collab_form.looks_like_reasoning` 丢弃；`llm_turn._repair_form_followup` 退回一次「只输出表」 | `test_collab_reply_leak.py` |
+| ② | 探针产出图 `role="template"` → 被当界面内容反复识图（4 张 / 9 次） | `PROBE_ROLE` / `PROBE_GROUP`；`is_scene_asset` 排除；显式引用仍可用 | `test_collab_probe_role.py` |
+| ③ | 「空格子」42 假阳性，旧闸 `极差<0.02` 实测 0.022466 漏过 | 换「灰度标准差 / 峰值比 P90 / 点阵规律（众数步距+覆盖率）」三条判据 | `test_collab_empty_template_gate.py` |
+| ④ | `logic_draft` 悬挂引用 → 草稿没落地 → `task_done` 报错打偏 | `prune_dangling_draft_refs` + `task_done_evidence_gap` 分型 | `test_collab_draft_recovery.py` |
+| ⑤ | 预算暂停后 `turn=stop`，用户没有续跑入口（敲了 8 次「继续」） | `form_ui_state` 按 `last_auto_pause` 补「接着做完」芯片 | 同上 |
+| ⑥ | 旧全局 `ground_truth` 里两条互斥答案并存 | `session.migrate_legacy_artifacts` 读/存盘都归档成 `legacy_ground_truth` | `test_collab_ground_truth_mutex.py` |
+| ⑦ | 退化视觉框（36×45 图 / 自报 808×1014）被 clamp 成零面积 | 主换算不可用时按自报尺寸回缩，仍不可用标 `valid=False`；`crop_asset` 拒绝 | `test_collab_vision_and_spin.py` |
+| ⑧ | 覆盖计数掺幽灵（`23/8` 类） | 分子取 `inspected ∩ 现存`，幽灵另注 | 同上 |
+| ⑨ | 同图同工具 4 秒内跑 4 次、探针 result 全空 | `repeat_without_result` 执行前硬闸 | 同上 |
+
+**验收**：`pytest tests\test_collab_*.py` 260 passed；`tests\test_*.py` 全量 356 passed / 27 skipped；
+体检脚本 ⑤ 从「5 条互斥答案」变成「当前图片的用户说法 0 条；已归档 5 条」。
+
+**仍未修**：`done_when` 与计划互斥（体检 #4）在当天实况里又复现，见 `AGENTS.md` 已知缺陷"仍未修"。
+
+### 10.10 素材区复制（2026-09-24）
+
+起因：素材区只支持「复制进去」（聊天区粘贴 / 拖入 / 导入），**没有「复制出来」**——
+缩略图右键只有 底图 / 重命名 / 移出 / 导入 / 清空，想把某张模板拿去别处用只能去翻
+`screenshots\collab_*` 目录。
+
+| 入口 | 行为 |
+|---|---|
+| 右键 → 复制 → 图片 | 位图进剪贴板，可直接粘到聊天框、文档、画图 |
+| 右键 → 复制 → 文件路径 | 路径进剪贴板 |
+| 右键 → 复制 → 素材 id | `[[asset_xxx]]` 进剪贴板（对话里点名素材的写法） |
+| 右键 → 在文件夹中显示 | `explorer /select,` 定位文件 |
+| `Ctrl+C` | 复制**选中**缩略图的图片；只选中一张时可不先点 |
+
+- 「选中」是 GUI 侧概念（琥珀色边框，`_selected_aid`），与后端「焦点素材」（★，蓝框，
+  影响匹配/识图）不是一回事，**不要**复用 `focused` 属性。
+- `Ctrl+C` 用 `WidgetWithChildrenShortcut` 限定在素材区子树，避免抢走聊天输入框的
+  Ctrl+C；为此缩略图设了 `StrongFocus`。
+- 结果反馈走 `notice` 信号 → 聊天区 system 气泡。
+- 测试：`tests\test_collab_asset_copy.py`。
+
+### 10.11 可操作 API 错误弹窗（2026-10-07）
+
+明确且用户能直接处理的 API 错误，不再把整段供应商异常作为主要界面反馈：
+
+- 当前先识别 `402 / Insufficient Balance`（同时兼容中文「余额不足」）。
+- GUI 主线程弹出「API 余额不足」，明确提示充值或更换「1. API 配置」中的账号 / Key。
+- 聊天气泡同步使用简短说明，不显示 request id 和供应商错误对象。
+- 原始异常仍完整写入 runtime 日志，未知异常继续走原有失败流程，便于溯源且不掩盖问题。
+- 映射入口统一放在 `collab_api_error_notice()`，后续可按同一方式增加认证失败、限流等类别。
+- 测试：`tests\test_collab_api_error_notice.py`。
+
+### 10.12 V4 标图证据闸（2026-10-08）
+
+起因：新会话虽读取了 `visual-locate-and-mark` skill，却没有查看“勋章”参考图、没有执行
+`match_template_multi`，直接把视觉模型给出的 5 个粗框传给 `mark_on_image`；粗框落在头像上，
+Runtime 仍因“成功画出 5 个框”放行完成。
+
+现把关键流程从提示建议升级为 Runtime 强制约束：
+
+| 闸门 | 拒绝码 | 规则 |
+|---|---|---|
+| 素材检查 | `REFERENCE_ASSET_NOT_INSPECTED` | 存在参考素材时，原图和每张参考图都必须先分别 `inspect_asset` |
+| 候选来源 | `VERIFIED_CANDIDATES_REQUIRED` | 视觉粗框不能直接绘制；须有同一原图+参考图上的成功 `match_template_multi`，且结果未截断、非 ambiguous |
+| 数量一致 | `MARK_CANDIDATE_COUNT_MISMATCH` | 标记数必须等于本地候选数，防止把整排当一个目标或漏画 |
+| 坐标对应 | `MARK_NOT_GROUNDED` | 每个标记中心必须唯一对应一个本地匹配候选，禁止裸猜坐标 |
+| 成图复核 | `ANNOTATION_OUTPUT_NOT_VERIFIED` | 最新标注产物必须再经 `inspect_asset(mode=verify)`，之后才允许 `completed=true` |
+
+V4 的 `capability_result` 同时保留 `capability_name` 与实际 `arguments`，使证据能核对所用模板、
+目标原图和复核模式，而不是仅凭工具名“调用过”。拒绝结果进入 `recent_runtime_results`，模型下一副轮
+能看到精确缺口并补齐步骤。共享 `mark_on_image` 工具说明也同步强调“只绘制、不识别”。
+
+测试：`tests\test_collab_v4_protocol.py`。
+
+### P2 — 外行打磨- [ ] 澄清题库（选项化）+ 连续提问上限  
 - [ ] Skill 包齐；缺素材引导「请截哪」  
 - [ ] 会话归档 / 一键导出介绍+脚本  
 - [ ] 旧 Tab 与新轨设置项  
@@ -555,3 +801,53 @@ Skill 给模型与内部 Agent 读；**不**当作用户教程塞进主 UI。
 5. **API 配置**：首次缺失时弹窗，还是必须先去高级页？  
 
 确认后可按 P0 清单拆任务开工。
+### 需求契约表（V3，2026-10-08）
+
+- 新主轮第一副轮固定为需求分析轮：LLM 只能用 `update_plan.requirement_contract`
+  填写目标、任务类型、素材角色、覆盖范围、交付物、质量强度、验收条件与歧义。
+- 本地执行语义下限：`标出/圈出/框出` 至少交付 `annotated_image`，
+  `所有/全部/每个` 强制 `coverage=all`，避免模型在表中静默降低标准。
+- 补充不一律重填：普通继续、授权、确认、重试沿用现有契约；可能改变目标、范围、
+  交付物、验收标准或素材绑定的自由文本补充，将契约标成 `revision_required`，
+  下一副轮只接受同结构的修订表，原契约在修订成功前仍完整保留。
+
+### V4 未完成需求跨主轮继承（2026-10-09）
+
+- 主轮仍然隔离，不回放上一主轮完整消息；本地只维护结构化的
+  `v4_unfinished_requirements` 任务卡（目标、交付物、验收标准、剩余缺口、有效素材绑定与证据）。
+- 新主轮首张需求表固定判断新旧需求关系：用户明确指定的范围优先；未指定时，兼容或无关需求
+  一并纳入，互斥需求由新需求覆盖旧需求；只有无法可靠判断时才暂停并给出 2~3 个确认选项。
+- 被覆盖或明确放弃的旧需求写入 `superseded_requirement_ids`，后续不再复活；已删除素材的绑定
+  在进入首轮表前剔除。完成合并后的活跃需求会清除对应任务卡；副轮/无进展上限导致的暂停则保留为
+  `blocked`，供下一主轮继续。
+- `submit_response.completed=false` 不再被记成 completed，而是落为 `incomplete`。同主轮的
+  `v4_waiting_turn` 等待/恢复协议保持不变，不与跨主轮任务卡混用。
+- 自动视觉新调用额度由每主轮 2 次调到 4 次，覆盖“底图 + 两个参考模板 + 最终产物复核”；
+  缓存命中不计数，用户主动要求重新识图仍有 1 次额外额度。
+
+### V4 脚本交付—试运行反馈闭环（2026-10-09）
+
+业务主路径固定为：
+
+`需求交流 → LLM 理解 → 编写/验证能力 → 交付到试运行 → 用户测试 → 满意则保存；不满意则反馈 → LLM 修订 → 再交付试运行`。
+
+- “本主轮完成”和“整个项目完成”分离。脚本成功加载后，本主轮可结束，但项目状态必须是
+  `waiting_trial_result`；只有用户满意并保存后才进入最终完成状态。
+- V4 菜单新增 `load_trial_script`。用户说“交付过来”“加载到试运行”“我去测试”，或一次修订完成
+  后需要复测时，模型应选此动作；禁止用纯文字调用说明替代交付。
+- 该动作分两张表递进：先用 `trial_source` 选择真实自造工具和运行行为，再由 `trial_script`
+  把探针代码转换成 Runner 脚本。Runner 脚本必须包含带执行目标类型标注的
+  `async def do_work(browser: UserBrowser | UserWindow)` 联合类型入口，通过
+  `await browser.update_frame()` 读取用户当前切换到的绑定画面；不得依赖 `ARGS`、`read_image`、
+  `resolve_image` 等探针专有全局量。
+- Runtime 在交付前执行语法、入口和现有 `collab_script_issues` 检查。通过后返回真实 `script`、
+  `script_name`、`open_trial=true` 与 `trial_handoff`；GUI 复用 `_push_code_to_host`，写入协作草稿、
+  `_generated_code` 和试运行临时文件，并自动打开试运行页。
+- 交付后的需求任务卡保持 `active`，等待用户反馈。后续新主轮继承当前脚本、有效素材绑定和
+  试运行反馈；修改后再次走 `load_trial_script`，直到用户满意并保存。
+- 临时脚本必须有生命周期时间：首次生成写 `created_at`；修改同一 `script_id`（试运行脚本按
+  `script_name`）时保留创建时间并刷新 `updated_at`。临时探针、自造工具与试运行交付脚本统一遵守；
+  自造工具覆盖登记也不得重置创建时间和使用次数。执行层另记 `started_at`、`finished_at`、
+  `duration_ms`，用于区分“脚本何时改过”和“这次运行用了多久”。
+- 入口合法性只由 AST 判定，不再用只接受字面量 `do_work(browser)` 的正则；避免 V4 要求
+  “无类型标注”而现有 Runner 交付闸又要求“必须有类型标注”的矛盾修复循环。

@@ -55,6 +55,10 @@ json/accounts.json
 user/config.json
 user_data/match_hotspots.json
 user_data/match_hotspots.tmp
+# 会话工作区：本地复现用的素材副本与轨迹，体积大且因人而异，不进版本库
+user_data/collab_workspaces/
+# V3 领域库同样属于本地运行数据
+user_data/collaborator_v3/
 backend/script_generator/corpus/collab_sessions/
 
 # ========== Local caches / tooling ==========
@@ -66,12 +70,14 @@ _tmp_*
 scripts/_backup/
 scripts/_trial/
 scripts/_collab/
+assets/images/_collab/
 gui/styles/_backup_*/
 scripts/测试/_*.py
 
 # ========== Logs / Binary ==========
 *.log
 *.exe
+logs/runtime/
 
 # ========== Standalone scripts ==========
 git_push_release.py
@@ -94,6 +100,7 @@ assets/images/12121.txt
 
 # ========== Personal / local notes ==========
 项目介绍_简历用.md
+my/
 
 # ========== Models ==========
 models/*
@@ -108,3 +115,40 @@ backend/quick_script/models/*
 # ========== Gacha frame experiment intermediates ==========
 assets/images/DeepOne/卡池外框模板/gold_*.png
 assets/images/DeepOne/卡池外框模板/silver_*.png
+
+# ========== 本地运行产物（不入库） ==========
+# 测试/调试临时目录与个人产出的文档、PDF
+output/
+tmp/
+pytest-of-*/
+tools/_scratch/
+# 自造工具登记表与 V3 领域库：本地状态，换机器会重新生成
+user_data/collab_tools.json
+user_data/collab_tools.json.bak*
+user_data/collab_tools.retired.json
+user_data/collaborator_v3.sqlite3
+
+# ========== 字体：只保留 assets/fonts/ 一份 ==========
+# assets/zh_ui.ttf 与 assets/fonts/zh_ui.ttf 内容相同（各 18.8MB），只入库后者
+assets/zh_ui.ttf
+# 编码事故留下的乱码文件名素材，代码里没有引用
+assets/probe_bottom_*.png
+assets/绌烘牸瀛愬尮閰峗缁撶晫5.png
+
+# ========== 本轮本地验收/脚手架产物（不入库） ==========
+AGENTS.md
+assets/fonts/
+assets/结界5_勋章24_空格16_中文标签.png
+assets/images/brush_level/
+assets/images/challenge_flow/
+assets/images/challenge_settle_loop/
+assets/images/click_max_medal_card/
+assets/images/count_medals/
+assets/images/detect_opponent_cards/
+assets/images/medal_count/
+assets/images/medal_match_count/
+assets/images/yys_auto_challenge_settle/
+assets/images/yys_挑战识别抖动/
+scripts/challenge_flow_loop.py
+scripts/yys/*_opt.py
+scripts/yys/*_说明.md

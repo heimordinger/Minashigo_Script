@@ -15,6 +15,7 @@ DAILY_STOP_DIR = SCREENSHOTS / "daily_stop"
 CLICK_PROBE_DIR = SCREENSHOTS / "click_probe"
 NETWORK_DIR = SCREENSHOTS / "network"
 HOTSPOT_PATH = USER_DATA_PATH / "match_hotspots.json"
+RUNTIME_LOG_DIR = PROJECT_ROOT / "logs" / "runtime"
 
 
 @dataclass
@@ -195,6 +196,13 @@ CLEAR_OPTIONS: list[tuple[str, str, str, Callable[[], ClearItemResult]]] = [
         lambda: clear_dir_item("daily_stop", "任务停帧截图", DAILY_STOP_DIR),
     ),
     (
+        "runtime_log",
+        "运行时日志备份",
+        "logs/runtime；每次脚本任务一份完整日志，排查问题时直接贴。"
+        "只保留最近 12 次运行（自动轮转），删了不影响运行。",
+        lambda: clear_dir_item("runtime_log", "运行时日志备份", RUNTIME_LOG_DIR),
+    ),
+    (
         "click_probe",
         "点击探针截图",
         "screenshots/click_probe；调试点击精度用。",
@@ -222,6 +230,7 @@ def estimate_sizes() -> dict[str, int]:
         "match": lambda: path_size_bytes(HOTSPOT_PATH),
         "pseudo": lambda: path_size_bytes(PSEUDO_RECORD_DIR),
         "daily_stop": lambda: path_size_bytes(DAILY_STOP_DIR),
+        "runtime_log": lambda: path_size_bytes(RUNTIME_LOG_DIR),
         "click_probe": lambda: path_size_bytes(CLICK_PROBE_DIR),
         "network": lambda: path_size_bytes(NETWORK_DIR),
         "vision": lambda: (

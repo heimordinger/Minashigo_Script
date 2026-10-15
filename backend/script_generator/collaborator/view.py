@@ -29,8 +29,12 @@ class CollabViewUpdate:
     script_name: str | None = None
     trial_ready: bool = False
     trial_hint: str = ""
+    # 成品已由 Runtime 明确交付给用户测试：GUI 推送代码后自动打开试运行页。
+    open_trial: bool = False
     # 确认逻辑后、还没有成品：GUI 再请模型写 script
     request_script: bool = False
+    # 模型已写好「生成用介绍」：GUI 交给经典 codegen 出码
+    request_codegen: bool = False
     # True 时表示本次应把 agent_message 追加到对话
     append_agent: bool = True
     # agent = LLM/技能答话；system = 操作通知（截图/抓窗/状态）

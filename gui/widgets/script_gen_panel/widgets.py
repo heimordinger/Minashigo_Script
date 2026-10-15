@@ -104,17 +104,25 @@ class _NoWheelSpinBox(QSpinBox):
 class FullCodeDialog(QDialog):
     """完整代码查看器：默认锁定只读，可解锁编辑；支持 Ctrl+F。"""
 
-    def __init__(self, parent=None, *, code: str = "", title: str = "完整脚本代码"):
+    def __init__(
+        self,
+        parent=None,
+        *,
+        code: str = "",
+        title: str = "完整脚本代码",
+        editable: bool = True,
+    ):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.resize(780, 560)
         self._original = code
+        self._editable = bool(editable)
         self.applied_code: str | None = None  # 关闭时若应用修改则非 None
         self._force_close = False
         lay = QVBoxLayout(self)
 
         head = QHBoxLayout()
-        self._lock_hint = QLabel("已锁定（只读）")
+        self._lock_hint = QLabel("已锁定（只读）" if self._editable else "只读快照（不可编辑）")
         self._lock_hint.setObjectName("MutedLabel")
         head.addWidget(self._lock_hint)
         head.addStretch()
@@ -124,6 +132,9 @@ class FullCodeDialog(QDialog):
             "解锁后可直接改代码；Ctrl+Z 撤销 / Ctrl+Y 重做；关闭时若有改动会询问是否写回。"
         )
         self._lock_btn.toggled.connect(self._on_lock_toggled)
+        # 只读快照（例如"试运行实际运行的那一份"）不提供解锁入口：
+        # 它不对应任何可写回的目标，给编辑入口只会让人以为改了就能生效。
+        self._lock_btn.setVisible(self._editable)
         head.addWidget(self._lock_btn)
         lay.addLayout(head)
 
@@ -172,6 +183,7 @@ class FullCodeDialog(QDialog):
         )
         self._apply_btn.setEnabled(False)
         self._apply_btn.setToolTip("把当前编辑写回生成结果（不关闭窗口）")
+        self._apply_btn.setVisible(self._editable)
         self._apply_btn.clicked.connect(self._apply_keep_open)
         copy_btn = buttons.addButton("复制全部", QDialogButtonBox.ButtonRole.ActionRole)
         copy_btn.clicked.connect(

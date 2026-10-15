@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLineEdit,
                                QPushButton, QMessageBox, QComboBox, QSpinBox,
-                               QDoubleSpinBox, QCheckBox, QLabel, QFileDialog)
+                               QCheckBox, QLabel, QFileDialog, QSlider)
 from PySide6.QtGui import QPixmap, QImage, QPainter, QPen, QColor, QIcon, QShortcut, QKeySequence
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QRect
 from core.coord.viewport_context import viewport_ctx
@@ -15,6 +15,8 @@ from core.path import ICON_PATH, IMG_PATH
 
 class _ToastLabel(QLabel):
     """画布上短暂显示的气泡提示。"""
+
+    EDGE_MARGIN = 14
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -45,9 +47,12 @@ class _ToastLabel(QLabel):
         p = self.parentWidget()
         if p is None:
             return
+        # 匹配状态只是辅助反馈，不能盖住用户正在检查的画面中心。
+        # 固定吸附到右上角；空间不足时再收敛到画布边界内。
+        margin = self.EDGE_MARGIN
         self.move(
-            max(0, (p.width() - self.width()) // 2),
-            max(0, (p.height() - self.height()) // 2),
+            max(0, p.width() - self.width() - margin),
+            max(0, min(margin, p.height() - self.height())),
         )
 
     def resizeEvent(self, event):
@@ -171,7 +176,12 @@ class _ImageCanvas(QWidget):
                 )
                 painter.drawPixmap(dest, self.original_pixmap, QRect(sx, sy, sw, sh))
 
-        self.dpr = viewport_ctx.get_dpr(account=self.viewer.account)
+        try:
+            self.dpr = float(viewport_ctx.get_dpr(account=self.viewer.account) or 1.0)
+        except (KeyError, TypeError, ValueError):
+            # 绘制回调不能因账号元数据缺字段而中断，否则 QPainter 会残留为
+            # active，后续重绘持续失败并表现成窗口无响应。
+            self.dpr = 1.0
         for match in self.match_rects:
             match_x, match_y, width, height, score = match
             painter.setPen(QPen(QColor(30, 220, 30), 2))
@@ -262,6 +272,8 @@ class _ImageCanvas(QWidget):
 
         self.dragging = False
         self.update()
+        if self.rect_start_pos and self.rect_end_pos:
+            self.viewer.on_match_parameter_changed()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -278,10 +290,17 @@ class ScreenshotViewer(QWidget):
     DRAG_THRESHOLD = 5
     refresh_requested = Signal()
 
-    def __init__(self, *, image, account: dict):
+    def __init__(self, *, image, account: dict, window_title: str = "截图预览"):
         super().__init__()
-        self.account = account
-        self.setWindowTitle("截图预览")
+        # viewport_ctx 以 email 作为 DPR 键；共同视口等复用场景可能没有完整账号。
+        # 在进入 paintEvent 前补齐稳定键，避免重绘异常。
+        self.account = dict(account or {})
+        self.account.setdefault("name", "screenshot_viewer")
+        self.account.setdefault("email", str(self.account.get("name") or "screenshot_viewer"))
+        self._window_title = str(window_title or "截图预览")
+        self.matching_mode = False
+        self._updating_match_controls = False
+        self.setWindowTitle(self._window_title)
         self.setWindowIcon(QIcon(str(ICON_PATH)))
         self.resize(1200, 600)
         self.setMinimumSize(400, 300)
@@ -316,15 +335,22 @@ class ScreenshotViewer(QWidget):
         self.select_img_btn.clicked.connect(self.on_select_image)
         control_layout.addWidget(self.select_img_btn)
         self.clear_img_btn = QPushButton("清空")
-        self.clear_img_btn.clicked.connect(lambda: self.target_input.clear())
+        self.clear_img_btn.clicked.connect(self.on_clear_target)
         control_layout.addWidget(self.clear_img_btn)
-        self.threshold_input = QDoubleSpinBox(self)
-        self.threshold_input.setRange(0.0, 1.0)
-        self.threshold_input.setSingleStep(0.05)
-        self.threshold_input.setValue(0.9)
-        self.threshold_input.setToolTip("图片匹配:0~1, 文字匹配:0~100")
+        self.threshold_slider = QSlider(Qt.Orientation.Horizontal, self)
+        self.threshold_slider.setRange(0, 100)
+        self.threshold_slider.setSingleStep(1)
+        self.threshold_slider.setPageStep(5)
+        self.threshold_slider.setTracking(False)
+        self.threshold_slider.setValue(90)
+        self.threshold_slider.setFixedWidth(130)
+        self.threshold_slider.setToolTip("图片匹配相似度阈值 (0~1)")
+        self.threshold_value_label = QLabel("0.90", self)
+        self.threshold_value_label.setFixedWidth(34)
+        self.threshold_value_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         control_layout.addWidget(QLabel("最低匹配度:"))
-        control_layout.addWidget(self.threshold_input)
+        control_layout.addWidget(self.threshold_slider)
+        control_layout.addWidget(self.threshold_value_label)
         self.color_check = QCheckBox("颜色一致", self)
         self.color_check.setChecked(False)
         control_layout.addWidget(self.color_check)
@@ -345,6 +371,10 @@ class ScreenshotViewer(QWidget):
         self.clear_button.clicked.connect(self.on_clear_click)
         self.screenshot_refresh_btn.clicked.connect(self._emit_refresh)
         self.save_btn.clicked.connect(self.on_save_click)
+        self.threshold_slider.valueChanged.connect(self.on_threshold_changed)
+        self.color_check.toggled.connect(self.on_match_parameter_changed)
+        self.region_check.toggled.connect(self.on_match_parameter_changed)
+        self.target_input.editingFinished.connect(self.on_match_parameter_changed)
 
         # ====== 截图画布 ======
         self.canvas = _ImageCanvas(self, image)
@@ -355,21 +385,21 @@ class ScreenshotViewer(QWidget):
     def update_image(self, pixmap):
         """外部更新截图内容"""
         self.canvas.set_pixmap(pixmap)
+        self.on_match_parameter_changed()
 
     @Slot(str)
     def on_match_type_changed(self, text):
+        self._updating_match_controls = True
         if text == "图片匹配":
             self.target_input.setPlaceholderText("输入目标图片路径")
-            self.threshold_input.setRange(0.0, 1.0)
-            self.threshold_input.setValue(0.9)
-            self.threshold_input.setToolTip("多尺度模板相似度阈值 (0~1)")
+            self.threshold_slider.setValue(90)
+            self.threshold_slider.setToolTip("多尺度模板相似度阈值 (0~1)")
             self.color_check.setEnabled(True)
             self.color_check.setVisible(True)
         elif text == "像素匹配":
             self.target_input.setPlaceholderText("输入目标图片路径（须与运行帧同缩放）")
-            self.threshold_input.setRange(0.0, 1.0)
-            self.threshold_input.setValue(0.98)
-            self.threshold_input.setToolTip(
+            self.threshold_slider.setValue(98)
+            self.threshold_slider.setToolTip(
                 "像素级相似度 (0~1)；1:1 不缩放，建议 ≥0.95"
             )
             self.color_check.setChecked(False)
@@ -377,26 +407,69 @@ class ScreenshotViewer(QWidget):
             self.color_check.setVisible(True)
         else:
             self.target_input.setPlaceholderText("输入要匹配的文字")
-            self.threshold_input.setRange(0.0, 100.0)
-            self.threshold_input.setValue(60.0)
-            self.threshold_input.setToolTip("文字匹配置信度阈值 (0~100)")
+            self.threshold_slider.setValue(60)
+            self.threshold_slider.setToolTip("文字匹配置信度阈值 (0~100)")
             self.color_check.setChecked(False)
             self.color_check.setEnabled(False)
             self.color_check.setVisible(True)
+        self._updating_match_controls = False
+        self._update_threshold_label()
+        self.on_match_parameter_changed()
+
+    def _threshold_value(self) -> float:
+        value = self.threshold_slider.value()
+        if self.match_type_combo.currentText() == "文字匹配":
+            return float(value)
+        return value / 100.0
+
+    def _update_threshold_label(self):
+        value = self._threshold_value()
+        if self.match_type_combo.currentText() == "文字匹配":
+            self.threshold_value_label.setText(str(int(value)))
+        else:
+            self.threshold_value_label.setText(f"{value:.2f}")
+
+    @Slot(int)
+    def on_threshold_changed(self, _value):
+        self._update_threshold_label()
+        self.on_match_parameter_changed()
+
+    @Slot()
+    def on_match_parameter_changed(self):
+        if self.matching_mode and not self._updating_match_controls:
+            self._perform_match()
+
+    def _set_matching_mode(self, enabled: bool):
+        self.matching_mode = bool(enabled)
+        self.match_button.setText("停止匹配" if self.matching_mode else "开始匹配")
+        self.match_button.setProperty("matching", self.matching_mode)
+        self.match_button.style().unpolish(self.match_button)
+        self.match_button.style().polish(self.match_button)
+
+    def on_clear_target(self):
+        self.target_input.clear()
+        self.on_match_parameter_changed()
 
     def on_match_button_click(self):
+        if self.matching_mode:
+            self._set_matching_mode(False)
+            return
+        if self._perform_match():
+            self._set_matching_mode(True)
+
+    def _perform_match(self) -> bool:
         match_type = self.match_type_combo.currentText()
         target_text = self.target_input.text().strip()
-        threshold = self.threshold_input.value()
+        threshold = self._threshold_value()
         use_color = self.color_check.isChecked() and match_type == "图片匹配"
         use_region = self.region_check.isChecked()
 
         if match_type in ("图片匹配", "像素匹配") and not target_text:
             self.show_error_message("输入无效", "请输入目标图片路径")
-            return
+            return False
         if match_type == "文字匹配":
             self.show_error_message("提示", "截图预览暂仅支持图片/像素匹配")
-            return
+            return False
         qimg = self.canvas.original_pixmap.toImage()
         buf = qimg.bits().tobytes()
         full_img = np.frombuffer(buf, np.uint8).reshape(
@@ -410,12 +483,12 @@ class ScreenshotViewer(QWidget):
         if use_region:
             if not (self.canvas.rect_start_pos and self.canvas.rect_end_pos):
                 self.show_error_message("未绘制区域", "请先在截图上绘制矩形区域")
-                return
+                return False
             crop_top_left = (int(self.canvas.rect_start_pos[0]), int(self.canvas.rect_start_pos[1]))
             crop_bottom_right = (int(self.canvas.rect_end_pos[0]), int(self.canvas.rect_end_pos[1]))
         if not os.path.exists(target_text):
             self.show_error_message("图片路径无效", "模板图片不存在")
-            return
+            return False
 
         def imread_unicode(path):
             data = np.fromfile(path, dtype=np.uint8)
@@ -426,7 +499,7 @@ class ScreenshotViewer(QWidget):
         template_bgr = imread_unicode(target_text)
         if template_bgr is None:
             self.show_error_message("模板错误", "无法读取模板图片")
-            return
+            return False
 
         mtype = "pixel_multi" if match_type == "像素匹配" else "image_multi"
         try:
@@ -444,14 +517,14 @@ class ScreenshotViewer(QWidget):
             )
         except Exception as e:
             self.show_error_message("匹配出错", str(e))
-            return
+            return False
 
         self.canvas.match_rects.clear()
 
         if not results:
             self.canvas.update()
             self.canvas.show_toast("匹配到 0 项", 1000)
-            return
+            return True
 
         h, w = template_bgr.shape[:2]
 
@@ -468,6 +541,7 @@ class ScreenshotViewer(QWidget):
 
         self.canvas.update()
         self.canvas.show_toast(f"匹配到 {len(results)} 项", 1000)
+        return True
 
     def _emit_refresh(self):
         self.refresh_requested.emit()
@@ -496,7 +570,7 @@ class ScreenshotViewer(QWidget):
         self._update_title_size()
 
     def _update_title_size(self):
-        self.setWindowTitle(f"截图预览 ({self.width()}×{self.height()})")
+        self.setWindowTitle(f"{self._window_title} ({self.width()}×{self.height()})")
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -522,3 +596,4 @@ class ScreenshotViewer(QWidget):
             return
 
         self.target_input.setText(file_path)
+        self.on_match_parameter_changed()

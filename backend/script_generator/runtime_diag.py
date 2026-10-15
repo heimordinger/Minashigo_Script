@@ -11,11 +11,13 @@ from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from backend.automation.emulator_target import (
+    classify_layer_role,
     EMULATOR_RULES,
     _candidate_targets,
     _match_rule,
     _resolve_shell_for,
     _shot_size,
+    group_emulator_instances,
     resolve_automation_target,
 )
 from backend.automation.win32_target import Win32Target
@@ -75,34 +77,8 @@ def classify_window_role(
     *,
     emulator: str = "",
 ) -> tuple[str, list[str]]:
-    """返回 (role, notes)。role: shell|render|mirror|unknown"""
-    t = title or ""
-    c = class_name or ""
-    notes: list[str] = []
-    if "ToolSaveBits" in c:
-        return "mirror", ["能截图、消息点击常无效的镜像/工具层，勿作点击目标"]
-
-    rule = _match_rule(t, c)
-    emu = emulator or (rule.name if rule else "")
-    if rule:
-        if rule.is_render(t, c) and "ToolSaveBits" not in c:
-            return "render", [f"按 {emu} 规则识别为渲染/操作层"]
-        if rule.is_shell(t, c):
-            # 部分标题既像壳又像设备
-            if "NxDevice" in t or "nemuwin" in c.lower():
-                return "render", [f"{emu}：设备/渲染子层"]
-            return "shell", [f"按 {emu} 规则识别为外壳（可截图，点击可能无效）"]
-
-    # 通用启发式（非已知模拟器也尽量分类）
-    low_c = c.lower()
-    if any(k in low_c for k in ("render", "subwin", "opengl", "d3d", "vulkan", "gl")):
-        return "render", ["类名含渲染相关关键字"]
-    if any(k in t.lower() for k in ("render", "game", "unity", "unreal")):
-        return "render", ["标题含渲染/游戏相关关键字"]
-    if any(k in low_c for k in ("qt", "chrome", "cef", "electron")):
-        notes.append("可能是外壳/浏览器壳，点击需确认是否有独立渲染子窗")
-        return "shell", notes
-    return "unknown", notes or ["未能归类；可用 message_click_probe 验证是否吃点击"]
+    """返回 (role, notes)。role: shell|render|mirror|unknown（与分组同一实现）。"""
+    return classify_layer_role(title, class_name, emulator=emulator)
 
 
 def inspect_click_target(hwnd: int) -> dict[str, Any]:
@@ -128,6 +104,20 @@ def inspect_click_target(hwnd: int) -> dict[str, Any]:
     )
 
     shell = _resolve_shell_for(base, rule) if rule else base
+    # 多开：把候选归到所属实例，避免「同 pid 就被当成同一开」
+    inst_index: dict[int, int] = {}
+    inst_name: dict[int, str] = {}
+    inst_layers: dict[int, list[dict[str, Any]]] = {}
+    try:
+        for g in group_emulator_instances():
+            for layer in g.get("layers") or []:
+                h = int(layer.get("hwnd") or 0)
+                inst_index[h] = int(g.get("index") or 0)
+                inst_name[h] = str(g.get("name") or "")
+                inst_layers[h] = list(g.get("layers") or [])
+    except Exception:
+        pass
+    bound_instance = inst_index.get(int(base.hwnd), 0)
     candidates: list[dict[str, Any]] = []
     if rule:
         for tgt, is_child in _candidate_targets(shell)[:24]:
@@ -147,6 +137,12 @@ def inspect_click_target(hwnd: int) -> dict[str, Any]:
                     "is_child_of_shell": bool(is_child),
                     "notes": rn[:2],
                     "recommended": int(tgt.hwnd) == int(resolved.hwnd),
+                    "instance_index": inst_index.get(int(tgt.hwnd), 0),
+                    "instance_name": inst_name.get(int(tgt.hwnd), ""),
+                    "same_instance_as_bound": bool(
+                        not bound_instance
+                        or inst_index.get(int(tgt.hwnd), 0) == bound_instance
+                    ),
                 }
             )
     else:
@@ -221,6 +217,9 @@ def inspect_click_target(hwnd: int) -> dict[str, Any]:
         "resolved_differs": resolved_changed,
         "recommend_hwnd": int(resolved.hwnd),
         "candidates": candidates,
+        "instance_index": bound_instance,
+        "instance_name": inst_name.get(int(base.hwnd), ""),
+        "instance_layers": inst_layers.get(int(base.hwnd), []),
         "symptom_hint": symptom,
         "human_summary": _human_inspect_summary(
             role, emu, int(base.hwnd), int(resolved.hwnd), resolved_changed, symptom

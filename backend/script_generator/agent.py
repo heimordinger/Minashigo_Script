@@ -746,6 +746,36 @@ def enforce_img_dir(code: str, source_dir: str = "") -> str:
     return line + "\n\n" + code
 
 
+#: config 模板里那段手写的"允许 API"清单（**活跃的错误事实源**，必须整段替换）。
+_AVAILABLE_API_SECTION_RE = re.compile(
+    r"## Available API \(only these methods[^\n]*\)\n.*?(?=\n## |\Z)",
+    re.S,
+)
+
+
+def _registry_api_section(*, explanation: str = "", profile: str | None = None) -> str:
+    """由 contract registry 渲染的 API 契约全文（唯一事实源）。"""
+    from backend.script_generator.api_catalog import api_contracts_block
+
+    return api_contracts_block(explanation=explanation, profile=profile).strip() + "\n"
+
+
+def _replace_available_api_section(
+    prompt: str, *, explanation: str = "", profile: str | None = None
+) -> str:
+    """把 prompt 里的"允许 API"段落换成 registry 渲染的版本。
+
+    目的（用户决定 §4）：**config 不能授予 API 能力**。
+    改 config.json 里的方法清单不得改变允许 API / validator / 生成 prompt 的能力集合。
+    旧字段只保留非能力描述；能力清单完全由 registry 按 profile 决定。
+    """
+    block = _registry_api_section(explanation=explanation, profile=profile)
+    if _AVAILABLE_API_SECTION_RE.search(prompt or ""):
+        return _AVAILABLE_API_SECTION_RE.sub(lambda _m: block, prompt, count=1)
+    # 用户自定义过模板、没有该段 → 仍附上 registry 清单，保证能力集合只来自 registry。
+    return (prompt or "").rstrip() + "\n\n" + block
+
+
 def _build_system_prompt(
     source_dir: str = "",
     *,
@@ -824,9 +854,6 @@ def _build_system_prompt(
     else:
         src_line = "（未指定图片文件夹 — 请要求用户先选择）"
 
-    from backend.script_generator.api_catalog import api_return_types_banner
-    contrast = api_return_types_banner().strip()
-
     template = cfg.get("system_prompt_template", "")
     prompt = template.replace("$THRESHOLD", str(th))
     prompt = prompt.replace("$NAV_THRESHOLD", str(nav))
@@ -836,13 +863,11 @@ def _build_system_prompt(
     prompt = prompt.replace("$IMG_DIR_LINE", img_dir_line)
     prompt = prompt.replace("$RULES", rules_block)
     prompt = prompt.replace("$FEW_SHOT", few_shot_block)
-    # 契约对照条：模板已含则跳过，避免重复
-    if "Return-type contrast" not in prompt and contrast:
-        prompt = prompt.replace(
-            "## Available API (only these methods, do NOT invent others)",
-            "## Available API (only these methods, do NOT invent others)\n\n" + contrast,
-            1,
-        )
+    # 能力清单的唯一事实源是 api_contracts registry。
+    # config.json 模板里那段手写 "## Available API ..." 属**活跃的错误事实源**
+    # （12 个方法，与 registry 不一致），这里整段替换掉；旧字段降级为
+    # deprecated/ignored ——config 不再能授予 API 能力（用户决定 §4）。
+    prompt = _replace_available_api_section(prompt, explanation=explanation or "")
     if free:
         prompt = _FREE_MODE_BANNER + "\n" + prompt
         prompt = re.sub(
@@ -984,6 +1009,16 @@ def _provider_supports_images(provider: str) -> bool:
     if "supports_images" in info:
         return bool(info["supports_images"])
     return _provider_api(provider) in ("claude", "google", "openai")
+
+
+def _model_supports_images(provider: str, model: str) -> bool:
+    """模型级视觉能力；配置了 image_models 时不再用提供商级布尔值误判。"""
+    info = _provider_info(provider)
+    declared = info.get("image_models")
+    if isinstance(declared, list) and declared:
+        name = str(model or "").strip().lower()
+        return name in {str(x or "").strip().lower() for x in declared if str(x or "").strip()}
+    return _provider_supports_images(provider)
 
 
 async def describe_images_catalog(
@@ -1390,26 +1425,39 @@ def strip_code_fences(raw: str) -> str:
 
 _CN_PUNCT_RE = re.compile(r"[，。！？；：、“”‘’（）【】《》、]")
 
-# Script Generator 官方 API（与 config system_prompt 一致）
-ALLOWED_BROWSER_METHODS = frozenset({
-    "match_image",
-    "match_image_multi",
-    "click_image",
-    "click",
-    "wait_image",
-    "b_sleep",
-    "update_frame",
-    "request_fps",
-    "release_fps",
-    "script_log",
-    "note_state",
-    "note_progress",
-    # 伪录制 instrumentation（试跑注入 / 生产脚本均可）
-    "enable_pseudo_record",
-    "finish_pseudo_record",
-})
+# Script Generator 官方 API —— **事实源已改为 api_contracts registry**（不再手写名单）。
+#
+# 这两个集合现在只是旧规则里的**粗筛**（"名字像不像 / 要不要 allow_login"），
+# 从 registry 派生而来，无法与契约漂移；方法/参数/await 的**权威判定**在
+# ``api_contracts.validator``（按 profile 分别判定，见 validate_script_local）。
+# 取并集是为了保持旧规则"先不误报"的语义：真正的禁止由契约校验器给出结构化 issue。
+def _registry_derived_methods() -> frozenset[str]:
+    from backend.script_generator.api_contracts import registry as _registry
+
+    names: set[str] = set()
+    for _name in _registry.executable_profile_names():
+        try:
+            names.update(_registry.approved_names(_name, allow_login=True))
+        except Exception:  # noqa: BLE001
+            continue
+    return frozenset(names)
+
+
+def _registry_derived_login_methods() -> frozenset[str]:
+    from backend.script_generator.api_contracts import registry as _registry
+
+    names: set[str] = set()
+    for _name in _registry.executable_profile_names():
+        try:
+            names.update(_registry.get_profile(_name).login_methods)
+        except Exception:  # noqa: BLE001
+            continue
+    return frozenset(names)
+
+
+ALLOWED_BROWSER_METHODS = _registry_derived_methods()
 # login/web only; enabled when explanation looks like a login task
-LOGIN_BROWSER_METHODS = frozenset({"goto", "dmm_login"})
+LOGIN_BROWSER_METHODS = _registry_derived_login_methods()
 
 _BUILTINS = (
     set(__builtins__.keys()) if isinstance(__builtins__, dict) else set(dir(__builtins__))
@@ -1474,6 +1522,16 @@ def _collect_function_locals(fn: ast.AST) -> set[str]:
         elif isinstance(node, ast.Assign):
             for t in node.targets:
                 _bind_target(names, t)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            # 函数内 import（脚本里常见的延迟导入）也要算可见名字
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    names.add((alias.asname or alias.name.split(".")[0]).strip())
+            else:
+                for alias in node.names:
+                    if alias.name == "*":
+                        continue
+                    names.add((alias.asname or alias.name).strip())
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
             names.add(node.target.id)
         elif isinstance(node, (ast.For, ast.AsyncFor)):
@@ -1949,7 +2007,8 @@ def patch_strip_missing_image_refs(
 def _none_browser_image_arg_errors(tree: ast.AST) -> list[str]:
     """click/match/wait_image 首参为字面量 None → 运行时 Path 崩溃。"""
     methods = frozenset({
-        "click_image", "match_image", "wait_image", "match_image_multi",
+        "click_image", "click_image_effect", "match_image", "wait_image",
+        "match_image_multi",
     })
     bad: list[str] = []
     for node in ast.walk(tree):
@@ -4302,7 +4361,16 @@ def _call_uses_nav_threshold(call: ast.Call) -> bool:
         if kw.arg != "threshold":
             continue
         v = kw.value
-        return isinstance(v, ast.Attribute) and v.attr == "nav_threshold"
+        # 既接受 CFG.nav_threshold，也接受脚本自己的 NAV_THRESHOLD 这类命名
+        if isinstance(v, ast.Attribute) and v.attr == "nav_threshold":
+            return True
+        if isinstance(v, ast.Name) and "nav_threshold" in v.id.lower():
+            return True
+        # 任意具名常量也算（脚本常有自己的阈值常量，如 SETTLE_THRESHOLD）；
+        # 直接写死数字才拦——那才是「场景识别阈值过严」的高发写法。
+        if isinstance(v, ast.Name):
+            return True
+        return False
     return False
 
 
@@ -4415,11 +4483,25 @@ def _click_then_wait_errors(tree: ast.AST) -> list[str]:
         for method, node in _iter_browser_calls(fn):
             if method in ("wait_image", "match_image", "match_image_multi"):
                 has_confirm = True
-            elif method == "click_image":
+            elif method in ("click_image", "click_image_effect"):
+                # click_image(..., expect=...) 走 click_confirm，本身就是转场确认
+                if method == "click_image" and any(
+                    kw.arg == "expect" for kw in node.keywords
+                ):
+                    has_confirm = True
                 img = _first_img_arg(node) or ""
                 stem = _img_stem(img)
                 if stem and not _DISMISS_IMG_RE.search(stem):
                     clicks.append(stem)
+        if not has_confirm and any(
+            isinstance(n, ast.Call)
+            and (
+                (isinstance(n.func, ast.Name) and "confirm" in n.func.id.lower())
+                or (isinstance(n.func, ast.Attribute) and "confirm" in n.func.attr.lower())
+            )
+            for n in ast.walk(fn)
+        ):
+            has_confirm = True  # confirm_after_click / browser.confirm_* 也算确认
         if clicks and not has_confirm:
             # 允许「返回统一转场/等待态」的写法：该状态内部持续识场景即等价于确认
             rets = _function_return_string_literals(fn) if hasattr(_function_return_string_literals, "__call__") else set()
@@ -4443,7 +4525,7 @@ def _apply_frame_dirty_from_method(method: Optional[str], dirty: bool) -> tuple[
     """
     if not method:
         return dirty, False
-    if method == "click_image":
+    if method in ("click_image", "click_image_effect"):
         return True, False
     if method == "b_sleep":
         # sleep 不刷新帧；若此前已 click，仍 dirty
@@ -5094,8 +5176,7 @@ def _collect_assigned_names(tree: ast.AST) -> set[str]:
     for n in getattr(tree, "body", []):
         if isinstance(n, ast.Assign):
             for t in n.targets:
-                if isinstance(t, ast.Name):
-                    assigned.add(t.id)
+                _bind_target(assigned, t)  # 支持 a, b = 1, 2 这类解包
         elif isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name):
             assigned.add(n.target.id)
     return assigned
@@ -6001,6 +6082,98 @@ def patch_ensure_multitask_skeleton(
     return new_code, notes
 
 
+_TARGET_TYPE_IMPORTS: tuple[tuple[str, str, str], ...] = (
+    (
+        "UserBrowser",
+        "backend.browser.user_browser",
+        "from backend.browser.user_browser import UserBrowser",
+    ),
+    (
+        "UserWindow",
+        "backend.automation.user_window",
+        "from backend.automation.user_window import UserWindow",
+    ),
+)
+
+
+def _has_symbol_import(code: str, module: str, symbol: str) -> bool:
+    return bool(
+        re.search(
+            r"^\s*(?:from\s+"
+            + re.escape(module)
+            + r"\s+import\s+[^\n]*\b"
+            + re.escape(symbol)
+            + r"\b|import\s+"
+            + re.escape(module)
+            + r"\b)",
+            code,
+            re.M,
+        )
+    )
+
+
+def _insert_module_lines(code: str, lines: list[str]) -> str:
+    """插到最后一条顶层 import 之后；没有 import 就插在模块 docstring 之后。"""
+    if not lines:
+        return code
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return code
+    last = 0
+    for node in tree.body:
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            last = max(last, int(getattr(node, "end_lineno", 0) or 0))
+    if last <= 0 and tree.body:
+        first = tree.body[0]
+        value = getattr(first, "value", None)
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(value, ast.Constant)
+            and isinstance(value.value, str)
+        ):
+            last = int(getattr(first, "end_lineno", 0) or 0)
+    block = "".join(ln if ln.endswith("\n") else ln + "\n" for ln in lines)
+    src = code.splitlines(keepends=True)
+    if last <= 0:
+        head = 0
+        for i, ln in enumerate(code.splitlines()):
+            if ln.startswith("#"):
+                head = i + 1
+            else:
+                break
+        return "".join(src[:head]) + block + "".join(src[head:])
+    return "".join(src[:last]) + block + "".join(src[last:])
+
+
+def ensure_target_type_imports(code: str) -> tuple[str, list[str]]:
+    """代码里出现的 UserBrowser / UserWindow 必须可解析；缺 import 就补。
+
+    历史事故：do_work 标注被改成 `UserBrowser | UserWindow`，但补 import 的逻辑
+    挂在「缺 UserWindow import」条件下，脚本已有 UserWindow import 时整段跳过，
+    于是 UserBrowser 成了未定义名字 → 硬校验失败 → 白烧多轮 LLM 重修。
+    """
+    if not (code or "").strip():
+        return code, []
+    todo = [
+        line
+        for symbol, module, line in _TARGET_TYPE_IMPORTS
+        if re.search(r"\b" + re.escape(symbol) + r"\b", code)
+        and not _has_symbol_import(code, module, symbol)
+    ]
+    if not todo:
+        return code, []
+    out = _insert_module_lines(code, todo)
+    if out == code:
+        return code, []
+    try:
+        ast.parse(out)
+    except SyntaxError:
+        return code, []
+    names = "、".join(line.split(" import ")[-1] for line in todo)
+    return out, [f"补 import：{names}"]
+
+
 def patch_do_work_dual_target(code: str) -> tuple[str, list[str]]:
     """生成脚本 do_work 默认兼容浏览器与窗口（UserBrowser | UserWindow）。"""
     if not (code or "").strip():
@@ -6037,33 +6210,10 @@ def patch_do_work_dual_target(code: str) -> tuple[str, list[str]]:
                 new_code = newer
                 notes.append("do_work 标注改为 UserBrowser | UserWindow")
 
-    if "UserWindow" in new_code:
-        has_uw_import = bool(
-            re.search(
-                r"from\s+backend\.automation\.user_window\s+import\s+[^\n]*UserWindow",
-                new_code,
-            )
-        )
-        if not has_uw_import:
-            if "from backend.browser.user_browser import UserBrowser" in new_code:
-                new_code = new_code.replace(
-                    "from backend.browser.user_browser import UserBrowser",
-                    "from backend.browser.user_browser import UserBrowser\n"
-                    "from backend.automation.user_window import UserWindow",
-                    1,
-                )
-                notes.append("补 UserWindow import")
-            else:
-                marker = "from core.path import IMG_PATH"
-                if marker in new_code:
-                    new_code = new_code.replace(
-                        marker,
-                        "from backend.browser.user_browser import UserBrowser\n"
-                        "from backend.automation.user_window import UserWindow\n"
-                        + marker,
-                        1,
-                    )
-                    notes.append("补 UserBrowser/UserWindow import")
+    # 标注里出现的类型名必须能被解析，否则校验器会报「未定义的名字」并拖出多轮重修。
+    # 早先的实现在「已 import UserWindow」时会整段跳过，导致 UserBrowser 永远没被补上。
+    new_code, n_imp = ensure_target_type_imports(new_code)
+    notes.extend(n_imp)
 
     if not notes:
         return code, []
@@ -6163,6 +6313,7 @@ def _scene_covered_for_table(
 def _function_has_browser_action(fn: ast.AST) -> bool:
     action_methods = frozenset({
         "click_image",
+        "click_image_effect",
         "wait_image",
         "match_image",
         "match_image_multi",
@@ -6792,7 +6943,9 @@ def _function_attribute_counter_errors(tree: ast.AST) -> list[str]:
 def _match_image_stem_from_call(call: ast.Call) -> Optional[str]:
     if not isinstance(call.func, ast.Attribute):
         return None
-    if call.func.attr not in ("match_image", "click_image", "wait_image"):
+    if call.func.attr not in (
+        "match_image", "click_image", "click_image_effect", "wait_image",
+    ):
         return None
     if not call.args:
         return None
@@ -7778,6 +7931,7 @@ def validate_for_codegen(
     image_paths: Optional[list] = None,
     explanation: str = "",
     free_mode: Optional[bool] = None,
+    require_fsm: bool = True,
 ) -> list[str]:
     """生成 / fix 循环校验：identifiers_only 时跳过素材；自由模式放宽语义项。"""
     free = is_codegen_free_mode(free_mode)
@@ -7800,7 +7954,48 @@ def validate_for_codegen(
         free_mode=free_mode,
         check_image_files=False if is_img_identifiers_only() else None,
         relax_semantic=free,
+        require_fsm=require_fsm,
     )
+
+
+def _contract_api_issue_strings(
+    code: str, *, profile: Optional[str] = None, allow_login: bool = False
+) -> list[str]:
+    """用 ``api_contracts`` 契约校验器产出的 **API 类** 问题（带 ``[CODE]`` 前缀）。
+
+    唯一事实源是 registry；这里只做「结构化 issue → 旧字符串形状」的兼容转换，
+    **不**重复实现方法/参数/await/返回值判断（决定 §13.5）。
+    带前缀是为了让 ``validate_script_local`` 与 ``collab_form.collab_script_issues``
+    两个入口的 API 问题集合可以直接比对。
+    """
+    try:
+        from backend.script_generator.api_contracts import validator as contract_validator
+    except Exception:  # noqa: BLE001 - 契约包不可用时退回旧行为
+        return []
+    # 与协作交付闸用**同一套** profile 解析（provisional 注解 → 否则 unresolved
+    # → portable 安全交集）；否则同一脚本在两个入口会被判成不同 profile，
+    # 继而对"未批准 / 未登记"给出不同 code（API_NOT_APPROVED vs API_UNKNOWN）。
+    target_profile = profile
+    if target_profile is None:
+        try:
+            target_profile = contract_validator.profile_for_code(code or "")
+        except Exception:  # noqa: BLE001
+            target_profile = None
+    try:
+        issues = contract_validator.validate_source(
+            code or "", profile=target_profile, allow_login=allow_login
+        )
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[str] = []
+    for item in issues:
+        code_name = str(getattr(item, "code", "") or "")
+        if not code_name.startswith("API_"):
+            continue
+        if str(getattr(item, "severity", "error")) != "error":
+            continue
+        out.append("[{}] {}".format(code_name, item.message))
+    return out
 
 
 def validate_script_local(
@@ -7811,9 +8006,25 @@ def validate_script_local(
     explanation: str = "",
     free_mode: Optional[bool] = None,
     require_fsm: bool = True,
+    profile: Optional[str] = None,
+    execution_target: Any = None,
+    task_id: str = "",
+    turn_id: str = "",
+    shadow_sink: Optional[dict] = None,
 ) -> list[str]:
-    """本地脚本检查。试运行传 require_fsm=False，只查运行器要的入口和素材。"""
-    return validate_generated_code(
+    """本地脚本检查。试运行传 require_fsm=False，只查运行器要的入口和素材。
+
+    ``profile`` 为 None 时按入口注解取 **provisional** profile
+    （Union / 无注解 / 无法解析 → ``unresolved`` → ``portable_common`` 安全交集），
+    **不再**静默落 desktop（决定 §13.1）。
+    API 类问题统一由 ``api_contracts.validator`` 产出，与协作交付闸同一事实源
+    （决定 §13.5）——本函数不再维护第二套方法/签名白名单。
+
+    Phase 3 影子对账：在**不改变返回值**的前提下，对交付源码（尽量用 bundled 文本）
+    做一次只读调用点对账，结果写进本地事件；调用方若传 ``shadow_sink``，还会把
+    紧凑摘要填进去（**不**追加任何 error）。
+    """
+    errors = validate_generated_code(
         code,
         plan=plan,
         source_dir=source_dir,
@@ -7823,6 +8034,77 @@ def validate_script_local(
         check_image_files=True,
         require_fsm=require_fsm,
     )
+    for extra in _contract_api_issue_strings(code, profile=profile):
+        if extra not in errors:
+            errors.append(extra)
+    _shadow_reconcile_v2(
+        code,
+        execution_target=execution_target,
+        profile=profile,
+        task_id=task_id,
+        turn_id=turn_id,
+        shadow_sink=shadow_sink,
+    )
+    return errors
+
+
+def _shadow_reconcile_v2(
+    code: str,
+    *,
+    execution_target: Any = None,
+    profile: Optional[str] = None,
+    task_id: str = "",
+    turn_id: str = "",
+    shadow_sink: Optional[dict] = None,
+) -> Optional[dict]:
+    """V2 交付路径上的**只读**影子对账（Phase 3 第一阶段）。
+
+    - 优先用 ``script_artifact.materialize_trial_script``（唯一流水线）取 **bundled** 文本；
+      取不到就退回提交原文并标明 ``source_kind``；
+    - 只在有登记服务时执行；结果写事件、可选填 ``shadow_sink``；
+    - **绝不**改校验结果、**绝不**补签 ticket；任何异常都静默跳过。
+    """
+    try:
+        from backend.script_generator.api_contracts import ticket_service
+
+        service = ticket_service.default_service()
+        if service is None:
+            return None
+        bundled, kind = "", "submitted"
+        try:
+            from backend.script_generator import script_artifact
+
+            build = script_artifact.materialize_trial_script(
+                code, script_name="v2_delivery", dry_run=True
+            )
+            bundled = str(getattr(build, "bundled", "") or "")
+            if bundled:
+                kind = "bundled"
+        except Exception:  # noqa: BLE001 - 素材化失败就退回原文
+            bundled = ""
+        from backend.script_generator.collaborator_v3.runtime.shadow import shadow_reconcile
+        from backend.script_generator.execution_profile import profile_from_target
+
+        target_profile, source, _revision = profile_from_target(execution_target)
+        if target_profile is None and profile:
+            target_profile, source = profile, ""
+        result = shadow_reconcile(
+            source=bundled or code,
+            service=service,
+            path="<v2_delivery>",
+            runtime_profile=target_profile,
+            profile_source=source,
+            main_turn_id=str(turn_id or ""),
+            task_id=str(task_id or ""),
+            source_kind=kind,
+        )
+        payload = result.payload()
+        if shadow_sink is not None:
+            shadow_sink.clear()
+            shadow_sink.update(payload)
+        return payload
+    except Exception:  # noqa: BLE001 - 影子报告失败不影响校验
+        return None
 
 
 
@@ -7848,6 +8130,12 @@ def _cn_punct_outside_strings_error(code: str) -> str:
         _tok.DEDENT,
         _tok.ENDMARKER,
     }
+    # Python 3.12 起 f-string 会拆成 FSTRING_* 标签（PEP 701），
+    # 其中的中文文本会被当成代码区标点 → 这里一并跳过。
+    for _name in ("FSTRING_START", "FSTRING_MIDDLE", "FSTRING_END"):
+        _t = getattr(_tok, _name, None)
+        if isinstance(_t, int):
+            skip.add(_t)
     for t in toks:
         if t.type in skip:
             continue
@@ -8308,12 +8596,66 @@ def _provider_supports_tools(provider: str) -> bool:
     return api in ("openai", "claude")
 
 
-def _tool_result_text(name: str, arguments, *, allow_login: bool) -> str:
+def _ensure_ticket_service():
+    """V2 生成入口确保进程内有**共用**的 ticket 服务（用户决定 9）。
+
+    没有它，V2 的 ``lookup_api``（模型按需查契约）就无从留痕。失败返回 ``None``：
+    Phase 1 不接交付硬闸，留痕不得打断生成。
+    """
+    try:
+        from backend.script_generator.collaborator_v3.runtime import ticket_store
+
+        return ticket_store.ensure_default_service()
+    except Exception:  # noqa: BLE001 - 见 docstring
+        return None
+
+
+def _reconcile_tickets_for_target(execution_target) -> int:
+    """目标已确定时，把 portable 凭据核验/重签为具体 profile（决定 1）。
+
+    返回处理条数；任何失败都不打断生成（硬闸在 Phase 3）。
+    """
+    try:
+        from backend.script_generator.api_contracts import ticket_service
+        from backend.script_generator.execution_profile import profile_from_target
+
+        service = ticket_service.default_service()
+        if service is None:
+            return 0
+        profile, source, revision = profile_from_target(execution_target)
+        if profile is None:
+            return 0
+        portable = [t for t in service.list_tickets(limit=200) if t.is_portable()]
+        if not portable:
+            return 0
+        outcomes = service.reconcile_for_target(
+            [t.ticket_id for t in portable],
+            runtime_profile=profile,
+            environment_revision=revision,
+        )
+        return len(outcomes)
+    except Exception:  # noqa: BLE001 - 见 docstring
+        return 0
+
+
+def _tool_result_text(
+    name: str,
+    arguments,
+    *,
+    allow_login: bool,
+    profile: str | None = None,
+    execution_target: Any = None,
+) -> str:
     from backend.script_generator.api_catalog import lookup_api, parse_lookup_name
 
     if (name or "") != "lookup_api":
         return f"unknown tool {name!r}; only lookup_api is available"
-    return lookup_api(parse_lookup_name(arguments), allow_login=allow_login)
+    return lookup_api(
+        parse_lookup_name(arguments),
+        allow_login=allow_login,
+        profile=profile,
+        execution_target=execution_target,
+    )
 
 
 async def call_llm_with_tools(
@@ -8329,6 +8671,8 @@ async def call_llm_with_tools(
     max_tokens: Optional[int] = None,
     allow_login: bool = False,
     max_tool_rounds: int = 4,
+    profile: str | None = None,
+    execution_target: Any = None,
 ) -> tuple[str, int, int]:
     """Generate-time LLM call with optional lookup_api tool loop."""
     from backend.script_generator.api_catalog import (
@@ -8339,7 +8683,7 @@ async def call_llm_with_tools(
 
     supports = _provider_supports_tools(provider)
     prompt = (system_prompt or "") + generate_tool_hint(
-        allow_login=allow_login, supports_tools=supports,
+        allow_login=allow_login, supports_tools=supports, profile=profile,
     )
     if not supports:
         return await call_llm(
@@ -8354,7 +8698,13 @@ async def call_llm_with_tools(
         )
 
     def _resolve(name, arguments) -> str:
-        return _tool_result_text(name, arguments, allow_login=allow_login)
+        return _tool_result_text(
+            name,
+            arguments,
+            allow_login=allow_login,
+            profile=profile,
+            execution_target=execution_target,
+        )
 
     api = _provider_api(provider)
     try:
@@ -9256,6 +9606,7 @@ async def _generate_script_legacy(
     on_partial=None,
     max_tokens: Optional[int] = None,
     free_mode: Optional[bool] = None,
+    require_fsm: bool = True,
 ) -> tuple[str, int, int]:
     free = is_codegen_free_mode(free_mode)
     prompt = _build_system_prompt(
@@ -9284,12 +9635,14 @@ async def _generate_script_legacy(
         on_partial=on_partial,
         max_tokens=max_tokens,
         allow_login=allow_login_from_explanation(explanation_text or ""),
+        execution_target=execution_target,
     )
     code = enforce_img_dir(strip_code_fences(raw), source_dir)
     errors = validate_generated_code(
         code, source_dir=source_dir, image_paths=image_paths,
         explanation=explanation_text or "",
         free_mode=free,
+        require_fsm=bool(require_fsm),
     )
     if errors:
         raise RuntimeError(f"生成的脚本校验失败: {errors[0]}，请点「生成脚本」重试")
@@ -9313,6 +9666,8 @@ async def generate_script(
     on_artifact=None,
     max_tokens: Optional[int] = None,
     free_mode: Optional[bool] = None,
+    require_fsm: bool = True,
+    execution_target: Any = None,
 ) -> tuple[str, int, int]:
     """
     调用 LLM 生成脚本。返回 (代码, 输入tokens, 输出tokens)。
@@ -9327,6 +9682,11 @@ async def generate_script(
     use_graph = bool(defaults.get("use_langgraph", True))
     free = is_codegen_free_mode(free_mode)
     mt = resolve_max_tokens(max_tokens if max_tokens is not None else defaults.get("max_tokens"))
+    # V2 入口接线（用户决定 9）：确保进程内有共用的 ticket 服务，
+    # 这样生成期的 lookup_api 才能记 CONTRACT_VIEWED（失败不影响生成）。
+    # 决定 1：已有权威执行目标就顺手把 portable 凭据核验/重签为具体 profile。
+    _ensure_ticket_service()
+    _reconcile_tickets_for_target(execution_target)
 
     extra_in = extra_out = 0
     send_images_main = bool(send_images)
@@ -9408,6 +9768,7 @@ async def generate_script(
             ),
             max_tokens=mt,
             free_mode=free,
+            require_fsm=bool(require_fsm),
             on_partial=on_partial,
             on_status=on_status,
             on_artifact=on_artifact,
@@ -9434,6 +9795,7 @@ async def generate_script(
         on_partial=on_partial,
         max_tokens=mt,
         free_mode=free,
+        require_fsm=bool(require_fsm),
     )
     _emit_generate_chat_session(
         source_dir=source_dir,
@@ -9687,6 +10049,7 @@ async def revise_script(
     on_artifact=None,
     max_tokens: Optional[int] = None,
     free_mode: Optional[bool] = None,
+    execution_target: Any = None,
 ) -> tuple[str, str, int, int, dict]:
     """根据用户试运行反馈修订脚本，并再审查是否覆盖反馈。
 
@@ -9695,6 +10058,9 @@ async def revise_script(
     """
     cfg = _load_config()
     defaults = cfg.get("defaults", {})
+    # 修订入口同样接线：修订期查契约也要留痕（与生成入口同一套服务）。
+    _ensure_ticket_service()
+    _reconcile_tickets_for_target(execution_target)
     # 修订沿用生成时的自由模式标记，使本地 patch / 校验与生成端策略一致
     free = is_codegen_free_mode(free_mode)
     mt = resolve_max_tokens(max_tokens if max_tokens is not None else defaults.get("max_tokens"))
@@ -10095,6 +10461,26 @@ async def revise_script(
                     on_partial=on_partial,
                     max_tokens=mt,
                 )
+                try:
+                    _artifact(
+                        "llm_call",
+                        json.dumps(
+                            {
+                                "stage": "revise_main",
+                                "messages": len(hist),
+                                "system_chars": len(cont_system),
+                                "history_chars": sum(
+                                    len(str((m.get("content") or [{}])[0].get("text") or ""))
+                                    for m in hist
+                                ),
+                                "tokens_in": int(rin or 0),
+                                "tokens_out": int(rout or 0),
+                            },
+                            ensure_ascii=False,
+                        ),
+                    )
+                except Exception:
+                    pass
             except Exception as e:
                 print(f"[revise] 同会话续写失败，回退冷修订: {e}")
                 continue_chat = False
@@ -10144,6 +10530,22 @@ async def revise_script(
     )
     inp += vin
     out += vout
+    if vin or vout:
+        try:
+            _artifact(
+                "llm_call",
+                json.dumps(
+                    {
+                        "stage": "revise_fix",
+                        "code_chars": len(code or ""),
+                        "tokens_in": int(vin or 0),
+                        "tokens_out": int(vout or 0),
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        except Exception:
+            pass
     _artifact(
         "stage",
         f"revise|done|修订草稿完成|{(summary or '')[:500]}",

@@ -19,8 +19,9 @@ websockets>=12.0
 requests>=2.31
 
 # ---------- AI / LangGraph（Script Generator 多步编排）----------
-langgraph>=0.2
-langchain-core>=0.3
+# 锁定到本机实测通过的确切版本（Phase B3 影子图/接管图用它验证）
+langgraph==1.2.10
+langchain-core==1.5.3
 
 # ---------- 其他 ----------
 tqdm>=4.66

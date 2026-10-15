@@ -742,6 +742,7 @@ def validate_node(state: ScriptGenState) -> dict[str, Any]:
         image_paths=state.get("image_paths") or [],
         explanation=state.get("explanation") or "",
         free_mode=free,
+        require_fsm=bool(state.get("require_fsm", True)),
     )
     validate_label = "校验未通过" if errors else "校验通过"
     if free:

@@ -11,6 +11,7 @@ from controller.task_state import TaskStatus, TaskSnapshot
 from core.logging.events import LogEvent, LogLevel
 from core.state.events import StateEvent, StateDomain
 from core.state.unified_event import UnifiedEvent
+from core.logging.runtime_backup import RuntimeLogBackup
 
 
 class Controller(QObject):
@@ -38,6 +39,12 @@ class Controller(QObject):
         self._log_listeners = []
 
         # ---------- logging ----------
+        # 运行时日志自动备份：每次脚本任务一个文件，边跑边落盘（省得手工贴大段日志）
+        try:
+            from core.path import PROJECT_ROOT
+            self._log_backup = RuntimeLogBackup(PROJECT_ROOT / "logs" / "runtime")
+        except Exception:
+            self._log_backup = None
         self._log_buffer: dict[str, deque] = defaultdict(lambda: deque(maxlen=1000))
 
         # ---------- runtime objects ----------
@@ -603,6 +610,38 @@ class Controller(QObject):
             )
         )
 
+    def begin_log_run(self, *, label: str = "", account: str = "") -> None:
+        """一次脚本任务开始：新开一份运行时日志备份。"""
+        backup = getattr(self, "_log_backup", None)
+        if backup is None:
+            return
+        try:
+            from core.demo_mode import is_demo_mode
+
+            if is_demo_mode():
+                backup.enabled = False
+                return
+        except Exception:
+            pass
+        path = backup.begin_run(label=label or account, account=account)
+        if path is not None:
+            self.emit_log(
+                account=account,
+                level=LogLevel.INFO,
+                message=f"[日志备份] 本次运行日志 → {path}",
+                source="backup",
+            )
+
+    def runtime_log_path(self):
+        """当前运行日志备份文件（没有则 None）。"""
+        backup = getattr(self, "_log_backup", None)
+        return getattr(backup, "current_jsonl", None)
+
+    def runtime_log_tail(self, lines: int = 200) -> str:
+        """当前运行日志尾部（人读）。排查问题时可直接贴这段，不用手工复制。"""
+        backup = getattr(self, "_log_backup", None)
+        return backup.tail(lines) if backup is not None else ""
+
     def subscribe_log(self, fn):
         """fn: Callable[[LogEvent], None]"""
         self._log_listeners.append(fn)
@@ -623,6 +662,14 @@ class Controller(QObject):
         )
 
         self._log_buffer[account].append(event)
+        backup = getattr(self, "_log_backup", None)
+        if backup is not None:
+            backup.record(
+                account=account,
+                level=event.level,
+                message=event.message,
+                source=event.source,
+            )
         self.log_signal.emit(account, event)
 
     def emit_match_event(
@@ -635,8 +682,31 @@ class Controller(QObject):
             action: str = "match",
             x: float | int | None = None,
             y: float | int | None = None,
+            detail: dict | None = None,
     ):
-        """匹配/点击调试事件。status = matching | ok | fail；action = match | click"""
+        """匹配/点击调试事件。status = matching | ok | fail；action = match | click
+
+        ``detail``：执行器**自己算出来**的补充事实（``visual_effect_observed`` /
+        ``expected_scene_reached`` / 关键帧引用 …）。只有结构化遥测登记过的键会透传，
+        没有的一律留 None，不冒充（设计 §19.2/§19.3）。
+        """
+        # 结构化遥测：有活动试运行时自动落成事件（脚本**不需要**主动调用录制 API）。
+        # 执行器只提供它确实知道的字段，取不到的留 None，不伪造（设计 §19.2/§19.6）。
+        try:
+            from backend.script_generator.collaborator_v3.runtime import trial_runs
+
+            trial_runs.ingest_match_hud(
+                account,
+                img_path=img_path,
+                status=status,
+                score=score,
+                action=action,
+                x=x,
+                y=y,
+                detail=detail,
+            )
+        except Exception:  # noqa: BLE001 - 遥测失败绝不能影响执行
+            pass
         self.match_event.emit(account, {
             "img_path": str(img_path),
             "status": status,

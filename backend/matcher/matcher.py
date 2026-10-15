@@ -5,9 +5,19 @@ from core.match.match_result import MatchResult
 import base64
 import cv2
 import numpy as np
+import os
 
 # 全局最低候选分：抑制 ORB 回退 ~0.5 的弱误匹配
 MIN_CANDIDATE_SCORE = 0.8
+
+# 多开：一个进程里两个账号会并发跑匹配，OpenCV 每调用开满线程会互相抢 CPU。
+# 实测单次 matchTemplate 在 4 线程（~103ms）与 12 线程（~111ms）几乎持平，
+# 所以每调用限 4 线程，把核让给另一个实例。
+_CV_THREADS = max(1, min(4, int(os.cpu_count() or 4)))
+try:
+    cv2.setNumThreads(_CV_THREADS)
+except Exception:
+    pass
 
 
 class Matcher:
@@ -19,6 +29,7 @@ class Matcher:
 
         self._template_cache = {}   # path -> (img, gray)
         self._orb_cache = {}        # bytes -> (kp, des)
+        self._orb_frame_cache = {}  # 帧签名 -> (kp, des)，同一帧多模板复用
 
         # 无定标命中时的兜底多尺度
         self.scales = [0.35, 0.45, 0.55, 0.65, 0.75, 0.85, 1.0, 1.15, 1.3, 1.5]
@@ -129,7 +140,8 @@ class Matcher:
                     scales=list(self.scales),
                 )
 
-            if use_orb:
+            # ORB 只作兜底：模板匹配已经有结果时不再对整帧做特征检测
+            if use_orb and not results:
                 results += self._orb_match(
                     frame, templ, effective_t, offset=(x1, y1)
                 )
@@ -141,14 +153,22 @@ class Matcher:
 
             if mtype == "image_multi":
                 return [
-                    {"x": int(r.x), "y": int(r.y), "score": float(r.score)}
-                    for r in results[:max_count] if not max_count or len(results) <= max_count
+                    {
+                        "x": int(r.x),
+                        "y": int(r.y),
+                        "score": float(r.score),
+                        "width": int(getattr(r, "width", 0) or 0),
+                        "height": int(getattr(r, "height", 0) or 0),
+                        "scale": float(getattr(r, "scale", 1.0) or 1.0),
+                    }
+                    for r in (results[:max_count] if max_count else results)
                 ]
 
             best = max(results, key=lambda r: r.score)
 
             return MatchResult(
-                int(best.x), int(best.y), float(best.score), best.score >= t
+                int(best.x), int(best.y), float(best.score), best.score >= t,
+                width=best.width, height=best.height, scale=best.scale,
             )
 
         # =========================
@@ -186,7 +206,8 @@ class Matcher:
 
             best = max(results, key=lambda r: r.score)
             return MatchResult(
-                int(best.x), int(best.y), float(best.score), best.score >= t
+                int(best.x), int(best.y), float(best.score), best.score >= t,
+                width=best.width, height=best.height, scale=best.scale,
             )
 
         # =========================
@@ -260,7 +281,10 @@ class Matcher:
             if score >= threshold and mad <= pixel_tol:
                 cx = x0 + tw // 2 + offset[0]
                 cy = y0 + th // 2 + offset[1]
-                results.append(MatchResult(cx, cy, float(score), True))
+                results.append(MatchResult(
+                    cx, cy, float(score), True,
+                    width=tw, height=th,
+                ))
                 print(
                     f"[_pixel_match] ({cx},{cy}) score={score:.4f} "
                     f"mad={mad:.2f} tol={pixel_tol}"
@@ -349,7 +373,10 @@ class Matcher:
                 # 转回原始frame坐标
                 x = max_loc[0] + w_t // 2 + offset[0]
                 y = max_loc[1] + h_t // 2 + offset[1]
-                results.append(MatchResult(x, y, float(max_val), True))
+                results.append(MatchResult(
+                    x, y, float(max_val), True,
+                    width=w_t, height=h_t, scale=float(s),
+                ))
                 print(f"[_template_multi_scale_match] scale={s}: 匹配 ({x},{y}) score={max_val:.4f}")
 
                 # 屏蔽已匹配区域，继续找下一个
@@ -386,7 +413,7 @@ class Matcher:
     # =========================
     def _orb_match(self, frame, templ, threshold, offset=(0, 0)):
         kp1, des1 = self._get_orb_template(templ)
-        kp2, des2 = self.orb.detectAndCompute(frame, None)
+        kp2, des2 = self._get_orb_frame(frame)
 
         if des1 is None or des2 is None:
             return []
@@ -407,7 +434,10 @@ class Matcher:
         if score < threshold:
             return []
 
-        return [MatchResult(x, y, float(score), True)]
+        th, tw = templ.shape[:2]
+        return [MatchResult(
+            x, y, float(score), True, width=tw, height=th, scale=1.0,
+        )]
 
     # =========================
     # CACHE
@@ -431,6 +461,29 @@ class Matcher:
 
         kp, des = self.orb.detectAndCompute(templ, None)
         self._orb_cache[key] = (kp, des)
+        return kp, des
+
+    def _frame_signature(self, frame) -> bytes:
+        """帧的廉价指纹（缩略灰度）：用于复用同一帧的 ORB 特征。"""
+        try:
+            gray = frame if len(frame.shape) == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            small = cv2.resize(gray, (32, 18), interpolation=cv2.INTER_AREA)
+            return small.tobytes()
+        except Exception:
+            return b""
+
+    def _get_orb_frame(self, frame):
+        """对整帧做 ORB，但同一帧只算一次（脚本一轮里常对同一帧匹配多个模板）。"""
+        sig = self._frame_signature(frame)
+        if sig:
+            hit = self._orb_frame_cache.get(sig)
+            if hit is not None:
+                return hit
+        kp, des = self.orb.detectAndCompute(frame, None)
+        if sig:
+            if len(self._orb_frame_cache) >= 6:
+                self._orb_frame_cache.clear()
+            self._orb_frame_cache[sig] = (kp, des)
         return kp, des
 
     # =========================

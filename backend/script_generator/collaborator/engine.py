@@ -14,6 +14,7 @@ from backend.script_generator.collaborator.skills.registry import (
     default_registry,
 )
 from backend.script_generator.collaborator.view import CollabViewUpdate
+from backend.script_generator.collaborator.trial_cursor import TrialCursor
 from backend.script_generator.logic_graph import LogicGraph, LogicStep, parse_step_params
 
 
@@ -24,6 +25,21 @@ _STEP_LINE = re.compile(
     r"等待[^\n#]*|点击[^\n#]*|休眠[^\n#]*)",
     re.IGNORECASE,
 )
+
+
+def append_user_action_hint(body: str, meta: dict, chips: list[str]) -> str:
+    """ask 回合统一追加醒目的用户动作，避免只停住却看不出下一步。"""
+    text = (body or "（无回复）").strip()
+    need_perm = str((meta or {}).get("need_permission") or "").strip()
+    if need_perm:
+        hint = "**请你：在下方授权卡中允许或拒绝本次操作。**"
+    elif chips:
+        hint = "**请你选择：" + " / ".join(chips[:3]) + "。**"
+    elif (meta or {}).get("need_frame"):
+        hint = "**请你：提供或切换到需要讨论的画面。**"
+    else:
+        hint = "**请你：按上面的提示完成操作，然后告诉我结果。**"
+    return text if hint in text else (text + "\n\n" + hint).strip()
 
 
 def extract_draft_logic_from_text(text: str) -> tuple[str, list[LogicStep]]:
@@ -96,6 +112,15 @@ class CollaboratorEngine:
             return None
         return self.registry.get(self.session.skill_id)
 
+    def _cursor(self) -> TrialCursor:
+        """试跑游标：懒建，并跟着当前逻辑图重绑步骤。"""
+        cur = getattr(self, "_trial_cursor", None)
+        if cur is None:
+            cur = TrialCursor()
+            self._trial_cursor = cur
+        cur.bind_steps(self.session.logic.step_ids())
+        return cur
+
     def _view(
         self,
         phase: CollabPhase,
@@ -141,6 +166,11 @@ class CollaboratorEngine:
         if vu.preview_path:
             self.session.last_preview_path = vu.preview_path
             self.session.last_preview_caption = vu.preview_caption or ""
+        try:
+            trace = list(getattr(self._cursor(), "log", []) or [])[-12:]
+        except Exception:
+            trace = []
+        self.session.last_trial_trace = trace
         self.session.ensure_id()
         self.session.touch()
 
@@ -180,6 +210,12 @@ class CollaboratorEngine:
 
     def view_for_restore(self) -> CollabViewUpdate:
         s = self.session
+        # 恢复上次试跑轨迹：重放 note_state 轨迹，步骤卡接着显示「试跑至此」
+        cur = self._cursor()
+        cur.failed.clear()
+        cur.reset(keep_log=True)
+        for name in list(s.last_trial_trace or []):
+            self.note_trial_state(name)
         preview = s.last_preview_path or (str(s.frame_path) if s.frame_path else None)
         vu = CollabViewUpdate.from_phase(
             s.phase,
@@ -211,6 +247,11 @@ class CollaboratorEngine:
             return
         self.session.add_message("user", text)
         self.session.phase = CollabPhase.UNDERSTAND
+        # 上一轮的缺口/契约笔记只对本轮有效：留着会变成"回声"——
+        # 模型每轮都读到过期的「素材文件不存在」，就一直重复"找不到"。
+        if isinstance(self.session.artifacts, dict):
+            self.session.artifacts.pop("agent_plan_gap", None)
+            self.session.artifacts.pop("contract_gap", None)
         # 目标句：非纯闲聊时更新
         if not self._is_meta_question(text):
             self.session.goal_text = text
@@ -222,8 +263,27 @@ class CollaboratorEngine:
             "你是", "什么模型", "哪个模型", "谁啊", "怎么用", "帮助",
             "能干", "能力", "你好", "在吗", "谢谢",
             "有哪些技能", "哪些技能", "技能列表", "你会什么", "有什么技能",
+            # 续跑/流程控制类话术不是新目标：它们只是"把上一步做完"，
+            # 当作 goal 会把会话目标覆盖成「接着做完」（实况出现过）。
+            "接着做完", "接着做", "继续", "再试一次", "重试", "换个做法",
+            # 追问类：实况里用户只回了一句「缺少什么」，会话目标就被覆盖成了它。
+            "缺少什么", "缺什么", "还差什么", "少了什么", "什么问题", "什么意思",
+            "为什么", "然后呢", "还有呢", "接下来呢", "怎么办", "是不是",
+            # 芯片确认/拒绝话术：点「确认，按此生成脚本」不该把会话目标覆盖成它。
+            # 出码管线会拿 goal_text 当「目的」，被覆盖后生成出来的脚本就失焦了。
+            "按此生成", "按此逻辑", "按此实现", "按上述", "就按这个", "按这个来",
+            "照这个做", "已确认", "确认，按", "确认按",
+            "需要调整", "需要修改", "先别生成", "别生成",
         )
-        return any(k in t for k in keys)
+        if any(k in t for k in keys):
+            return True
+        # 短问句（≤12 字、以疑问词收尾、且不含动作词）同样不是新目标。
+        stripped = t.strip()
+        if len(stripped) <= 12 and stripped.endswith(("什么", "吗", "呢", "？", "?")):
+            action_words = ("点击", "刷", "进入", "领取", "匹配", "标注", "生成", "截图", "打开")
+            if not any(w in stripped for w in action_words):
+                return True
+        return False
 
     @staticmethod
     def _is_skills_catalog_question(text: str) -> bool:
@@ -253,6 +313,7 @@ class CollaboratorEngine:
             form_ui_state,
             logic_draft_to_graph,
             normalize_collab_script,
+            prune_dangling_draft_refs,
         )
 
         meta = meta or {}
@@ -266,11 +327,19 @@ class CollaboratorEngine:
         # 1) 表内 logic_draft 优先
         draft = meta.get("logic_draft") or []
         if isinstance(draft, list) and draft:
+            # 指向"已不在素材区"的 id 先剔掉：留着会一路带进逻辑步骤与生成脚本，
+            # 表现是"素材解析不出来"（实况：[[asset_c2af2860]]）。
+            known_ids = {str(a.get("id")) for a in (self.session.assets or []) if isinstance(a, dict)}
+            draft, dropped = prune_dangling_draft_refs(draft, known_ids)
+            if not isinstance(self.session.artifacts, dict):
+                self.session.artifacts = {}
+            if dropped:
+                self.session.artifacts["logic_draft_dropped"] = dropped
+            else:
+                self.session.artifacts.pop("logic_draft_dropped", None)
             graph = logic_draft_to_graph(draft, title="脚本草稿")
             if graph.steps:
                 self.session.logic = graph
-                if not isinstance(self.session.artifacts, dict):
-                    self.session.artifacts = {}
                 self.session.artifacts["logic_draft"] = draft
                 self.session.phase = CollabPhase.PROPOSE_LOGIC
         # 2) 否则从气泡伪代码兜底抽取
@@ -326,6 +395,32 @@ class CollaboratorEngine:
             if not isinstance(self.session.artifacts, dict):
                 self.session.artifacts = {}
             self.session.artifacts["script_from_form"] = True
+
+        # 3.5) 模型给了「生成用介绍」→ 交给经典 codegen 出码（GUI 执行）
+        intro_raw = str(meta.get("intro") or "").strip()
+        if (
+            intro_raw
+            and not (isinstance(script, str) and script.strip())
+            and self.session.phase == CollabPhase.CODEGEN
+        ):
+            self.session.intro_text = intro_raw
+            if not isinstance(self.session.artifacts, dict):
+                self.session.artifacts = {}
+            self.session.artifacts["codegen_intro"] = intro_raw
+            if script_name and not self.session.script_name:
+                self.session.script_name = script_name
+            body = (visible or "").strip()
+            note = "正在用经典生成器出码…"
+            return self._view(
+                CollabPhase.CODEGEN,
+                agent_message=f"{body}\n\n{note}" if body else note,
+                chips=[],
+                steps=self.session.logic.to_ui_steps(),
+                shape_label="正在用经典生成器出码",
+                cta_text="生成中",
+                cta_enabled=False,
+                request_codegen=True,
+            )
 
         chips = [str(c) for c in (meta.get("chips") or []) if str(c).strip()]
         sid = str(meta.get("select_skill") or "").strip() or None
@@ -413,6 +508,9 @@ class CollaboratorEngine:
         ui = form_ui_state(meta, self.session)
         if ui["mode"] in ("ask", "continue"):
             chips = list(ui["chips"] or chips)
+            body = (visible or "（无回复）").strip()
+            if ui["mode"] == "ask":
+                body = append_user_action_hint(body, meta, chips)
             phase = (
                 CollabPhase.PROPOSE_LOGIC
                 if self.session.logic.steps
@@ -420,7 +518,7 @@ class CollaboratorEngine:
             )
             return self._view(
                 phase,
-                agent_message=visible or "（无回复）",
+                agent_message=body,
                 chips=chips,
                 cta_enabled=False,
                 cta_text="",
@@ -468,6 +566,7 @@ class CollaboratorEngine:
             trial_hint=trial_hint,
             code=code_out,
             script_name=name_out,
+            open_trial=bool(meta.get("open_trial")),
         )
 
     def on_user_text_local(
@@ -502,7 +601,14 @@ class CollaboratorEngine:
                     "换一句更具体的；或去「经典」Tab 写介绍生成。"
                 )
             else:
-                msg = (
+                already_warned = bool(
+                    isinstance(self.session.artifacts, dict)
+                    and self.session.artifacts.get("api_config_warning_shown")
+                )
+                if not isinstance(self.session.artifacts, dict):
+                    self.session.artifacts = {}
+                self.session.artifacts["api_config_warning_shown"] = True
+                msg = "" if already_warned else (
                     "当前协作页没有读到可用的 API 配置。\n"
                     "请到「1. API 配置」确认提供商 / Key / 模型；"
                     "或去「经典」Tab。"
@@ -553,7 +659,9 @@ class CollaboratorEngine:
                 chips=["开始截图", "选已有截图", "用当前窗口"],
                 bubble_kind="system",
             )
-        self.session.frame_path = path
+        from backend.script_generator.collaborator.canvas import activate_viewport_image
+
+        activate_viewport_image(self.session, path)
         skill = self._skill()
         if skill is None:
             # 无玩法 / 旧会话 skill 已卸载：只收图，不自动出逻辑步
@@ -683,6 +791,60 @@ class CollaboratorEngine:
             script_name=self.session.script_name,
         )
 
+    def apply_codegen_result(self, result: dict) -> CollabViewUpdate:
+        """经典生成器出码回来：落成 ViewUpdate（成品，或带问题的草稿）。"""
+        from backend.script_generator.collaborator.collab_form import (
+            collab_script_issues,
+            normalize_collab_script,
+        )
+
+        res = result if isinstance(result, dict) else {}
+        if not res.get("ok"):
+            err = str(res.get("error") or "未知错误")
+            return self._view(
+                CollabPhase.PROPOSE_LOGIC,
+                agent_message=f"经典生成器没跑通：{err}",
+                chips=["让模型直接写代码"],
+                steps=self.session.logic.to_ui_steps(),
+                shape_label="出码失败",
+                cta_text="看起来对，生成脚本",
+                cta_enabled=bool(self.session.logic.steps),
+            )
+        code, notes = normalize_collab_script(str(res.get("code") or ""), self.session)
+        issues = collab_script_issues(code, self.session)
+        self.session.generated_code = code
+        if str(res.get("intro") or "").strip():
+            self.session.intro_text = str(res.get("intro") or "").strip()
+        self.session.script_name = str(res.get("script_name") or "").strip() or "collab_script.py"
+        if not isinstance(self.session.artifacts, dict):
+            self.session.artifacts = {}
+        self.session.artifacts["script_normalize_notes"] = list(notes)
+        self.session.artifacts["codegen_source_dir"] = str(res.get("source_dir") or "")
+        self.session.artifacts["codegen_from_logic"] = True
+        if issues:
+            return self._view(
+                CollabPhase.PROPOSE_LOGIC,
+                agent_message=(
+                    "生成器出了脚本，但没过闸：\n"
+                    + "\n".join(f"- {i}" for i in issues[:4])
+                    + "\n可以点「重新生成」，或直接说哪里不对。"
+                ),
+                chips=["重新生成", "让模型直接写代码"],
+                steps=self.session.logic.to_ui_steps(),
+                shape_label="出码待修",
+                cta_text="看起来对，生成脚本",
+                cta_enabled=True,
+                code=code,
+                intro=self.session.intro_text or None,
+                script_name=self.session.script_name,
+            )
+        return self._trial_guide(
+            f"已用经典生成器出码：「{self.session.script_name}」。\n"
+            "下一步：点「去试运行」，先确认顶栏账号。",
+            code=code,
+            intro=self.session.intro_text or None,
+        )
+
     def on_chip(self, text: str) -> CollabViewUpdate | None:
         """处理引擎可识别的芯片；返回 None 表示交给 GUI 做截图/抓窗等 IO。"""
         t = (text or "").strip()
@@ -718,8 +880,9 @@ class CollaboratorEngine:
             "不用",
         ):
             return None
-        # 未知芯片当用户文本
-        return self.on_user_text(t)
+        # 模型动态生成的选项必须由 GUI 送回正常 LLM 入口；本地引擎不能
+        # 冒充「无 API」解释它，否则会在配置正常时误报未配置。
+        return None
 
     def on_problem(self) -> CollabViewUpdate:
         return self._view(
@@ -733,6 +896,11 @@ class CollaboratorEngine:
         skill = self._skill()
         tip = skill.tip_for_step(step_id) if skill else "收到，请补充现象或换图。"
         self.session.logic.mark(step_id, "failed")
+        cur = self._cursor()
+        try:
+            cur.failed.add(cur.step_ids.index(step_id))
+        except ValueError:
+            pass
         return self._view(
             CollabPhase.PROPOSE_LOGIC if self.session.probe else CollabPhase.CLARIFY,
             agent_message=f"步骤不对：{step_id}\n{tip}",
@@ -741,11 +909,108 @@ class CollaboratorEngine:
             cta_enabled=bool(self.session.probe),
         )
 
+    # ── 试跑游标（note_state ↔ 步骤卡）─────────────────────────────
+
+    def begin_trial_cursor(self) -> None:
+        """一次试跑开始时清游标：上一跑的轨迹不留到这一跑。"""
+        cur = self._cursor()
+        cur.failed.clear()
+        cur.reset()
+        self.session.logic.mark_all("draft")
+
+    def note_trial_state(self, state: str) -> bool:
+        """试跑里 ``note_state(name)`` 报到：把对应步骤走成「试跑至此」。
+
+        认不出的状态名只记痕迹、不动卡片（游标宁可不走，也不乱跳）。
+        """
+        cur = self._cursor()
+        if not cur.step_ids:
+            return False
+        sid = cur.note(str(state or "").strip())
+        if not sid:
+            return False
+        self._apply_cursor_statuses(cur)
+        return True
+
+    def _apply_cursor_statuses(self, cur, *, running: bool = True) -> None:
+        """把游标状态落到逻辑图。
+
+        进行中只动「到过的步骤」：``visited`` 里除末位 = 已确认（轨迹），
+        末位 = 当前位置（``cur.index >= 0`` 时才是「试跑至此」）。
+        人工标过的 failed 和还没走到的 draft 一律不动。
+        ``running=False`` 时整体回填（收尾用）。
+        """
+        if not running:
+            self.sync_step_statuses(cur.statuses(), running=True)
+            return
+        if not cur.visited:
+            return
+        last = cur.visited[-1] if cur.index >= 0 else -1
+        done = {cur.step_ids[i] for i in cur.visited if 0 <= i < len(cur.step_ids)}
+        active = cur.step_ids[last] if 0 <= last < len(cur.step_ids) else ""
+        for step in self.session.logic.steps:
+            if step.status == "failed" or step.id not in done:
+                continue
+            step.status = "running" if step.id == active else "acked"
+
+    def end_trial_cursor_run(self) -> None:
+        """试跑收尾：当前步落成「已确认」，轨迹留着，不再高亮。"""
+        cur = self._cursor()
+        cur.note("")  # 清当前步，但保留 visited / log
+        self._apply_cursor_statuses(cur, running=False)
+
+    def sync_step_statuses(self, statuses: dict, *, running: bool = False) -> None:
+        """GUI 侧算好的游标状态回填（试跑日志线在 host 面板上解析）。
+
+        ``statuses`` 是全量映射（含 draft），未提供的步骤保持原样，
+        免得把「标记为不对」这类人工状态抹掉。
+        ``running=True``（试跑进行中）时游标状态压过 failed：
+        用户点过「不对」的步骤若这次真的跑到了，就该显示「试跑至此」。
+        """
+        for step in self.session.logic.steps:
+            if step.id not in statuses:
+                continue
+            want = str(statuses.get(step.id) or "").strip()
+            if not want:
+                continue
+            if running or step.status != "failed":
+                step.status = want
+
+    def trial_cursor_view(self, *, agent_message: str = "") -> CollabViewUpdate:
+        """只刷步骤卡渲染，不动对话 / 阶段（试跑期间每次状态变化用）。"""
+        trace = list(getattr(self._cursor(), "log", []) or [])[-12:]
+        self.session.last_trial_trace = trace
+        hint = " · ".join(trace[-3:]) if trace else ""
+        vu = CollabViewUpdate.from_phase(
+            self.session.phase,
+            agent_message=agent_message,
+            chips=list(self.session.last_chips or []),
+            steps=self.session.logic.to_ui_steps(),
+            shape_label=self.session.last_shape_label or self.session.logic.title or "",
+            cta_text=self.session.last_cta_text,
+            cta_enabled=self.session.last_cta_enabled,
+            trial_ready=self.session.last_trial_ready,
+            trial_hint=hint or self.session.last_trial_hint,
+            preview_path=self.session.last_preview_path or None,
+            preview_caption=self.session.last_preview_caption,
+            append_agent=False,
+            code=None,
+        )
+        self._attach_canvas(vu)
+        return vu
+
+    def trial_trace_hint(self, *, limit: int = 3) -> str:
+        trace = list(getattr(self._cursor(), "log", []) or [])[-max(1, limit):]
+        return " → ".join(trace)
+
     def on_trial_ok(self) -> CollabViewUpdate:
         self.session.phase = CollabPhase.DONE
         return self._view(
             CollabPhase.DONE,
-            agent_message="很好。可到试运行页确认保存，或主界面任务列表跑该脚本。",
+            agent_message=(
+                "很好。下一步：到试运行页点「确认完成并保存」，"
+                "在弹出的对话框里选 scripts/ 下的位置和文件名。"
+            ),
             chips=["去试运行"],
             trial_ready=True,
             trial_hint="反馈：能用",

@@ -40,6 +40,21 @@ Resolve via `collaborator.skills.registry`（玩法 skill 可空）。
 - `window-click-retarget` — 「点不动 / 识图成功但无反应」→
   `inspect_click_target` / `message_click_probe` / `retarget_click_window`
   （适用各类模拟器外壳 vs 渲染层，以及同类 Win32 分层）
+- `repeated-ui-crop` — 多张卡片、勋章、格子、按钮或列表项需要精确裁剪 →
+  识图只提共同特征和粗定位；`fit_repeated_regions` 本地拟合；验证预览后
+  `commit_repeated_regions` 原子提交。禁止直接批量采用 VL 坐标。
+
+## 手不够用：自己造
+
+- 「在图上标出来 / 圈一下」→ `mark_on_image`（marks 给 `rect` 或 `x`/`y`，原图像素）。
+  产物是 **标注图**（role=annotation），只给人看，不能当识别/匹配对象。
+- 想做一件事但工具表里没有对应工具 → **不要反问用户，也不要把做不到的步骤写进 plan**。
+  先 `run_probe_script` 写脚本做出来；跑通后 `define_tool`（name/description/
+  parameters/code，脚本里从 `ARGS` 取参、结论赋给 `result`）登记成可复用工具，
+  之后每轮工具表都会带上它。`list_custom_tools` / `delete_custom_tool` 管理。
+- 自造工具执行时仍受 `probe_script` 权限约束；用户收回权限即全部失效。
+- 素材命名一律**用 id 或 name 点名**。系统没有「焦点素材」这回事，不要省略参数指望默认值；
+  不确定素材区有什么就先 `list_session_assets`。
 
 若无玩法 skill：坦诚说明，并建议「经典」Tab；窗口诊断仍可用。
 

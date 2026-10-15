@@ -24,6 +24,39 @@ def _script_stem(name: str) -> str:
     return n[:-3] if n.lower().endswith(".py") else n
 
 
+_HINT_CALL_RE = re.compile(r"enable_pseudo_record\s*\((?P<args>[^)]*)\)", re.S)
+_HINT_PAIR_RE = re.compile(
+    r"""(?:script_name|script_hint)\s*=\s*(['"])(?P<hint>[^'"]{1,80})\1"""
+)
+_HINT_COMMENT_RE = re.compile(
+    r"^#\s*(?:脚本名|脚本|script)\s*[:：]\s*(?P<hint>[^\n]{1,80})$", re.M
+)
+
+
+def guess_script_hint_from_code(code: str) -> str:
+    """从脚本源码猜「脚本名提示」，用于匹配伪录制目录。
+
+    伪录制目录名是 ``{账号}_{时间}_{script_name}``，而 script_name 来自脚本里的
+    ``browser.enable_pseudo_record(script_name="X")``，所以优先从这里取；
+    取不到再退回头部注释「# 脚本名：X」；都没有则返回空串（空串=不按脚本过滤）。
+    """
+    text = str(code or "")
+    if not text:
+        return ""
+    call = _HINT_CALL_RE.search(text)
+    if call:
+        pair = _HINT_PAIR_RE.search(call.group("args"))
+        if pair:
+            return str(pair.group("hint") or "").strip()
+    pair = _HINT_PAIR_RE.search(text)
+    if pair:
+        return str(pair.group("hint") or "").strip()
+    comment = _HINT_COMMENT_RE.search(text)
+    if comment:
+        return str(comment.group("hint") or "").strip()
+    return ""
+
+
 def list_pseudo_record_dirs(
     *,
     root: Path | None = None,

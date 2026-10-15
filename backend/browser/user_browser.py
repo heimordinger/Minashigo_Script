@@ -198,8 +198,19 @@ class UserBrowser:
         self._browser.script_log(msg)
 
     def note_state(self, name: str | None):
-        """FSM 每轮上报当前状态；用于状态停滞检测。"""
+        """FSM 每轮上报当前状态；用于状态停滞检测 + 协作页试跑游标。"""
         self._stuck.note_state(name)
+        # 只在状态名真变化时打标记：协作页逻辑步骤据此走游标。
+        key = None if name is None else str(name).strip()
+        if key == getattr(self, "_last_noted_state", "__init__"):
+            return
+        self._last_noted_state = key
+        if key:
+            from backend.script_generator.collaborator.trial_cursor import (
+                step_mark_message,
+            )
+
+            self.script_log(step_mark_message(key))
 
     def note_progress(self):
         """脚本可手动标记有进展（可选）。"""
@@ -317,6 +328,11 @@ class UserBrowser:
             save_screenshot=save_screenshot,
             crop_game_canvas=True,
         )
+
+    async def capture_region(self, x, y, width, height):
+        """直接获取新的局部页面截图，不替换当前完整帧缓存。"""
+        await self._task_ctrl.check()
+        return await self._browser.capture_region(x, y, width, height)
 
     async def align_game_viewport(self) -> bool:
         """滚动对齐游戏区（登录识图前调用）。"""
@@ -529,6 +545,10 @@ class UserBrowser:
 
         match = self.polling_temp_cache[key]
 
+        # 要确认预期场景时，点击记录必须等确认结果一起写：一次点击 = 一条记录
+        exp = (expect or "none").strip().lower()
+        confirm = exp not in ("", "none", "off")
+
         # 与 match_image 一致：低于阈值时 match 为 falsy，即使残留坐标也不可点
         if not match or match.x is None:
             self._emit_click_hud(str(img_path), False, getattr(match, "max_val", None) if match else None)
@@ -550,10 +570,18 @@ class UserBrowser:
             f"{self.account['name']}: 点击图片:{img_path}({x},{y}), "
             f"最大匹配度:{match.max_val}"
         )
-        self._emit_click_hud(str(img_path), True, match.max_val, x=x, y=y)
+        if not confirm:
+            self._emit_click_hud(
+                str(img_path), True, match.max_val, x=x, y=y,
+                detail={
+                    "raw_xy": (float(match.x), float(match.y)),
+                    "click_offset": (float(offset[0]), float(offset[1])),
+                    "final_xy": (float(x), float(y)),
+                },
+            )
 
-        exp = (expect or "none").strip().lower()
-        if exp not in ("", "none", "off"):
+        if confirm:
+            ok = None
             try:
                 from backend.script_generator.click_confirm import confirm_after_click
                 ok = await confirm_after_click(
@@ -565,11 +593,25 @@ class UserBrowser:
                     threshold=threshold,
                     stable_ms=stable_ms,
                 )
-                if not ok:
-                    self._stuck.note_action("click", img_path, False)
-                    return False
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001 - 确认异常 = 没观察到，不等于没达成
+                ok = None
+            # expected_scene_reached 是"业务步骤成功"的观察，与
+            # visual_effect_observed（区域视觉变化）分开记（设计 §19.3）
+            self._emit_click_hud(
+                str(img_path), True, match.max_val, x=x, y=y,
+                detail={
+                    "raw_xy": (float(match.x), float(match.y)),
+                    "click_offset": (float(offset[0]), float(offset[1])),
+                    "final_xy": (float(x), float(y)),
+                    "expected_scene_reached": (None if ok is None else bool(ok)),
+                    "confirm_policy": exp,
+                    "failed_stage": "confirm" if ok is False else "",
+                },
+            )
+            # 与改动前保持一致：确认抛异常时**不**判失败（老行为是 pass）
+            if ok is False:
+                self._stuck.note_action("click", img_path, False)
+                return False
 
         self.invalidate_frame()
         try:
@@ -578,25 +620,157 @@ class UserBrowser:
             self.polling_temp_cache = {}
         return True
 
-    def _emit_click_hud(self, img_path, ok, score=None, x=None, y=None):
+    async def click_image_effect(
+            self,
+            img_path: Union[str, Path],
+            pianyi=(0, 0),
+            down_time=0.12,
+            threshold: float = 0.9,
+            use_color_check: bool = False,
+            match_select: str = "best",
+            max_delay: float | None = None,
+            match_mode: str = "image",
+            pixel_tol: float = 8.0,
+            interval: float = 0.15,
+            effect_threshold: float = 0.75,
+    ) -> bool:
+        """点击图片，并以原目标区域的局部新帧判断是否出现视觉反馈。"""
+        del max_delay  # 与 click_image 保持调用参数兼容；当前实现同样不使用它
+        await self._task_ctrl.check()
+        await self._observer.ensure_frame()
+        match = await self.match_image(
+            img_path=img_path,
+            threshold=threshold,
+            use_color_check=use_color_check,
+            match_select=match_select,
+            match_mode=match_mode,
+            pixel_tol=pixel_tol,
+        )
+        if not match or match.x is None:
+            self._stuck.note_action("click", img_path, False)
+            # 连模板都没命中：这次"点击"根本没发生，但失败事实要留痕
+            self._emit_click_hud(
+                str(img_path), False, None,
+                detail={"failed_stage": "match"},
+            )
+            return False
+
+        width = int(getattr(match, "width", 0) or 0)
+        height = int(getattr(match, "height", 0) or 0)
+        if width <= 0 or height <= 0:
+            self._browser.script_log(
+                f"[click_image_effect] 缺少命中尺寸，无法局部确认: {img_path}"
+            )
+            self._emit_click_hud(
+                str(img_path), False, getattr(match, "max_val", None),
+                detail={"failed_stage": "no_hit_size"},
+            )
+            return False
+
+        offset = human_offset(pianyi)
+        click_x = match.x + offset[0]
+        click_y = match.y + offset[1]
+        await self.click(x=click_x, y=click_y, down_time=down_time)
+        self._stuck.note_action("click", img_path, True)
+
+        if interval > 0:
+            await asyncio.sleep(float(interval))
+        await self._task_ctrl.check()
+
+        left = float(match.x) - width / 2.0
+        top = float(match.y) - height / 2.0
+        region = await self.capture_region(left, top, width, height)
+        from backend.matcher.effect_match import effect_match_score
+
+        score = await asyncio.to_thread(
+            effect_match_score, self._browser.matcher, region, img_path,
+        )
+        changed = score < float(effect_threshold)
+        # 这就是"目标区域是否发生可观察视觉变化"的实测结果：落成
+        # visual_effect_observed（设计 §19.3），未生效时附上对照区域关键帧。
+        frame_after = ""
+        if not changed:
+            frame_after = self._save_hud_key_frame(
+                region, source="click_effect_region",
+            )
+        self._emit_click_hud(
+            str(img_path), True, score, x=click_x, y=click_y,
+            detail={
+                "visual_effect_observed": bool(changed),
+                "raw_xy": (float(match.x), float(match.y)),
+                "click_offset": (float(offset[0]), float(offset[1])),
+                "final_xy": (float(click_x), float(click_y)),
+                "frame_after": frame_after,
+                "confirm_policy": "effect",
+                "failed_stage": "" if changed else "effect",
+            },
+        )
+        self._browser.script_log(
+            f"[click_image_effect] {'生效' if changed else '未观察到变化'} "
+            f"path={img_path} score={score:.4f} threshold={effect_threshold:.4f} "
+            f"region={width}x{height} interval={float(interval):.3f}s"
+        )
+        if changed:
+            self._note_progress()
+        return changed
+
+    def _browser_account_name(self) -> str:
+        """当前账号名；取不到返回空串（此时 HUD 事件本就无处归位）。"""
+        try:
+            return str(self.account["name"] or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _hud_ctrl(self):
         ctrl = getattr(self, "controller", None)
         if not ctrl and hasattr(self, "_browser"):
             ctrl = getattr(self._browser, "controller", None)
-        if not ctrl or not hasattr(ctrl, "emit_match_event"):
+        return ctrl if ctrl is not None and hasattr(ctrl, "emit_match_event") else None
+
+    def _emit_click_hud(self, img_path, ok, score=None, x=None, y=None, detail=None):
+        ctrl = self._hud_ctrl()
+        if ctrl is None:
+            return
+        name = self._browser_account_name()
+        if not name:
             return
         try:
-            account = self.account["name"]
-        except Exception:
-            return
-        ctrl.emit_match_event(
-            account=account,
-            img_path=img_path,
-            status="ok" if ok else "fail",
-            score=score,
-            action="click",
-            x=x,
-            y=y,
-        )
+            ctrl.emit_match_event(
+                account=name,
+                img_path=img_path,
+                status="ok" if ok else "fail",
+                score=score,
+                action="click",
+                x=x,
+                y=y,
+                # 执行器自己算出来的补充事实（视觉变化/预期场景/关键帧引用）
+                detail=detail,
+            )
+        except TypeError:
+            # 老控制器（不接受 detail）时退回基础字段，遥测降级但不影响执行
+            ctrl.emit_match_event(
+                account=name,
+                img_path=img_path,
+                status="ok" if ok else "fail",
+                score=score,
+                action="click",
+                x=x,
+                y=y,
+            )
+
+    def _save_hud_key_frame(self, frame, *, source: str) -> str:
+        """把关键帧存进当前试运行；拿不到就返回空串（绝不打断执行）。"""
+        name = self._browser_account_name()
+        if not name or frame is None:
+            return ""
+        try:
+            from backend.script_generator.collaborator_v3.runtime.trial_frames import (
+                save_key_frame,
+            )
+
+            return str(save_key_frame(name, frame, source=source) or "")
+        except Exception:  # noqa: BLE001 - 关键帧是加固，不是主路径
+            return ""
 
     async def click_text(
             self,
@@ -837,5 +1011,3 @@ class UserBrowser:
             await self._browser.page.evaluate("sessionStorage.clear()")
         except Exception:
             pass
-
-

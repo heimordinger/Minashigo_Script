@@ -28,7 +28,15 @@ class CollabHistoryStore:
         safe = re.sub(r"[^\w\u4e00-\u9fff\-]+", "_", session_id or "chat")
         return self.root / f"{safe}.json"
 
-    def save(self, session: CollabSession) -> Path:
+    def save(self, session: CollabSession, *, require_content: bool = True) -> Optional[Path]:
+        """写入会话文件。
+
+        ``require_content=True``（默认）时，**还没有任何用户消息的会话不落盘**：
+        打开协作页/切 Tab/切运行模式都不该凭空产生一个空会话，否则历史列表里
+        会被这些"只带一句欢迎语"的空壳占满，`load_latest` 也会指到它们。
+        """
+        if require_content and not has_user_content(session):
+            return None
         if not session.session_id:
             session.ensure_id()
         session.touch()
@@ -54,7 +62,11 @@ class CollabHistoryStore:
         return CollabSession.from_dict(data)
 
     def load_latest(self) -> Optional[CollabSession]:
-        """按文件 mtime 取最近一次会话；无则 None。"""
+        """按文件 mtime 取最近一次**真正聊过**的会话；无则 None。
+
+        跳过没有用户消息的空壳：它们会让"打开协作页"接到一个空白会话，
+        看起来就像每次都在新建会话。
+        """
         files = sorted(self.root.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
         for p in files:
             try:
@@ -62,6 +74,8 @@ class CollabHistoryStore:
             except Exception:
                 continue
             if not isinstance(data, dict):
+                continue
+            if not _has_user_text(data.get("messages")):
                 continue
             try:
                 return CollabSession.from_dict(data)
@@ -140,3 +154,19 @@ def _first_user_text(msgs: Any) -> str:
         if isinstance(m, dict) and m.get("role") == "user":
             return str(m.get("text") or "").strip()
     return ""
+
+
+def has_user_content(session: Any) -> bool:
+    """会话里是否已经有过用户发言——没有就不值得落盘。"""
+    return _has_user_text(getattr(session, "messages", None))
+
+
+def _has_user_text(messages: Any) -> bool:
+    if not isinstance(messages, list):
+        return False
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role") or "") == "user" and str(item.get("text") or "").strip():
+            return True
+    return False

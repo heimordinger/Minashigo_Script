@@ -15,13 +15,37 @@ def _now() -> str:
     return datetime.now().isoformat(timespec="seconds")
 
 
+def migrate_legacy_artifacts(art: dict[str, Any] | None) -> dict[str, Any]:
+    """旧版 artifacts 归一。
+
+    ``ground_truth``（全局"标准答案"）早已不参与任何判断——用户说法现在按
+    「图片作用域 + 用户说法」存在 ``user_claims`` 里。但旧会话文件里那份
+    列表还留着，看起来像一堆互相矛盾的标准答案（实况同时存在「8 张卡
+    3,3,3,1,1,0,0,0」和「9 张卡(3x3)」）。这里统一归档成
+    ``legacy_ground_truth``，让会话状态诚实、体检也不再误读。
+    """
+    if not isinstance(art, dict):
+        return {}
+    legacy = art.get("ground_truth")
+    if isinstance(legacy, list) and legacy:
+        art = dict(art)
+        art.pop("ground_truth", None)
+        archived = art.get("legacy_ground_truth")
+        archived = list(archived) if isinstance(archived, list) else []
+        art["legacy_ground_truth"] = (archived + list(legacy))[-8:]
+    return art
+
+
 def new_session_id(goal: str = "") -> str:
     import re
+    from uuid import uuid4
 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     s = re.sub(r"[^\w\u4e00-\u9fff\-]+", "_", (goal or "chat").strip())
     s = re.sub(r"_+", "_", s).strip("_")[:20] or "chat"
-    return f"{ts}_{s}"
+    # 时间戳只到秒：同一秒内新建的两个会话会撞成同一个 id，后写的把先写的覆盖掉。
+    # 加一小段随机后缀，保证"新建会话"不会吃掉上一个会话。
+    return f"{ts}_{s}_{uuid4().hex[:4]}"
 
 
 @dataclass
@@ -55,6 +79,8 @@ class CollabSession:
     last_shape_label: str = ""
     last_preview_path: str = ""
     last_preview_caption: str = ""
+    # 上次试跑走过的步骤状态名（游标轨迹，恢复会话时接着显示「试跑至此」）
+    last_trial_trace: list[str] = field(default_factory=list)
 
     def ensure_id(self) -> str:
         if not self.session_id:
@@ -79,7 +105,7 @@ class CollabSession:
                 and str(last.get("text") or "").strip() == text
             ):
                 return
-        self.messages.append({"role": role, "text": text})
+        self.messages.append({"role": role, "text": text, "at": _now()})
         self.touch()
 
     def reset(self) -> None:
@@ -114,7 +140,7 @@ class CollabSession:
             "frame_path": str(self.frame_path) if self.frame_path else "",
             "logic": self.logic.to_dict(),
             "probe": _slim_probe(self.probe),
-            "artifacts": dict(self.artifacts or {}),
+            "artifacts": migrate_legacy_artifacts(dict(self.artifacts or {})),
             "assets": assets,
             "overlays": overlays,
             "focused_asset_ids": [str(x) for x in (self.focused_asset_ids or [])][:2],
@@ -132,6 +158,7 @@ class CollabSession:
             "last_shape_label": self.last_shape_label,
             "last_preview_path": self.last_preview_path,
             "last_preview_caption": self.last_preview_caption,
+            "last_trial_trace": list(self.last_trial_trace or []),
         }
 
     @classmethod
@@ -164,7 +191,9 @@ class CollabSession:
             frame_path=Path(fp) if fp else None,
             logic=LogicGraph.from_dict(data.get("logic") if isinstance(data.get("logic"), dict) else None),
             probe=dict(data.get("probe") or {}) if isinstance(data.get("probe"), dict) else {},
-            artifacts=dict(data.get("artifacts") or {}) if isinstance(data.get("artifacts"), dict) else {},
+            artifacts=migrate_legacy_artifacts(
+                dict(data.get("artifacts") or {}) if isinstance(data.get("artifacts"), dict) else {}
+            ),
             assets=assets,
             overlays=overlays,
             focused_asset_ids=[str(x) for x in (data.get("focused_asset_ids") or [])][:2],
@@ -189,6 +218,9 @@ class CollabSession:
             last_shape_label=str(data.get("last_shape_label") or ""),
             last_preview_path=str(data.get("last_preview_path") or ""),
             last_preview_caption=str(data.get("last_preview_caption") or ""),
+            last_trial_trace=[
+                str(x) for x in (data.get("last_trial_trace") or []) if str(x).strip()
+            ],
         )
         sess.ensure_id()
         return sess

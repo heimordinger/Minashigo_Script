@@ -11,22 +11,24 @@ from typing import Any
 PLAN_KINDS = ("single_fsm", "multi_task", "utility")
 IMAGE_ROLES = ("id", "button", "other")
 
-_ALLOWED_BROWSER_METHODS = frozenset({
-    "match_image",
-    "match_image_multi",
-    "click_image",
-    "click",
-    "wait_image",
-    "b_sleep",
-    "update_frame",
-    "request_fps",
-    "release_fps",
-    "script_log",
-    "note_state",
-    "note_progress",
-    "enable_pseudo_record",
-    "finish_pseudo_record",
-})
+def _registry_derived_browser_methods() -> frozenset[str]:
+    """从 api_contracts registry 派生（不再手写第二份名单）。
+
+    取各可执行 profile 已批准能力的并集，只用于计划解析时的**粗筛**；
+    权威的按 profile 判定在 ``api_contracts.validator``。
+    """
+    try:
+        from backend.script_generator.api_contracts import registry
+
+        names: set[str] = set()
+        for name in registry.executable_profile_names():
+            names.update(registry.approved_names(name, allow_login=True))
+        return frozenset(names)
+    except Exception:  # noqa: BLE001 - 契约包不可用时退回空集（粗筛不拦）
+        return frozenset()
+
+
+_ALLOWED_BROWSER_METHODS = _registry_derived_browser_methods()
 
 _NAV_HINTS = ("未知", "返回", "主界面", "出击界面", "出击")
 

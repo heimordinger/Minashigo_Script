@@ -90,9 +90,15 @@ async def save_task_stop_frame(
     account: dict,
     reason: str,
     task_name: str = "",
+    note: str = "",
+    log_saved: bool = False,
 ) -> str | None:
     """
     保存结束帧。reason: stopped | error
+    note: 附加说明（异常堆栈 / 最近日志），写成同名 .txt 便于事后排查。
+    log_saved: 本次运行的完整日志已由 RuntimeLogBackup 落盘，此时 note 里**不要**
+        再贴一遍最近日志（原来只取内存 buffer 的 40 行），只留一句指针，
+        免得同一批日志存两份、还容易对不上。
     返回相对路径字符串；无帧时返回 None。
     """
     try:
@@ -111,6 +117,23 @@ async def save_task_stop_frame(
         if not ok:
             return None
         buf.tofile(str(path))
+        if (note or "").strip():
+            try:
+                extra = "" if not log_saved else (
+                    "\n(full runtime log: logs/runtime/ ; no duplicated tail here)\n"
+                )
+                path.with_suffix(".txt").write_text(
+                    f"account: {account.get('name', '')}\n"
+                    f"time: {time.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                    f"reason: {reason}\n"
+                    f"task: {task_name}\n"
+                    f"frame: screenshots/daily_stop/{filename}\n"
+                    f"{extra}"
+                    f"\n{note.strip()}\n",
+                    encoding="utf-8",
+                )
+            except Exception:
+                pass
         _rotate_stop_frames(account_safe, MAX_STOP_FRAMES_KEEP)
         return f"screenshots/daily_stop/{filename}"
     except Exception:

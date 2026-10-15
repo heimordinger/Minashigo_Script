@@ -39,12 +39,15 @@ class WindowPickerDialog(QDialog):
     COL_CLASS = 1
     COL_SIZE = 2
     COL_HWND = 3  # 隐藏列
+    COL_ROLE = 4  # shell / render / mirror
+    COL_INSTANCE = 5  # 第几开
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._targets: list[Win32Target] = []
         self.selected_target: Optional[Win32Target] = None
         self._has_loaded = False
+        self._layer_info: dict[int, dict] = {}
         self._preview_timer = QTimer(self)
         self._preview_timer.setSingleShot(True)
         self._preview_timer.setInterval(300)
@@ -88,8 +91,10 @@ class WindowPickerDialog(QDialog):
 
         # ── 上：表格 ──
         self._table = QTableWidget()
-        self._table.setColumnCount(4)
-        self._table.setHorizontalHeaderLabels(["窗口标题", "类名", "客户区", "HWND"])
+        self._table.setColumnCount(6)
+        self._table.setHorizontalHeaderLabels(
+            ["窗口标题", "类名", "客户区", "HWND", "角色", "实例"]
+        )
         self._table.setColumnHidden(self.COL_HWND, True)  # 隐藏 HWND 列
         self._table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self._table.setSelectionMode(QAbstractItemView.SingleSelection)
@@ -104,6 +109,8 @@ class WindowPickerDialog(QDialog):
         hdr.setSectionResizeMode(self.COL_TITLE, QHeaderView.Stretch)
         hdr.setSectionResizeMode(self.COL_CLASS, QHeaderView.ResizeToContents)
         hdr.setSectionResizeMode(self.COL_SIZE, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(self.COL_ROLE, QHeaderView.ResizeToContents)
+        hdr.setSectionResizeMode(self.COL_INSTANCE, QHeaderView.ResizeToContents)
 
         splitter.addWidget(self._table)
 
@@ -305,12 +312,32 @@ class WindowPickerDialog(QDialog):
         """扫描完成，主线程更新界面。"""
         self._targets = targets
         self._has_loaded = True
+        self._layer_info = self._build_layer_info()
         self._scan_btn.setEnabled(True)
         self._scan_btn.setText("重新获取")
         self._preview_btn.setEnabled(True)
         self._search_input.setEnabled(True)
         self._loading_bar.setVisible(False)  # 停止动画
         self._apply_filter()
+
+    def _build_layer_info(self) -> dict[int, dict]:
+        """多开分组：hwnd → {role, instance, instance_name}（只读，失败不影响使用）。"""
+        info: dict[int, dict] = {}
+        try:
+            from backend.automation.emulator_target import group_emulator_instances
+
+            for g in group_emulator_instances():
+                for layer in g.get("layers") or []:
+                    h = int(layer.get("hwnd") or 0)
+                    if h:
+                        info[h] = {
+                            "role": str(layer.get("role") or ""),
+                            "instance": int(g.get("index") or 0),
+                            "instance_name": str(g.get("name") or ""),
+                        }
+        except Exception as e:
+            print(f"[WindowPicker] 实例分组失败（忽略）: {e}")
+        return info
 
     def _apply_filter(self):
         """初始填充表格（仅一次：扫描完成后调用）。"""
@@ -326,6 +353,22 @@ class WindowPickerDialog(QDialog):
             size_text = f"{cr['width']}×{cr['height']}" if cr['width'] > 0 else "(最小化)"
             self._table.setItem(row, self.COL_SIZE, QTableWidgetItem(size_text))
             self._table.setItem(row, self.COL_HWND, QTableWidgetItem(str(target.hwnd)))
+            meta = self._layer_info.get(int(target.hwnd)) or {}
+            role_text = str(meta.get("role") or "")
+            inst_text = (
+                f"{meta.get('instance')}·{meta.get('instance_name')}"
+                if meta.get("instance")
+                else ""
+            )
+            role_item = QTableWidgetItem(role_text)
+            if role_text == "mirror":
+                role_item.setToolTip("镜像/图像层：能截图，消息点击通常无效")
+            elif role_text == "shell":
+                role_item.setToolTip("外壳：能截图，点击可能无效")
+            elif role_text == "render":
+                role_item.setToolTip("渲染/操作层：应作为点击目标")
+            self._table.setItem(row, self.COL_ROLE, role_item)
+            self._table.setItem(row, self.COL_INSTANCE, QTableWidgetItem(inst_text))
 
         self._table.setSortingEnabled(True)
         # 初始无搜索词，显示全部
@@ -477,14 +520,38 @@ class WindowPickerDialog(QDialog):
             return
         x = self._click_x.value()  # 截图物理像素
         y = self._click_y.value()
+        click_target = self._resolve_click_target(target)
+        note = ""
         try:
-            target.click(x, y)
-            self._click_result.setText(f"✓ 已发送 ({x}, {y})")
+            cw = int(click_target.client_rect["width"])
+            ch = int(click_target.client_rect["height"])
+            if (cw, ch) != (getattr(self, "_frame_w", cw), getattr(self, "_frame_h", ch)):
+                note = f" ⚠ 客户区 {cw}×{ch} 与预览不一致，坐标可能需换算"
+        except Exception:
+            pass
+        try:
+            click_target.click(x, y)
+            extra = (
+                f" → hwnd={click_target.hwnd}"
+                if int(click_target.hwnd) != int(target.hwnd)
+                else ""
+            )
+            self._click_result.setText(f"✓ 已发送 ({x}, {y}){extra}{note}")
             self._click_result.setStyleSheet("color: #4caf50; font-size: 11px;")
             self._preview_timer.start()
         except Exception as e:
             self._click_result.setText(f"✗ 失败: {e}")
             self._click_result.setStyleSheet("color: #e63946; font-size: 11px;")
+
+    @staticmethod
+    def _resolve_click_target(target: Win32Target) -> Win32Target:
+        """外壳/镜像层 → 真正的渲染层；点击与点击测试都打这一层。"""
+        try:
+            from backend.automation.emulator_target import resolve_automation_target
+
+            return resolve_automation_target(int(target.hwnd))
+        except Exception:
+            return target
 
     def _save_template(self):
         """从当前截图截取模板（以当前 X/Y 为中心的 100×100 区域）。"""
@@ -567,7 +634,22 @@ class WindowPickerDialog(QDialog):
         if target is None:
             QMessageBox.warning(self, "提示", "请先选择一个窗口")
             return
-        self.selected_target = target
+        resolved = self._resolve_click_target(target)
+        if int(resolved.hwnd) != int(target.hwnd):
+            # 让账号列表仍显示人有意义的标题（渲染子窗常无标题）
+            try:
+                resolved._display_title = str(target.title or "")
+            except Exception:
+                pass
+            meta = self._layer_info.get(int(target.hwnd)) or {}
+            QMessageBox.information(
+                self,
+                "已自动绑定渲染层",
+                f"选中的「{target.title}」是{meta.get('role') or '外壳/镜像'}层，"
+                f"点击会打到渲染层 hwnd={resolved.hwnd}。\n"
+                "若仍点不动，可在协作页说「点不动」跑一次窗口诊断。",
+            )
+        self.selected_target = resolved
         self.accept()
 
     # ── 外部调用接口 ─────────────────────────────────────────
@@ -604,4 +686,3 @@ if __name__ == "__main__":
         print(f"  客户区:    {target.client_rect['width']}×{target.client_rect['height']}")
     else:
         print("用户取消了选择")
-

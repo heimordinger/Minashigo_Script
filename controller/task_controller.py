@@ -62,6 +62,98 @@ class TaskController:
         self._future = None
         self._paused = False
         self._stopped = False
+        #: 本次协作脚本试运行的登记信息 ``(task_id, run_id, 是否由本控制器收尾)``。
+        self._collab_trial: tuple[str, str, bool] | None = None
+
+    # ── 协作脚本试运行：**由 TaskController 自动登记**（设计 §19.6）──
+    #
+    # 脚本侧不需要调用任何录制 API；面板会在 start_task 之前先把同一份上下文
+    # 放进 ``account["_collab_trial"]``。面板那次登记成功后本控制器只做"认领"，
+    # 面板没登记成（异常/换了启动路径）时本控制器补登记——两条路的**输入完全
+    # 相同**（同一个 task_id / script_name / code），所以 script_hash 不会分叉，
+    # 「复测证据 ↔ 主轮」的比对依然成立。
+
+    def _collab_trial_context(self) -> dict | None:
+        ctx = (self.account or {}).get("_collab_trial")
+        if not isinstance(ctx, dict):
+            return None
+        if not str(ctx.get("task_id") or "").strip():
+            return None
+        if not str(ctx.get("code") or "").strip():
+            return None
+        return ctx
+
+    def begin_collab_trial(self) -> str:
+        """登记（或认领）本次试运行；返回 run_id（非协作来源返回空串）。"""
+        self._collab_trial = None
+        ctx = self._collab_trial_context()
+        if ctx is None:
+            return ""
+        name = str((self.account or {}).get("name") or "")
+        if not name:
+            return ""
+        try:
+            from backend.script_generator.collaborator_v3.runtime import trial_runs
+
+            existing = trial_runs.active_run(name)
+            if existing:
+                # 面板已登记：认领即可，**不再造第二条**
+                self._collab_trial = (str(existing[0]), str(existing[1]), False)
+                return str(existing[1])
+            run_id = trial_runs.start_run(
+                task_id=str(ctx.get("task_id") or ""),
+                session_id=str(ctx.get("session_id") or ""),
+                script_name=str(ctx.get("script_name") or ""),
+                code=str(ctx.get("code") or ""),
+                account=name,
+                main_turn_id=str(ctx.get("main_turn_id") or ""),
+            )
+            if not run_id:
+                return ""
+            trial_runs.bind_active_run(name, str(ctx.get("task_id") or ""), run_id)
+            self._collab_trial = (str(ctx.get("task_id") or ""), run_id, True)
+            return run_id
+        except Exception as exc:  # noqa: BLE001 - 登记失败不该拦住脚本执行
+            print(f"[TaskController] 试运行登记失败: {exc}")
+            self._collab_trial = None
+            return ""
+
+    def end_collab_trial(self, status: str) -> None:
+        """收尾：只有**自己登记**的那次才由自己 finish/解绑。"""
+        info = self._collab_trial
+        self._collab_trial = None
+        # 上下文用完了就清掉，避免下一次 start 复用上一次的 run 归属
+        try:
+            (self.account or {}).pop("_collab_trial", None)
+        except Exception:  # noqa: BLE001
+            pass
+        if not info:
+            return
+        task_id, run_id, owned = info
+        if not owned:
+            return  # 面板登记的由面板收尾，别抢它的活
+        try:
+            from backend.script_generator.collaborator_v3.runtime import trial_runs
+
+            # 兜底路径同样要把伪录制接进结构化遥测（设计 §19.4/§19.6）
+            try:
+                from backend.script_generator.collaborator_v3.runtime import pseudo_import
+
+                pseudo_import.import_pseudo_record_for_run(
+                    task_id,
+                    run_id,
+                    account_hint=str((self.account or {}).get("name") or ""),
+                )
+            except Exception as exc:  # noqa: BLE001
+                print(f"[TaskController] 伪录制导入失败: {exc}")
+            trial_runs.finish_run(
+                task_id, run_id, status=str(status or "unknown")
+            )
+            trial_runs.clear_active_run(str((self.account or {}).get("name") or ""))
+            # 同上：跨 run 不继承 match→click 的关联记忆
+            trial_runs.clear_match_links(str((self.account or {}).get("name") or ""))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[TaskController] 试运行收尾失败: {exc}")
 
     def start(self, *, task_name):
         if self._future is not None:
@@ -77,16 +169,45 @@ class TaskController:
         self.task_name = task_name
         self._future = self.controller.submit(self._run_async())
 
-    async def _archive_stop_frame(self, target, *, reason: str) -> None:
+    async def _archive_stop_frame(self, target, *, reason: str, note: str = "") -> None:
         if target is None:
             return
         from backend.automation.stop_frame_archive import save_task_stop_frame
+
+        # 带上最近日志（脚本自己打的坐标/状态日志都在里面），失败时的堆栈另附。
+        # 但如果本次运行的完整日志已经由 RuntimeLogBackup 落盘了，就不要再贴一份 40 行
+        # 的截断版 —— 那既是重复，又和完整日志对不上。
+        log_saved = False
+        if (getattr(self.controller, "runtime_log_path", None) is not None
+                and callable(self.controller.runtime_log_path)):
+            try:
+                log_saved = self.controller.runtime_log_path() is not None
+            except Exception:
+                log_saved = False
+
+        tail = ""
+        if not log_saved:
+            try:
+                name = str((self.account or {}).get("name") or "")
+                buf = getattr(self.controller, "_log_buffer", None)
+                if name and isinstance(buf, dict):
+                    dq = buf.get(name) or []
+                    lines = []
+                    for ev in list(dq)[-40:]:
+                        msg = getattr(ev, "message", None) or str(ev)
+                        lines.append(str(msg).strip())
+                    tail = "\n".join(lines)
+            except Exception:
+                tail = ""
+        full_note = "\n".join(x for x in (note.strip(), "--- 最近日志 ---", tail) if x)
 
         path = await save_task_stop_frame(
             target,
             account=self.account,
             reason=reason,
             task_name=self.task_name,
+            note=full_note,
+            log_saved=log_saved,
         )
         if path:
             self.controller.emit_log(
@@ -96,17 +217,48 @@ class TaskController:
                 source="runner",
             )
 
+    def _record_trial_exception(self, phase: str, message: str) -> None:
+        """把执行期异常写进该次试运行的结构化事件（设计 §19.6 / 验收场景 11）。
+
+        「脚本第一行就炸」也必须留下 run + 异常事件，否则 `RUNTIME_EXCEPTION`
+        这个诊断码在生产里永远不可能出现（`record_exception` 以前只有测试在调）。
+        留痕失败不影响主流程：脚本已经炸了，这里只是补记录。
+        """
+        info = self._collab_trial
+        if not info:
+            return
+        task_id, run_id = str(info[0]), str(info[1])
+        if not (task_id and run_id):
+            return
+        try:
+            from backend.script_generator.collaborator_v3.runtime import trial_runs
+
+            trial_runs.record_exception(
+                task_id, run_id, phase=str(phase or "unknown"), message=str(message or "")
+            )
+        except Exception as exc:  # noqa: BLE001 - 留痕失败不该盖住原异常
+            print(f"[TaskController] 试运行异常留痕失败: {exc}")
+
     async def _run_async(self):
         name = self.account["name"]
         run_target = None
+        # ⚠️ 必须在 try **之前**初始化：`_load_script()` 抛异常时下面的 finally
+        # 会引用 user_browser，晚初始化会把原始异常盖成 NameError（很难查）。
+        user_browser = None
+        trial_status = "unknown"
+        #: 异常发生的阶段（import / target / run）——写进 runtime.exception 事件
+        trial_phase = "import"
 
         try:
+            # 协作脚本试运行登记（设计 §19.6）：脚本不需要主动调用任何录制 API。
+            # 放在最前面，连"脚本加载就炸"的一次也留下记录。
+            self.begin_collab_trial()
             # 先加载脚本，通过 do_work 的参数类型注解决定目标
             script = self._load_script()
             prefer_window = self._detect_prefer_window(script)
+            trial_phase = "target"
 
             # ========== 按注解类型 + _target 倾向取实例 ==========
-            user_browser = None
 
             if prefer_window is None:
                 # Union(UserBrowser | UserWindow)：看 _target 倾向，不存在则 fallback
@@ -191,15 +343,30 @@ class TaskController:
                 except Exception:
                     pass
 
+            # 运行时日志备份：本次任务单独一份文件（省得排查时手工贴日志）
+            try:
+                self.controller.begin_log_run(label=self.task_name, account=name)
+            except Exception:
+                pass
+
             # 按需观察：脚本运行期间默认声明 floor Hz；结束即释放（无人则停截）
             from backend.automation.frame_observer import DEFAULT_SCRIPT_FPS
             _obs = user_browser
+            try:
+                # 任务开始 → 解除冷定标日志静音（任务结束时会在 finally 里静音）
+                from backend.matcher.scale_calibrate import set_cold_calibration_muted
+
+                set_cold_calibration_muted(False)
+            except Exception:
+                pass
             try:
                 if hasattr(_obs, "request_fps"):
                     await _obs.request_fps(DEFAULT_SCRIPT_FPS, key="script")
             except Exception as e:
                 print(f"[TaskController] request_fps 失败: {e}")
 
+            # 从这里开始是"脚本真的在跑"：之后抛异常都算运行期异常
+            trial_phase = "run"
             try:
                 await script.do_work(user_browser)
             finally:
@@ -208,10 +375,15 @@ class TaskController:
                         await _obs.release_fps("script")
                 except Exception as e:
                     print(f"[TaskController] release_fps 失败: {e}")
+            trial_phase = "finish"
 
             self.controller.on_task_finished(name)
+            trial_status = "finished"
 
         except (TaskStopped, asyncio.CancelledError):
+            trial_status = "stopped"
+            # 停止也留一条结构化事件：否则"为什么停了"只能去翻文本日志
+            self._record_trial_exception("stopped", "任务被停止")
             await self._archive_stop_frame(run_target, reason="stopped")
             self.controller.emit_log(
                 account=name,
@@ -222,7 +394,12 @@ class TaskController:
             self.controller.on_task_stopped(name)
 
         except Exception:
-            await self._archive_stop_frame(run_target, reason="error")
+            trial_status = "error"
+            # 验收场景 11：脚本第一行就炸时，run 与异常事件都要留下
+            self._record_trial_exception(trial_phase, traceback.format_exc())
+            await self._archive_stop_frame(
+                run_target, reason="error", note=traceback.format_exc()
+            )
             self.controller.emit_log(
                 account=name,
                 level=LogLevel.ERROR,
@@ -249,6 +426,24 @@ class TaskController:
             self._future = None
             self._stopped = False
             self._paused = False
+            # 试运行收尾：登记是自己做的才由自己 finish（面板登记的由面板收尾）
+            self.end_collab_trial(trial_status)
+            # 注销冷定标日志槽 + 静音：任务结束后 adaptive_match 有可能还留在
+            # asyncio.to_thread 的线程里跑完（协程 cancel 掉了，线程取消不掉），
+            # 不收拾干净的话脚本停了日志还在刷。
+            for tgt in (run_target, user_browser):
+                unreg = getattr(tgt, "unregister_cold_calibration_sink", None)
+                if callable(unreg):
+                    try:
+                        unreg()
+                    except Exception:
+                        pass
+            try:
+                from backend.matcher.scale_calibrate import set_cold_calibration_muted
+
+                set_cold_calibration_muted(True)
+            except Exception:
+                pass
 
     def _load_script(self):
         # 将相对路径（如 孤儿/孤儿登录.py）转为模块名（如 scripts.孤儿.孤儿登录）

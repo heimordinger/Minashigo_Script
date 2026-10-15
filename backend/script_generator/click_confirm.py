@@ -43,6 +43,12 @@ async def _wait_frame_advance(browser, prev_ts: float, timeout: float = 1.5) -> 
             ts2 = float(getattr(inner, "_frame_ts", 0) or 0)
             if ts2 > prev_ts:
                 return
+        # UserWindow 的 ts 挂在 FrameObserver 上（否则这里会空等到超时）
+        obs = getattr(browser, "_observer", None)
+        if obs is not None:
+            ts3 = float(getattr(obs, "_frame_ts", 0) or 0)
+            if ts3 > prev_ts:
+                return
         await asyncio.sleep(0.05)
         ensure = getattr(browser, "update_frame", None) or getattr(browser, "invalidate_frame", None)
         if callable(getattr(browser, "invalidate_frame", None)):
@@ -85,6 +91,14 @@ async def confirm_after_click(
     appear = appear_path
 
     while time.time() < deadline:
+        # 这里是「合法等待」（轮询确认转场），清掉「连续匹配同一模板」计数；
+        # 否则 confirm 轮询会把看门狗的 match 成功连击推到上限（40）直接把任务判死。
+        mark = getattr(browser, "note_progress", None)
+        if callable(mark):
+            try:
+                mark()
+            except Exception:
+                pass
         if callable(getattr(browser, "invalidate_frame", None)):
             try:
                 browser.invalidate_frame()

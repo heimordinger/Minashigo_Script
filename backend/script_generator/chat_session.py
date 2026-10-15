@@ -10,6 +10,10 @@ SESSION_VERSION = 1
 # 单条 user/assistant 文本上限，避免续写爆窗
 _MAX_MSG_CHARS = 80_000
 _MAX_MESSAGES = 12
+# 整段历史的总字符预算（不含 system）；超了就保留首轮介绍 + 最近若干轮
+_MAX_TOTAL_CHARS = 60_000
+# 预算内必须保住的前若干条（首轮介绍 + 首版代码）
+_HEAD_KEEP = 2
 
 
 def _clip(text: str, limit: int = _MAX_MSG_CHARS) -> str:
@@ -37,8 +41,17 @@ def build_generate_session(
     }
 
 
-def session_to_llm_messages(session: Optional[dict[str, Any]]) -> list[dict]:
-    """转为 call_llm 用的 messages（content 为 text parts）。"""
+def session_to_llm_messages(
+    session: Optional[dict[str, Any]],
+    *,
+    max_chars: int = _MAX_TOTAL_CHARS,
+    head_keep: int = _HEAD_KEEP,
+) -> list[dict]:
+    """转为 call_llm 用的 messages（content 为 text parts）。
+
+    超过总预算时保留「首轮介绍 + 最近若干轮」，中间轮次丢弃：
+    历史事故是整段会话每轮重发，单轮输入冲到十几万 token、一次重修 53 万。
+    """
     if not isinstance(session, dict):
         return []
     out: list[dict] = []
@@ -65,7 +78,60 @@ def session_to_llm_messages(session: Optional[dict[str, Any]]) -> list[dict]:
             "role": role,
             "content": [{"type": "text", "text": _clip(text)}],
         })
-    return out
+    return _trim_to_budget(out, max_chars=max_chars, head_keep=head_keep)
+
+
+def _msg_chars(msg: dict) -> int:
+    content = msg.get("content")
+    if isinstance(content, list) and content:
+        return len(str(content[0].get("text") or ""))
+    return len(str(content or ""))
+
+
+def _trim_to_budget(msgs: list[dict], *, max_chars: int, head_keep: int) -> list[dict]:
+    """总量裁剪：先保头部，再从尾部往回补，中间丢掉。"""
+    if not msgs or max_chars <= 0:
+        return msgs
+    if sum(_msg_chars(m) for m in msgs) <= max_chars:
+        return msgs
+
+    head = msgs[: max(1, head_keep)]
+    head_chars = sum(_msg_chars(m) for m in head)
+    half = max(2_000, int(max_chars * 0.5))
+    if head_chars > half:
+        # 头部自己就超预算：只留第一条并裁到一半预算
+        first = msgs[0]
+        text = str(first["content"][0].get("text") or "")
+        head = [
+            {
+                "role": first.get("role"),
+                "content": [{"type": "text", "text": _clip(text, half)}],
+            }
+        ]
+        head_chars = _msg_chars(head[0])
+
+    budget = max_chars - head_chars
+    tail: list[dict] = []
+    for msg in reversed(msgs[head_keep:]):
+        n = _msg_chars(msg)
+        if n > budget:
+            if tail:
+                break
+            text = str(msg["content"][0].get("text") or "")
+            tail = [
+                {
+                    "role": msg.get("role"),
+                    "content": [
+                        {"type": "text", "text": _clip(text, max(1_000, budget))}
+                    ],
+                }
+            ]
+            break
+        tail.insert(0, msg)
+        budget -= n
+        if budget <= 0:
+            break
+    return head + tail
 
 
 def sync_last_assistant_code(

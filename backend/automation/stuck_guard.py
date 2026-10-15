@@ -52,7 +52,9 @@ class StuckGuard:
         self._loop_warned: bool = False
         # match 成功重复（已在目标界面空转）
         self.match_ok_warn: int = 20
-        self.match_ok_fail: int = 40
+        # 「连续匹配同一模板成功」是把双刃剑：确认/等待轮询天然会连续命中同一张图，
+        # 抬到 200 保留「真空转」的兜底，又不会把合法轮询判死（≈80s 才判一次）。
+        self.match_ok_fail: int = 200
         # click 失败重复（点不到还在点）
         self.click_fail_warn: int = 8
         self.click_fail_fail: int = 16

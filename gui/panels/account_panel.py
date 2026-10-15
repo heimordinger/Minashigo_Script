@@ -576,10 +576,13 @@ class AccountPanel(QWidget):
         target = WindowPickerDialog.pick(self)
         if target:
             self.account["window_hwnd"] = target.hwnd
-            self.account["window_title"] = target.title
+            self.account["window_title"] = (
+                getattr(target, "_display_title", "") or target.title
+            )
             self.select_window.emit(self.account)
-            self.select_window_btn.setText(f"窗口: {target.title[:20]}")
-            self.set_browser_state(f"已选窗口: {target.title[:30]}")
+            _title = self.account["window_title"]
+            self.select_window_btn.setText(f"窗口: {_title[:20]}")
+            self.set_browser_state(f"已选窗口: {_title[:30]}")
             self._update_target_combo()
             # 选中窗口后默认使用窗口目标，强制切到窗口项
             win_idx = self._target_combo.findData("window")
@@ -588,7 +591,7 @@ class AccountPanel(QWidget):
 
             self._ball_counter += 1
             card = TaskBallCard(
-                f"绑定窗口: {target.title[:24]}",
+                f"绑定窗口: {_title[:24]}",
                 index=self._ball_counter,
                 target_type="window",
             )
