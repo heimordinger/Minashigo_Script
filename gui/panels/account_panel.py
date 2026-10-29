@@ -182,6 +182,7 @@ class AccountPanel(QWidget):
     close = Signal(dict)
 
     open_taskflow = Signal(dict)
+    open_visual_agent = Signal(dict)
 
     refresh_tasks = Signal(dict)
     request_screenshot = Signal(dict)
@@ -394,9 +395,17 @@ class AccountPanel(QWidget):
         self.screenshot_btn.clicked.connect(self._request_screenshot)
         self.screenshot_btn.setEnabled(False)
 
+        self.visual_agent_btn = QPushButton("AI 执行")
+        self.visual_agent_btn.setObjectName("PrimaryButton")
+        self.visual_agent_btn.setToolTip("让 AI 操作当前选中的浏览器或窗口")
+        self.visual_agent_btn.clicked.connect(
+            lambda: self.open_visual_agent.emit(self.account)
+        )
+
         debug_row.addWidget(self.mouse_pos_label)
         debug_row.addStretch()
         debug_row.addWidget(self.screenshot_btn)
+        debug_row.addWidget(self.visual_agent_btn)
 
         # ========== 任务卡片列表（可滚动，支持拖拽排序） ==========
         self._card_container = _CardContainer(self)
@@ -428,6 +437,7 @@ class AccountPanel(QWidget):
             self.close_btn,
             self.refresh_btn,
             self.screenshot_btn,
+            self.visual_agent_btn,
             self.taskflow_btn,
         ]
 

@@ -3,7 +3,7 @@ from PySide6.QtGui import QDesktopServices, QStandardItemModel, QStandardItem
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QMessageBox, QFileDialog, QCheckBox,
-    QScrollArea, QComboBox,
+    QScrollArea, QComboBox, QListWidget, QStackedWidget,
 )
 
 from core.config.config import config, _DEFAULT_CONFIG
@@ -310,7 +310,23 @@ class SettingsPanel(QWidget):
         layout.addLayout(btn_layout)
 
         scroll.setWidget(content)
-        outer_layout.addWidget(scroll)
+
+        body = QHBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        self.settings_nav = QListWidget()
+        self.settings_nav.setFixedWidth(118)
+        self.settings_nav.addItem("常规设置")
+        self.settings_nav.addItem("AI 配置")
+        self.settings_nav.setCurrentRow(0)
+        self.settings_stack = QStackedWidget()
+        self.settings_stack.addWidget(scroll)
+        from gui.widgets.AISettingsWidget import AISettingsWidget
+        self.ai_settings = AISettingsWidget(self)
+        self.settings_stack.addWidget(self.ai_settings)
+        self.settings_nav.currentRowChanged.connect(self.settings_stack.setCurrentIndex)
+        body.addWidget(self.settings_nav)
+        body.addWidget(self.settings_stack, 1)
+        outer_layout.addLayout(body)
 
     def _set_style(self, edit: QLineEdit, is_user: bool):
         edit.setObjectName("UserConfigValue" if is_user else "DefaultConfigValue")
@@ -552,3 +568,5 @@ class SettingsPanel(QWidget):
         self._load_config()
         self._refresh_about()
         self._refresh_cache_sizes()
+        if hasattr(self, "ai_settings"):
+            self.ai_settings.reload()

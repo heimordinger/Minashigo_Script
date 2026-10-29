@@ -533,6 +533,19 @@ class SettingsMixin:
                 self._persist_profile(_DEFAULT_PROFILE, silent=True)
         elif old and self._form_differs_from_saved(old):
             self._stash_unsaved_to_default(silent=True)
+        # 公共 AI 配置是来源；旧下拉只记录协作生成选择。
+        try:
+            from core.ai.config_store import AIConfigStore
+            store = AIConfigStore()
+            central = store.read()
+            scheme_id = next((
+                sid for sid, item in central.get("schemes", {}).items()
+                if str(item.get("name") or sid) == new_name
+            ), "")
+            if scheme_id:
+                store.select("collaboration", scheme_id)
+        except Exception as exc:
+            print(f"[ScriptGenerator] 保存公共协作方案选择失败: {exc}")
         self._reload_profile_from_disk(
             new_name, status=f"已切换到方案「{new_name}」",
         )

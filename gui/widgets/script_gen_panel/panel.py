@@ -287,12 +287,11 @@ class ScriptGenerator(
         layout.setSpacing(8)
 
         # ===== 多套配置方案 =====
-        profile_group = QGroupBox("配置方案")
+        profile_group = QGroupBox("AI 方案（协作生成与其他 AI 功能共用）")
         g_prof = QVBoxLayout(profile_group)
         _pl = QLabel(
-            "一套方案 = 主模型 + 辅助识图（含各自 Key）。"
-            "「默认」是空草稿：填了但没点保存时，也会写进「默认」。"
-            "正式组合请用「另存为…」（如 DeepSeek+千问）。"
+            "API 服务、模型和方案已经迁移到主界面「设置 → AI 配置」。"
+            "这里仅选择协作生成使用的公共方案。修改连接或模型后请重新打开脚本生成窗口。"
         )
         _pl.setObjectName("MutedLabel")
         _pl.setWordWrap(True)
@@ -311,14 +310,17 @@ class ScriptGenerator(
         self._profile_save_btn = QPushButton("保存到当前")
         self._profile_save_btn.setToolTip("把下方填写的主模型/辅助识图保存进当前方案")
         self._profile_save_btn.clicked.connect(self._save_settings)
+        self._profile_save_btn.setVisible(False)
         prow.addWidget(self._profile_save_btn)
         self._profile_save_as_btn = QPushButton("另存为…")
         self._profile_save_as_btn.setToolTip("复制当前填写内容为新方案并切换过去")
         self._profile_save_as_btn.clicked.connect(self._save_profile_as)
+        self._profile_save_as_btn.setVisible(False)
         prow.addWidget(self._profile_save_as_btn)
         self._profile_del_btn = QPushButton("删除")
         self._profile_del_btn.setToolTip("删除当前方案（至少保留一套）")
         self._profile_del_btn.clicked.connect(self._delete_current_profile)
+        self._profile_del_btn.setVisible(False)
         prow.addWidget(self._profile_del_btn)
         g_prof.addLayout(prow)
         layout.addWidget(profile_group)
@@ -409,6 +411,7 @@ class ScriptGenerator(
         self._test_worker: ConnectionTestWorker | None = None
 
         layout.addWidget(api_group)
+        api_group.setVisible(False)
 
         # ===== 辅助识图 API =====
         vision_group = QGroupBox("辅助识图（可选，随方案一起切换）")
@@ -467,6 +470,7 @@ class ScriptGenerator(
         self._vision_test_worker: ConnectionTestWorker | None = None
 
         layout.addWidget(vision_group)
+        vision_group.setVisible(False)
         layout.addStretch()
         return page
 

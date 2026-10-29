@@ -53,6 +53,9 @@ taskflow/ws_port.js
 # ========== User data ==========
 json/accounts.json
 user/config.json
+# 所有执行记忆、模型配置投影、SQLite 与本地素材都属于机器/用户运行态。
+# 程序会在首次运行时按需重建；不要提交到公开仓库。
+user_data/
 user_data/match_hotspots.json
 user_data/match_hotspots.tmp
 # 会话工作区：本地复现用的素材副本与轨迹，体积大且因人而异，不进版本库

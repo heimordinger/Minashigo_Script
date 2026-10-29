@@ -52,6 +52,10 @@ class UserBrowser:
         # ===== 轮询缓存 =====
         self.use_polling_temp_cache = False
         self.polling_temp_cache = {}
+        # 游戏区裁剪总开关。默认开启；个别脚本可关闭以强制使用完整视口。
+        self.game_crop_enabled = True
+        # 点击前二次匹配诊断。默认关闭，问题脚本可临时开启。
+        self.debug_click_match = False
         # 登录等场景：后台截帧也裁剪到 GameCanvas
         self.use_game_frame_capture = False
         # 历史热点自适应 ROI（落到 Browser mixin）
@@ -146,7 +150,7 @@ class UserBrowser:
         rec = self._pseudo
         sid = rec.begin("capture", "observer") if rec else None
         try:
-            if self.use_game_frame_capture:
+            if self.game_crop_enabled and self.use_game_frame_capture:
                 frame = await self._browser.update_frame(
                     save_screenshot=False,
                     crop_game_canvas=True,
@@ -293,15 +297,17 @@ class UserBrowser:
         await self._task_ctrl.check()
         rec = self._pseudo
         # 走 observer.capture_once 时由 _capture_raw 记 capture，避免重复
-        direct = bool(
-            save_screenshot or crop_game_canvas or self.use_game_frame_capture
+        crop_requested = bool(
+            self.game_crop_enabled
+            and (crop_game_canvas or self.use_game_frame_capture)
         )
+        direct = bool(save_screenshot or crop_requested)
         sid = rec.begin("capture", "update_frame") if (rec and direct) else None
         try:
             if direct:
                 frame = await self._browser.update_frame(
                     save_screenshot=save_screenshot,
-                    crop_game_canvas=crop_game_canvas or self.use_game_frame_capture,
+                    crop_game_canvas=crop_requested,
                 )
                 self._observer._note_new_frame(frame)
                 self.polling_temp_cache = {}
@@ -493,8 +499,10 @@ class UserBrowser:
         import time
         _t0 = time.time()
         print(f"[UserBrowser.click_image] entered t=0", flush=True)
+        frame_id_before = getattr(self._observer, "_frame_id", None)
         await self._task_ctrl.check()
         await self._observer.ensure_frame()
+        frame_id_ready = getattr(self._observer, "_frame_id", None)
 
         if not self.use_polling_temp_cache:
             pianyi = human_offset(pianyi)
@@ -533,7 +541,16 @@ class UserBrowser:
             pixel_tol,
         )
 
-        if key not in self.polling_temp_cache:
+        cache_hit = key in self.polling_temp_cache
+        if self.debug_click_match:
+            self.script_log(
+                "  [点击诊断] "
+                f"模板={Path(str(img_path)).name} cache={'hit' if cache_hit else 'miss'} "
+                f"cache_items={len(self.polling_temp_cache)} "
+                f"frame={frame_id_before}->{frame_id_ready}"
+            )
+
+        if not cache_hit:
             self.polling_temp_cache[key] = await self.match_image(
                 img_path=img_path,
                 threshold=threshold,
@@ -544,6 +561,16 @@ class UserBrowser:
             )
 
         match = self.polling_temp_cache[key]
+        if self.debug_click_match:
+            frame_id_after = getattr(self._observer, "_frame_id", None)
+            score = getattr(match, "max_val", None) if match is not None else None
+            self.script_log(
+                "  [点击诊断] "
+                f"二次匹配 result={bool(match)} score={score} "
+                f"xy=({getattr(match, 'x', None)},{getattr(match, 'y', None)}) "
+                f"frame={frame_id_ready}->{frame_id_after} "
+                f"cache_items={len(self.polling_temp_cache)}"
+            )
 
         # 要确认预期场景时，点击记录必须等确认结果一起写：一次点击 = 一条记录
         exp = (expect or "none").strip().lower()
@@ -551,6 +578,10 @@ class UserBrowser:
 
         # 与 match_image 一致：低于阈值时 match 为 falsy，即使残留坐标也不可点
         if not match or match.x is None:
+            if self.debug_click_match:
+                self.script_log(
+                    "  [点击诊断] 未执行点击：二次匹配未命中或坐标为空"
+                )
             self._emit_click_hud(str(img_path), False, getattr(match, "max_val", None) if match else None)
             self._stuck.note_action("click", img_path, False)
             return False

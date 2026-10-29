@@ -18,6 +18,9 @@ aiohttp>=3.9
 websockets>=12.0
 requests>=2.31
 
+# ---------- MCP（本地 Agent 工具服务）----------
+mcp>=2.0,<3
+
 # ---------- AI / LangGraph（Script Generator 多步编排）----------
 # 锁定到本机实测通过的确切版本（Phase B3 影子图/接管图用它验证）
 langgraph==1.2.10

@@ -16,6 +16,12 @@ from gui.panels.settings_panel import SettingsPanel
 from gui.tabs.StartTab import StartTab
 from gui.tabs.AccountManagerTab import AccountManagerTab
 from gui.widgets.MatchDebugWindow import MatchDebugWindow
+from gui.window.CustomTitleBar import CustomTitleBar, WindowResizeHandle
+from gui.window.native_title_bar import (
+    apply_native_title_bar_theme,
+    install_native_title_bar_theme_sync,
+    sync_all_native_title_bars,
+)
 from gui.panels.account_panel import AccountPanel
 from core.error_handler import safe_call
 from core.path import ICON_PATH
@@ -52,6 +58,8 @@ class MainWindow(QWidget):
         self._script_gen = None
         self._script_spec = None
         self._network_inspector = None
+        self._execution_mcp_thread = None
+        self._visual_agent_window = None
         self._setup_start_tab()
         self.setup_status_bar()
         self.setup_layout()
@@ -60,6 +68,7 @@ class MainWindow(QWidget):
         QTimer.singleShot(0, self._lazy_init_tabs)
 
     def setup_window(self):
+        self.setWindowFlag(Qt.WindowType.FramelessWindowHint, True)
         font = QFont()
         font.setPointSize(13)
         self.setFont(font)
@@ -75,6 +84,9 @@ class MainWindow(QWidget):
         from gui.styles.theme import current_theme_from_config, load_theme_qss
         theme = current_theme_from_config()
         self.setStyleSheet(load_theme_qss(theme))
+        install_native_title_bar_theme_sync()
+        apply_native_title_bar_theme(self, theme)
+        sync_all_native_title_bars(theme)
         print(f"样式表加载完成: theme={theme}")
 
     def _setup_start_tab(self):
@@ -163,8 +175,51 @@ class MainWindow(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
+        self.title_bar = CustomTitleBar(self)
+        self.title_bar.close_requested.connect(self.close)
+        layout.addWidget(self.title_bar)
         layout.addWidget(self.tabs)
         layout.addWidget(self.status_bar)
+
+        E = Qt.Edge
+        self._resize_handles = {
+            "left": WindowResizeHandle(self, E.LeftEdge),
+            "right": WindowResizeHandle(self, E.RightEdge),
+            "top": WindowResizeHandle(self, E.TopEdge),
+            "bottom": WindowResizeHandle(self, E.BottomEdge),
+            "top_left": WindowResizeHandle(self, E.TopEdge | E.LeftEdge),
+            "top_right": WindowResizeHandle(self, E.TopEdge | E.RightEdge),
+            "bottom_left": WindowResizeHandle(self, E.BottomEdge | E.LeftEdge),
+            "bottom_right": WindowResizeHandle(self, E.BottomEdge | E.RightEdge),
+        }
+        self._position_resize_handles()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if hasattr(self, "title_bar"):
+            self.title_bar.sync_from_window()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, "_resize_handles"):
+            self._position_resize_handles()
+
+    def _position_resize_handles(self):
+        size = 6
+        corner = 10
+        w, h = self.width(), self.height()
+        handles = self._resize_handles
+        handles["left"].setGeometry(0, corner, size, max(0, h - 2 * corner))
+        handles["right"].setGeometry(w - size, corner, size, max(0, h - 2 * corner))
+        handles["top"].setGeometry(corner, 0, max(0, w - 2 * corner), size)
+        handles["bottom"].setGeometry(corner, h - size, max(0, w - 2 * corner), size)
+        handles["top_left"].setGeometry(0, 0, corner, corner)
+        handles["top_right"].setGeometry(w - corner, 0, corner, corner)
+        handles["bottom_left"].setGeometry(0, h - corner, corner, corner)
+        handles["bottom_right"].setGeometry(w - corner, h - corner, corner, corner)
+        for handle in handles.values():
+            handle.setVisible(not self.isMaximized())
+            handle.raise_()
 
     def setup_signals(self):
         """UI → 后端信号绑定"""
@@ -263,6 +318,7 @@ class MainWindow(QWidget):
         panel.target_changed.connect(self.on_target_changed)
         panel.reconnect.connect(self.on_reconnect)
         panel.open_taskflow.connect(self.on_open_taskflow)
+        panel.open_visual_agent.connect(self.on_open_visual_agent)
         panel.switch_account.connect(self.on_switch_account_tab)
         insert_index = self.tabs.count() - 2
         self.tabs.insertTab(insert_index, panel, name)
@@ -353,6 +409,32 @@ class MainWindow(QWidget):
         print(f"打开TaskFlow: {name}")
         self.facade.register_account_to_taskflow(account)
         self.facade.open_taskflow_browser(account)
+
+    def on_open_visual_agent(self, account: dict):
+        """打开当前账号的 AI 执行工作台。"""
+        try:
+            if self._execution_mcp_thread is None:
+                from backend.mcp_integration.execution_server import start_execution_server
+
+                self._execution_mcp_thread = start_execution_server(
+                    self.facade.controller,
+                    host="127.0.0.1",
+                    port=8765,
+                )
+        except Exception as exc:
+            QMessageBox.warning(self, "AI 执行", f"MCP 执行服务启动失败：{exc}")
+            return
+        if self._visual_agent_window is None:
+            from gui.widgets.VisualAgentWindow import VisualAgentWindow
+
+            self._visual_agent_window = VisualAgentWindow(
+                self.facade.controller,
+                parent=self,
+            )
+        self._visual_agent_window.set_account(account)
+        self._visual_agent_window.show()
+        self._visual_agent_window.raise_()
+        self._visual_agent_window.activateWindow()
 
     def add_tab_close_button(self, account: dict, index: int):
         """为账号 Tab 添加关闭按钮"""
@@ -476,6 +558,13 @@ class MainWindow(QWidget):
             try:
                 from gui.styles.theme import load_theme_qss
                 self._network_inspector.setStyleSheet(load_theme_qss(theme))
+            except Exception:
+                pass
+        if self._visual_agent_window is not None:
+            try:
+                from gui.styles.theme import load_theme_qss
+                self._visual_agent_window.setStyleSheet(load_theme_qss(theme))
+                self._visual_agent_window.apply_theme(theme)
             except Exception:
                 pass
 

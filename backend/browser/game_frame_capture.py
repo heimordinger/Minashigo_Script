@@ -215,3 +215,97 @@ async def align_game_viewport(
     meta["scrolled"] = True
     await asyncio.sleep(0.25)
     return meta
+
+
+async def inspect_game_viewport(page, *, box_timeout_ms: int = 1_000) -> dict:
+    """Return page scroll metrics and the current GameCanvas geometry."""
+    metrics = await page.evaluate(
+        """
+        () => {
+            const root = document.documentElement;
+            const body = document.body;
+            const documentWidth = Math.max(
+                root ? root.scrollWidth : 0,
+                body ? body.scrollWidth : 0,
+                window.innerWidth
+            );
+            const documentHeight = Math.max(
+                root ? root.scrollHeight : 0,
+                body ? body.scrollHeight : 0,
+                window.innerHeight
+            );
+            const maxX = Math.max(0, documentWidth - window.innerWidth);
+            const maxY = Math.max(0, documentHeight - window.innerHeight);
+            return {
+                viewport: {width: window.innerWidth, height: window.innerHeight},
+                document: {width: documentWidth, height: documentHeight},
+                scroll: {
+                    x: window.scrollX,
+                    y: window.scrollY,
+                    max_x: maxX,
+                    max_y: maxY,
+                    progress_x: maxX > 0 ? window.scrollX / maxX : 0,
+                    progress_y: maxY > 0 ? window.scrollY / maxY : 0,
+                },
+                ready_state: document.readyState,
+            };
+        }
+        """
+    )
+    _frame, selector, _loc, box = await find_game_locator(
+        page, box_timeout_ms=box_timeout_ms
+    )
+    game = {"found": bool(box), "selector": selector}
+    if box:
+        viewport = metrics["viewport"]
+        center_x = float(box["x"]) + float(box["width"]) / 2
+        center_y = float(box["y"]) + float(box["height"]) / 2
+        viewport_center_x = float(viewport["width"]) / 2
+        viewport_center_y = float(viewport["height"]) / 2
+        game.update(
+            {
+                "bounds": dict(box),
+                "fully_visible": await _is_box_fully_visible(page, box),
+                "center_offset": {
+                    "x": center_x - viewport_center_x,
+                    "y": center_y - viewport_center_y,
+                },
+                "centered": abs(center_x - viewport_center_x) <= 8
+                and abs(center_y - viewport_center_y) <= 8,
+            }
+        )
+    metrics["game_frame"] = game
+    return metrics
+
+
+async def center_game_viewport(page, *, box_timeout_ms: int = 5_000) -> dict:
+    """Scroll the page so the center of GameCanvas is at the viewport center."""
+    before = await inspect_game_viewport(page, box_timeout_ms=box_timeout_ms)
+    game = before.get("game_frame") or {}
+    box = game.get("bounds")
+    if not box:
+        return {"found": False, "scrolled": False, "before": before, "after": before}
+
+    scroll = before["scroll"]
+    viewport = before["viewport"]
+    document_left = float(box["x"]) + float(scroll["x"])
+    document_top = float(box["y"]) + float(scroll["y"])
+    desired_x = document_left + float(box["width"]) / 2 - float(viewport["width"]) / 2
+    desired_y = document_top + float(box["height"]) / 2 - float(viewport["height"]) / 2
+    desired_x = max(0.0, min(desired_x, float(scroll["max_x"])))
+    desired_y = max(0.0, min(desired_y, float(scroll["max_y"])))
+    await page.evaluate(
+        "([top, left]) => window.scrollTo({top, left, behavior: 'instant'})",
+        [desired_y, desired_x],
+    )
+    await asyncio.sleep(0.1)
+    after = await inspect_game_viewport(page, box_timeout_ms=box_timeout_ms)
+    return {
+        "found": True,
+        "scrolled": abs(float(scroll["x"]) - desired_x) > 0.5
+        or abs(float(scroll["y"]) - desired_y) > 0.5,
+        "requested_scroll_x": desired_x,
+        "requested_scroll_y": desired_y,
+        "before": before,
+        "after": after,
+    }

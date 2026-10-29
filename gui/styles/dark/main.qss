@@ -355,3 +355,27 @@ QLineEdit#UserConfigValue {
 QLineEdit#DefaultConfigValue {
     color: #8b929c;
 }
+QFrame#CustomTitleBar {
+    background: #111317;
+    border-bottom: 1px solid #2b3038;
+}
+QLabel#TitleBarTitle {
+    color: #d9dde5;
+    background: transparent;
+    font-family: "Microsoft YaHei UI";
+    font-size: 12px;
+}
+QLabel#TitleBarIcon { background: transparent; }
+QToolButton#TitleBarMinimize,
+QToolButton#TitleBarMaximize,
+QToolButton#TitleBarClose {
+    color: #d9dde5;
+    background: transparent;
+    border: none;
+    border-radius: 0;
+    font-family: "Segoe UI Symbol";
+    font-size: 15px;
+}
+QToolButton#TitleBarMinimize:hover,
+QToolButton#TitleBarMaximize:hover { background: #292d34; }
+QToolButton#TitleBarClose:hover { color: white; background: #c42b1c; }

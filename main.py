@@ -95,6 +95,8 @@ def main():
         pass
     app = QApplication(sys.argv)
     app.setWindowIcon(QIcon(str(ICON_PATH)))
+    from gui.window.native_title_bar import install_native_title_bar_theme_sync
+    install_native_title_bar_theme_sync(app)
 
     from gui.window.LoadingSplash import LoadingSplash
     loading = LoadingSplash()
